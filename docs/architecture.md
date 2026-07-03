@@ -91,11 +91,28 @@ within the same logical area. An index at an area's root is a navigation root;
 a nested index must be linked from its nearest parent index. Having both index
 names in one directory is invalid.
 
+## Stable metadata and context addressing
+
+Cataloged documents start with YAML front matter. The initial core contract
+requires only a configured stable ID and a positive revision. Optional type,
+status and additional project fields remain policy data rather than hard-coded
+core behavior.
+
+Semantic relations use stable IDs so file moves do not rewrite the dependency
+graph. `validated_against` uses `ID@revision`; stale pins are reported without
+assuming whether a project treats the document as current truth or a historical
+snapshot. Human navigation continues to use ordinary relative Markdown links.
+
+ATX headings outside fenced code blocks form deterministic addressable
+sections. A section includes nested headings until the next heading at the same
+or a higher level. Duplicate headings receive deterministic numeric suffixes.
+
 ## Planned milestones
 
 1. Configuration contract, bootstrap and diagnostics.
 2. Markdown catalog and hierarchical reachability validation.
-3. Sharded projection, context and impact commands.
-4. Migration/adoption workflow for existing projects.
-5. Thin Codex integration and generated agent instructions.
-6. MCP adapter and additional client integrations.
+3. Stable metadata, addressable sections and dependency graphs.
+4. Sharded projection, context and impact commands.
+5. Migration/adoption workflow for existing projects.
+6. Thin Codex integration and generated agent instructions.
+7. MCP adapter and additional client integrations.

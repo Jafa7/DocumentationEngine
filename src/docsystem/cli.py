@@ -6,8 +6,14 @@ import argparse
 import sys
 from pathlib import Path
 
-from docsystem.catalog import build_catalog, validate_reachability
+from docsystem.catalog import (
+    build_catalog,
+    build_dependency_graph,
+    find_document,
+    validate_catalog,
+)
 from docsystem.config import CONFIG_FILENAME, DEFAULT_CONFIG, load_config
+from docsystem.sections import extract_navigation, extract_section
 
 
 def initialize(project_root: Path) -> int:
@@ -32,13 +38,18 @@ def doctor(project_root: Path) -> int:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
     errors: list[str] = []
+    warnings: list[str] = []
     if not config.documentation_root.is_dir():
         errors.append(f"documentation root does not exist: {config.documentation_root}")
     else:
-        errors.extend(
-            f"{issue.path.as_posix()}: {issue.message}"
-            for issue in validate_reachability(build_catalog(config), config)
-        )
+        for issue in validate_catalog(build_catalog(config), config):
+            rendered = f"{issue.path.as_posix()}: {issue.message}"
+            if issue.severity == "warning":
+                warnings.append(rendered)
+            else:
+                errors.append(rendered)
+    for warning in warnings:
+        print(f"WARNING: {warning}", file=sys.stderr)
     if errors:
         for error in errors:
             print(f"ERROR: {error}", file=sys.stderr)
@@ -67,12 +78,74 @@ def validate(project_root: Path) -> int:
     except ValueError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
-    issues = validate_reachability(build_catalog(config), config)
-    if issues:
-        for issue in issues:
-            print(f"ERROR: {issue.path.as_posix()}: {issue.message}", file=sys.stderr)
+    issues = validate_catalog(build_catalog(config), config)
+    errors = [issue for issue in issues if issue.severity != "warning"]
+    for issue in issues:
+        level = "WARNING" if issue.severity == "warning" else "ERROR"
+        print(f"{level}: {issue.path.as_posix()}: {issue.message}", file=sys.stderr)
+    if errors:
         return 1
     print("Markdown navigation is valid.")
+    return 0
+
+
+def read_document(
+    project_root: Path,
+    document_id: str,
+    *,
+    anchor: str | None = None,
+    navigation: bool = False,
+) -> int:
+    try:
+        config = load_config(project_root)
+        document = find_document(build_catalog(config), document_id)
+        if anchor is not None:
+            section = next(
+                (item for item in document.sections if item.anchor == anchor), None
+            )
+            if section is None:
+                raise ValueError(f"anchor not found in {document_id}: {anchor}")
+            output = extract_section(document.content, section)
+        elif navigation:
+            output = extract_navigation(document.content, document.sections)
+        else:
+            output = (
+                document.content
+                if document.content.endswith("\n")
+                else f"{document.content}\n"
+            )
+    except ValueError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    sys.stdout.write(output)
+    return 0
+
+
+def dependencies(project_root: Path, document_id: str, *, reverse: bool = False) -> int:
+    try:
+        config = load_config(project_root)
+        markdown_catalog = build_catalog(config)
+        find_document(markdown_catalog, document_id)
+        graph = build_dependency_graph(markdown_catalog)
+    except ValueError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+
+    edges = graph.incoming(document_id) if reverse else graph.outgoing(document_id)
+    for edge in sorted(
+        edges,
+        key=lambda item: (
+            item.relation,
+            item.source_id if reverse else item.target_id,
+        ),
+    ):
+        peer = edge.source_id if reverse else edge.target_id
+        expected_revision = (
+            str(edge.expected_revision)
+            if edge.expected_revision is not None
+            else "-"
+        )
+        print(f"{edge.relation}\t{peer}\t{expected_revision}")
     return 0
 
 
@@ -105,11 +178,38 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         command_parser = subparsers.add_parser(command, help=help_text)
         command_parser.add_argument("project", nargs="?", type=Path, default=Path.cwd())
+
+    read_parser = subparsers.add_parser(
+        "read", help="Read a Markdown document or section by stable ID."
+    )
+    read_parser.add_argument("document_id")
+    read_parser.add_argument("project", nargs="?", type=Path, default=Path.cwd())
+    selection = read_parser.add_mutually_exclusive_group()
+    selection.add_argument("--anchor")
+    selection.add_argument("--navigation", action="store_true")
+
+    dependencies_parser = subparsers.add_parser(
+        "dependencies", help="List forward or reverse semantic dependencies."
+    )
+    dependencies_parser.add_argument("document_id")
+    dependencies_parser.add_argument(
+        "project", nargs="?", type=Path, default=Path.cwd()
+    )
+    dependencies_parser.add_argument("--reverse", action="store_true")
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
+    if args.command == "read":
+        return read_document(
+            args.project,
+            args.document_id,
+            anchor=args.anchor,
+            navigation=args.navigation,
+        )
+    if args.command == "dependencies":
+        return dependencies(args.project, args.document_id, reverse=args.reverse)
     handlers = {
         "init": initialize,
         "doctor": doctor,

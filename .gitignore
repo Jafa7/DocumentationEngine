@@ -4,4 +4,5 @@
 /dist/
 __pycache__/
 *.pyc
-
+/plan
+/.docsystem.toml

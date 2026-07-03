@@ -25,6 +25,10 @@ python -m docsystem doctor .
 python -m docsystem show-config .
 python -m docsystem catalog .
 python -m docsystem validate .
+python -m docsystem read DOC-001 .
+python -m docsystem read DOC-001 . --anchor purpose
+python -m docsystem dependencies DOC-001 .
+python -m docsystem dependencies DOC-001 . --reverse
 ```
 
 `init` creates a project-local `.docsystem.toml` and the configured
@@ -33,10 +37,22 @@ documentation root. It does not create empty documentation hierarchies.
 `catalog` lists Markdown source files under paths mapped by logical roles in
 `[areas]`. `validate` requires each document to be linked from the nearest
 `README.md` or `index.md`; nested indexes must themselves be linked from the
-nearest parent index. `doctor` includes this navigation validation.
+nearest parent index. `doctor` includes navigation and metadata validation.
+
+Every cataloged Markdown document starts with YAML front matter containing a
+stable `id` and positive `revision`. Semantic relations use stable IDs:
+`derived_from`, `depends_on`, `related` and `supersedes` contain ID lists;
+`validated_against` contains `ID@revision` freshness pins. Unknown fields are
+preserved for project-specific policy.
+
+`read` resolves a whole document, navigation prefix or ATX section by stable
+ID. `dependencies` reports deterministic forward or reverse semantic edges.
+Stale revision pins are visible warnings rather than blocking errors because
+historical snapshot policy is not part of the initial metadata contract.
 
 ## Status
 
-The first two milestones establish configuration, project bootstrapping,
-provider-neutral Markdown discovery and hierarchical navigation validation.
-Sharded projections and provider integrations remain subsequent milestones.
+The first milestones establish configuration, project bootstrapping,
+provider-neutral Markdown discovery, hierarchical navigation, stable metadata,
+addressable sections and dependency graphs. Sharded projections, bounded
+context packets and provider integrations remain subsequent milestones.

@@ -45,6 +45,22 @@ def test_catalog_uses_configured_area_path_instead_of_role_name(tmp_path: Path) 
     assert validate_reachability(catalog, config) == ()
 
 
+def test_more_specific_area_wins_when_configured_paths_overlap(tmp_path: Path) -> None:
+    custom_config = DEFAULT_CONFIG.replace(
+        'architecture = "architecture"', 'architecture = "modules/shared"'
+    )
+    (tmp_path / CONFIG_FILENAME).write_text(custom_config, encoding="utf-8")
+    nested = tmp_path / "plan" / "modules" / "shared"
+    nested.mkdir(parents=True)
+    (nested / "README.md").write_text("# Shared architecture\n", encoding="utf-8")
+
+    catalog = build_catalog(load_config(tmp_path))
+
+    assert [(document.role, document.path.as_posix()) for document in catalog.documents] == [
+        ("architecture", "modules/shared/README.md")
+    ]
+
+
 def test_nested_index_must_be_linked_from_parent_index(tmp_path: Path) -> None:
     root, config = configured_project(tmp_path)
     roadmap = root / "roadmap"

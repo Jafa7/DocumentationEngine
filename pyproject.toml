@@ -7,7 +7,9 @@ name = "docsystem"
 version = "0.1.0"
 description = "Provider-neutral structured Markdown documentation engine."
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "PyYAML>=6,<7",
+]
 
 [project.scripts]
 docsystem = "docsystem.cli:main"
@@ -31,4 +33,3 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
-

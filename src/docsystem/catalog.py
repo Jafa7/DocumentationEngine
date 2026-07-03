@@ -1,4 +1,4 @@
-"""Provider-neutral Markdown discovery and navigation validation."""
+"""Provider-neutral Markdown discovery, metadata and dependency graphs."""
 
 from __future__ import annotations
 
@@ -8,6 +8,8 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import unquote, urlsplit
 
 from docsystem.config import ProjectConfig
+from docsystem.metadata import DocumentMetadata, parse_front_matter
+from docsystem.sections import MarkdownSection, parse_sections
 
 INDEX_NAMES = frozenset({"readme.md", "index.md"})
 INLINE_LINK_PATTERN = re.compile(r"(?<!!)\[[^\]]*]\(\s*(?:<([^>]+)>|([^) \t]+))")
@@ -18,13 +20,26 @@ REFERENCE_USE_PATTERN = re.compile(r"(?<!!)\[([^\]]+)]\[([^\]]*)]")
 
 
 @dataclass(frozen=True)
+class ValidationIssue:
+    """A deterministic, human-readable catalog validation result."""
+
+    path: PurePosixPath
+    message: str
+    severity: str = "error"
+
+
+@dataclass(frozen=True)
 class MarkdownDocument:
-    """A Markdown source file assigned to a configured logical area."""
+    """A Markdown source file and its parsed context-engine data."""
 
     role: str
     path: PurePosixPath
     links: tuple[PurePosixPath, ...]
     is_index: bool
+    content: str
+    metadata: DocumentMetadata | None
+    sections: tuple[MarkdownSection, ...]
+    metadata_issues: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -35,11 +50,26 @@ class MarkdownCatalog:
 
 
 @dataclass(frozen=True)
-class ValidationIssue:
-    """A deterministic, human-readable catalog validation result."""
+class DependencyEdge:
+    """A typed, normalized edge between stable document IDs."""
 
-    path: PurePosixPath
-    message: str
+    relation: str
+    source_id: str
+    target_id: str
+    expected_revision: int | None = None
+
+
+@dataclass(frozen=True)
+class DependencyGraph:
+    """Deterministically ordered forward and reverse dependency edges."""
+
+    edges: tuple[DependencyEdge, ...]
+
+    def outgoing(self, document_id: str) -> tuple[DependencyEdge, ...]:
+        return tuple(edge for edge in self.edges if edge.source_id == document_id)
+
+    def incoming(self, document_id: str) -> tuple[DependencyEdge, ...]:
+        return tuple(edge for edge in self.edges if edge.target_id == document_id)
 
 
 def _area_for(path: PurePosixPath, config: ProjectConfig) -> str | None:
@@ -73,8 +103,9 @@ def _normalize_link(
     return PurePosixPath(relative.as_posix())
 
 
-def _markdown_links(path: Path, relative: PurePosixPath, root: Path) -> tuple[PurePosixPath, ...]:
-    content = path.read_text(encoding="utf-8")
+def _markdown_links(
+    content: str, relative: PurePosixPath, root: Path
+) -> tuple[PurePosixPath, ...]:
     definitions = {
         match.group(1).casefold(): match.group(2) or match.group(3)
         for match in REFERENCE_DEFINITION_PATTERN.finditer(content)
@@ -112,15 +143,153 @@ def build_catalog(config: ProjectConfig) -> MarkdownCatalog:
         role = _area_for(relative, config)
         if role is None:
             continue
+        content = path.read_text(encoding="utf-8")
+        front_matter = parse_front_matter(
+            content, frozenset(config.identifiers.values())
+        )
         documents.append(
             MarkdownDocument(
                 role=role,
                 path=relative,
-                links=_markdown_links(path, relative, root),
+                links=_markdown_links(content, relative, root),
                 is_index=path.name.lower() in INDEX_NAMES,
+                content=content,
+                metadata=front_matter.metadata,
+                sections=parse_sections(content),
+                metadata_issues=front_matter.issues,
             )
         )
     return MarkdownCatalog(documents=tuple(documents))
+
+
+def validate_metadata(catalog: MarkdownCatalog) -> tuple[ValidationIssue, ...]:
+    """Validate stable IDs, revisions and semantic references."""
+
+    issues = [
+        ValidationIssue(document.path, message)
+        for document in catalog.documents
+        for message in document.metadata_issues
+    ]
+    documents_by_id: dict[str, list[MarkdownDocument]] = {}
+    for document in catalog.documents:
+        if document.metadata is not None:
+            documents_by_id.setdefault(document.metadata.document_id, []).append(document)
+
+    for document_id, documents in documents_by_id.items():
+        if len(documents) > 1:
+            paths = ", ".join(item.path.as_posix() for item in documents)
+            issues.extend(
+                ValidationIssue(
+                    document.path,
+                    f"duplicate document ID {document_id}; also used by: {paths}",
+                )
+                for document in documents
+            )
+
+    unique_by_id = {
+        document_id: documents[0]
+        for document_id, documents in documents_by_id.items()
+        if len(documents) == 1
+    }
+    for document in catalog.documents:
+        metadata = document.metadata
+        if metadata is None:
+            continue
+        for reference in metadata.references:
+            if reference.target_id == metadata.document_id:
+                issues.append(
+                    ValidationIssue(
+                        document.path,
+                        f"metadata.{reference.relation} cannot reference its own ID",
+                    )
+                )
+                continue
+            target = unique_by_id.get(reference.target_id)
+            if target is None:
+                issues.append(
+                    ValidationIssue(
+                        document.path,
+                        f"metadata.{reference.relation} references unknown ID "
+                        f"{reference.target_id}",
+                    )
+                )
+                continue
+            if (
+                reference.expected_revision is not None
+                and target.metadata is not None
+                and reference.expected_revision != target.metadata.revision
+            ):
+                issues.append(
+                    ValidationIssue(
+                        document.path,
+                        f"metadata.{reference.relation} pin "
+                        f"{reference.target_id}@{reference.expected_revision} is stale; "
+                        f"current revision is {target.metadata.revision}",
+                        severity="warning",
+                    )
+                )
+
+    return tuple(
+        sorted(
+            issues,
+            key=lambda issue: (issue.path.as_posix(), issue.severity, issue.message),
+        )
+    )
+
+
+def build_dependency_graph(catalog: MarkdownCatalog) -> DependencyGraph:
+    """Build a graph from valid references whose targets are unambiguous."""
+
+    counts: dict[str, int] = {}
+    for document in catalog.documents:
+        if document.metadata is not None:
+            document_id = document.metadata.document_id
+            counts[document_id] = counts.get(document_id, 0) + 1
+    known = {document_id for document_id, count in counts.items() if count == 1}
+
+    edges = {
+        DependencyEdge(
+            relation=reference.relation,
+            source_id=document.metadata.document_id,
+            target_id=reference.target_id,
+            expected_revision=reference.expected_revision,
+        )
+        for document in catalog.documents
+        if document.metadata is not None
+        and document.metadata.document_id in known
+        for reference in document.metadata.references
+        if reference.target_id in known
+        and reference.target_id != document.metadata.document_id
+    }
+    return DependencyGraph(
+        tuple(
+            sorted(
+                edges,
+                key=lambda edge: (
+                    edge.relation,
+                    edge.source_id,
+                    edge.target_id,
+                    edge.expected_revision or 0,
+                ),
+            )
+        )
+    )
+
+
+def find_document(catalog: MarkdownCatalog, document_id: str) -> MarkdownDocument:
+    """Resolve one unique document by stable ID."""
+
+    matches = [
+        document
+        for document in catalog.documents
+        if document.metadata is not None
+        and document.metadata.document_id == document_id
+    ]
+    if not matches:
+        raise ValueError(f"document ID not found: {document_id}")
+    if len(matches) > 1:
+        raise ValueError(f"document ID is not unique: {document_id}")
+    return matches[0]
 
 
 def validate_reachability(
@@ -172,3 +341,16 @@ def validate_reachability(
             )
 
     return tuple(sorted(issues, key=lambda issue: (issue.path.as_posix(), issue.message)))
+
+
+def validate_catalog(
+    catalog: MarkdownCatalog, config: ProjectConfig
+) -> tuple[ValidationIssue, ...]:
+    """Validate metadata and hierarchical human navigation."""
+
+    return tuple(
+        sorted(
+            (*validate_metadata(catalog), *validate_reachability(catalog, config)),
+            key=lambda issue: (issue.path.as_posix(), issue.severity, issue.message),
+        )
+    )
