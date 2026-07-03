@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from docsystem.cli import doctor, initialize, show_config
+from docsystem.cli import catalog, doctor, initialize, show_config, validate
 from docsystem.config import CONFIG_FILENAME
 
 
@@ -21,3 +21,15 @@ def test_doctor_and_show_config_accept_initialized_project(tmp_path: Path) -> No
     assert initialize(tmp_path) == 0
     assert doctor(tmp_path) == 0
     assert show_config(tmp_path) == 0
+    assert catalog(tmp_path) == 0
+    assert validate(tmp_path) == 0
+
+
+def test_doctor_reports_unreachable_markdown(tmp_path: Path) -> None:
+    assert initialize(tmp_path) == 0
+    area = tmp_path / "plan" / "roadmap"
+    area.mkdir()
+    (area / "release.md").write_text("# Release\n", encoding="utf-8")
+
+    assert doctor(tmp_path) == 1
+    assert validate(tmp_path) == 1

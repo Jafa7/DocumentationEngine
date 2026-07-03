@@ -6,6 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from docsystem.catalog import build_catalog, validate_reachability
 from docsystem.config import CONFIG_FILENAME, DEFAULT_CONFIG, load_config
 
 
@@ -33,6 +34,11 @@ def doctor(project_root: Path) -> int:
     errors: list[str] = []
     if not config.documentation_root.is_dir():
         errors.append(f"documentation root does not exist: {config.documentation_root}")
+    else:
+        errors.extend(
+            f"{issue.path.as_posix()}: {issue.message}"
+            for issue in validate_reachability(build_catalog(config), config)
+        )
     if errors:
         for error in errors:
             print(f"ERROR: {error}", file=sys.stderr)
@@ -41,6 +47,32 @@ def doctor(project_root: Path) -> int:
     print(f"Documentation root: {config.documentation_root}")
     print(f"Language: {config.language}")
     print(f"Projection: {config.projection_format}")
+    return 0
+
+
+def catalog(project_root: Path) -> int:
+    try:
+        config = load_config(project_root)
+    except ValueError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    for document in build_catalog(config).documents:
+        print(f"{document.role}\t{document.path.as_posix()}")
+    return 0
+
+
+def validate(project_root: Path) -> int:
+    try:
+        config = load_config(project_root)
+    except ValueError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    issues = validate_reachability(build_catalog(config), config)
+    if issues:
+        for issue in issues:
+            print(f"ERROR: {issue.path.as_posix()}: {issue.message}", file=sys.stderr)
+        return 1
+    print("Markdown navigation is valid.")
     return 0
 
 
@@ -68,6 +100,8 @@ def build_parser() -> argparse.ArgumentParser:
         ("init", "Create configuration and the documentation root."),
         ("doctor", "Validate project configuration and filesystem state."),
         ("show-config", "Print the normalized project configuration."),
+        ("catalog", "List Markdown files and their logical area roles."),
+        ("validate", "Validate hierarchical Markdown navigation."),
     ):
         command_parser = subparsers.add_parser(command, help=help_text)
         command_parser.add_argument("project", nargs="?", type=Path, default=Path.cwd())
@@ -80,5 +114,7 @@ def main() -> int:
         "init": initialize,
         "doctor": doctor,
         "show-config": show_config,
+        "catalog": catalog,
+        "validate": validate,
     }
     return handlers[args.command](args.project)

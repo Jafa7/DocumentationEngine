@@ -23,14 +23,20 @@ Paradigmarium.
 python -m docsystem init .
 python -m docsystem doctor .
 python -m docsystem show-config .
+python -m docsystem catalog .
+python -m docsystem validate .
 ```
 
 `init` creates a project-local `.docsystem.toml` and the configured
 documentation root. It does not create empty documentation hierarchies.
 
+`catalog` lists Markdown source files under paths mapped by logical roles in
+`[areas]`. `validate` requires each document to be linked from the nearest
+`README.md` or `index.md`; nested indexes must themselves be linked from the
+nearest parent index. `doctor` includes this navigation validation.
+
 ## Status
 
-The first milestone establishes configuration, invariants and project
-bootstrapping. Markdown parsing, sharded projections and Codex integration will
-be extracted in subsequent milestones.
-
+The first two milestones establish configuration, project bootstrapping,
+provider-neutral Markdown discovery and hierarchical navigation validation.
+Sharded projections and provider integrations remain subsequent milestones.

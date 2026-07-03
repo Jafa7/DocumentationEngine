@@ -79,6 +79,18 @@ A stable ID maps to a document shard without a global routing table. Consumers
 load only the target, required dependencies and reverse records needed for the
 operation.
 
+## Markdown catalog and navigation
+
+The catalog discovers Markdown only below paths mapped to logical roles in the
+project configuration. A more deeply nested area mapping takes precedence when
+configured areas overlap.
+
+Human navigation is hierarchical. Every non-index document must be linked from
+the nearest `README.md` or `index.md` in its directory or an ancestor directory
+within the same logical area. An index at an area's root is a navigation root;
+a nested index must be linked from its nearest parent index. Having both index
+names in one directory is invalid.
+
 ## Planned milestones
 
 1. Configuration contract, bootstrap and diagnostics.
@@ -87,4 +99,3 @@ operation.
 4. Migration/adoption workflow for existing projects.
 5. Thin Codex integration and generated agent instructions.
 6. MCP adapter and additional client integrations.
-
