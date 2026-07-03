@@ -141,7 +141,11 @@ def dependencies(project_root: Path, document_id: str, *, reverse: bool = False)
             if issue.affects_graph and issue.severity != "warning"
         ]
         for issue in relevant_issues:
-            if issue.severity == "warning" or issue in graph_errors:
+            related_warning = (
+                issue.severity == "warning"
+                and (not reverse or issue.target_id == document_id)
+            )
+            if related_warning or issue in graph_errors:
                 level = "WARNING" if issue.severity == "warning" else "ERROR"
                 print(
                     f"{level}: {issue.path.as_posix()}: {issue.message}",

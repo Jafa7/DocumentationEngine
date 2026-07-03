@@ -67,3 +67,17 @@ def test_fence_closes_only_with_compatible_marker_and_no_info_string() -> None:
         "Visible after long close",
         "Visible after plain close",
     ]
+
+
+def test_backtick_in_backtick_fence_info_string_does_not_open_fence() -> None:
+    text = """\
+# Root
+```bad`info
+## Expected heading
+```
+"""
+
+    assert [section.title for section in parse_sections(text)] == [
+        "Root",
+        "Expected heading",
+    ]

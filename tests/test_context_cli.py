@@ -185,3 +185,40 @@ def test_non_graph_metadata_error_does_not_block_dependencies(
         "depends_on\tDOC-001\t-\nvalidated_against\tDOC-001\t3\n"
     )
     assert captured.err == ""
+
+
+def test_reverse_dependencies_only_report_warnings_related_to_target(
+    tmp_path: Path, capsys
+) -> None:
+    configured_documents(tmp_path)
+    area = tmp_path / "plan" / "architecture"
+    (area / "independent.md").write_text(
+        """\
+---
+id: DOC-003
+revision: 1
+validated_against: [DOC-002@9]
+---
+
+# Independent
+""",
+        encoding="utf-8",
+    )
+    readme = area / "README.md"
+    readme.write_text(
+        readme.read_text(encoding="utf-8") + "\n[Independent](independent.md)\n",
+        encoding="utf-8",
+    )
+
+    assert dependencies(tmp_path, "DOC-001", reverse=True) == 0
+    captured = capsys.readouterr()
+    assert captured.out == (
+        "depends_on\tDOC-002\t-\nvalidated_against\tDOC-002\t3\n"
+    )
+    assert captured.err == ""
+
+    assert dependencies(tmp_path, "DOC-002", reverse=True) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "validated_against\tDOC-003\t9\n"
+    assert "WARNING: architecture/independent.md:" in captured.err
+    assert "DOC-002@9 is stale" in captured.err

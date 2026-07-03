@@ -46,6 +46,8 @@ def parse_sections(text: str) -> tuple[MarkdownSection, ...]:
         fence = FENCE_PATTERN.match(line)
         if fence_character is None and fence:
             marker = fence.group(1)
+            if marker[0] == "`" and "`" in line[fence.end() :]:
+                continue
             fence_character = marker[0]
             fence_length = len(marker)
             continue

@@ -27,6 +27,7 @@ class ValidationIssue:
     message: str
     severity: str = "error"
     affects_graph: bool = False
+    target_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -236,6 +237,7 @@ def validate_metadata(catalog: MarkdownCatalog) -> tuple[ValidationIssue, ...]:
                         f"{reference.target_id}@{reference.expected_revision} is stale; "
                         f"current revision is {target.metadata.revision}",
                         severity="warning",
+                        target_id=reference.target_id,
                     )
                 )
 
