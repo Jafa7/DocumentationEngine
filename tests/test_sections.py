@@ -46,3 +46,24 @@ revision: 1
         "---\nid: DOC-001\nrevision: 1\n---\n\n# Обзор\n\nВведение.\n\n"
         "```markdown\n## Не раздел\n```\n"
     )
+
+
+def test_fence_closes_only_with_compatible_marker_and_no_info_string() -> None:
+    text = """\
+````text
+```python
+## Hidden after shorter marker
+````
+## Visible after long close
+
+```text
+```python
+## Hidden after marker with info
+```
+## Visible after plain close
+"""
+
+    assert [section.title for section in parse_sections(text)] == [
+        "Visible after long close",
+        "Visible after plain close",
+    ]

@@ -43,10 +43,13 @@ Every cataloged Markdown document starts with YAML front matter containing a
 stable `id` and positive `revision`. Semantic relations use stable IDs:
 `derived_from`, `depends_on`, `related` and `supersedes` contain ID lists;
 `validated_against` contains `ID@revision` freshness pins. Unknown fields are
-preserved for project-specific policy.
+preserved for project-specific policy. Duplicate YAML mapping keys are invalid
+at every nesting level.
 
 `read` resolves a whole document, navigation prefix or ATX section by stable
 ID. `dependencies` reports deterministic forward or reverse semantic edges.
+It fails without partial stdout when metadata errors make the requested graph
+incomplete; stale revision warnings remain non-blocking.
 Stale revision pins are visible warnings rather than blocking errors because
 historical snapshot policy is not part of the initial metadata contract.
 

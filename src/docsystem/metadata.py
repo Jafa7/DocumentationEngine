@@ -7,6 +7,9 @@ from dataclasses import dataclass
 from typing import Any
 
 import yaml
+from yaml.constructor import ConstructorError
+from yaml.nodes import MappingNode
+from yaml.resolver import BaseResolver
 
 RELATION_FIELDS = ("derived_from", "depends_on", "related", "supersedes")
 PINNED_RELATION = "validated_against"
@@ -41,6 +44,53 @@ class FrontMatterResult:
     metadata: DocumentMetadata | None
     end_line: int
     issues: tuple[str, ...]
+    graph_issues: tuple[str, ...]
+
+
+class DuplicateKeyError(yaml.YAMLError):
+    """A duplicate YAML mapping key with a Markdown source location."""
+
+
+class UniqueKeySafeLoader(yaml.SafeLoader):
+    """Safe YAML loader that rejects duplicate keys at every mapping level."""
+
+
+def _construct_unique_mapping(
+    loader: UniqueKeySafeLoader, node: MappingNode, deep: bool = False
+) -> dict[object, object]:
+    if not isinstance(node, MappingNode):
+        raise ConstructorError(
+            None,
+            None,
+            f"expected a mapping node, but found {node.id}",
+            node.start_mark,
+        )
+    loader.flatten_mapping(node)
+    mapping: dict[object, object] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        try:
+            duplicate = key in mapping
+        except TypeError as error:
+            raise ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                "found an unhashable key",
+                key_node.start_mark,
+            ) from error
+        if duplicate:
+            line = key_node.start_mark.line + 2
+            column = key_node.start_mark.column + 1
+            raise DuplicateKeyError(
+                f"duplicate mapping key {key!r} at line {line}, column {column}"
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+UniqueKeySafeLoader.add_constructor(
+    BaseResolver.DEFAULT_MAPPING_TAG, _construct_unique_mapping
+)
 
 
 def _freeze(value: Any) -> object:
@@ -74,59 +124,73 @@ def _optional_string(raw: dict[str, Any], field: str, issues: list[str]) -> str 
 
 
 def _references(
-    raw: dict[str, Any], prefixes: frozenset[str], issues: list[str]
+    raw: dict[str, Any],
+    prefixes: frozenset[str],
+    issues: list[str],
+    graph_issues: list[str],
 ) -> tuple[MetadataReference, ...]:
+    def report(message: str) -> None:
+        issues.append(message)
+        graph_issues.append(message)
+
     references: list[MetadataReference] = []
     for relation in RELATION_FIELDS:
         values = raw.get(relation, [])
         if not isinstance(values, list):
-            issues.append(f"metadata.{relation} must be a list")
+            report(f"metadata.{relation} must be a list")
             continue
         seen: set[str] = set()
         for value in values:
             if not _valid_id(value, prefixes):
-                issues.append(
+                report(
                     f"metadata.{relation} entry {value!r} must use a configured "
                     "stable ID"
                 )
                 continue
             assert isinstance(value, str)
             if value in seen:
-                issues.append(f"metadata.{relation} contains duplicate reference {value}")
+                report(f"metadata.{relation} contains duplicate reference {value}")
                 continue
             seen.add(value)
             references.append(MetadataReference(relation, value))
 
     pins = raw.get(PINNED_RELATION, [])
     if not isinstance(pins, list):
-        issues.append(f"metadata.{PINNED_RELATION} must be a list")
+        report(f"metadata.{PINNED_RELATION} must be a list")
     else:
         seen_pins: set[tuple[str, int]] = set()
+        revisions_by_target: dict[str, set[int]] = {}
         for value in pins:
             if not isinstance(value, str) or "@" not in value:
-                issues.append(
-                    f"metadata.{PINNED_RELATION} entries must use ID@revision"
-                )
+                report(f"metadata.{PINNED_RELATION} entries must use ID@revision")
                 continue
             target_id, revision_raw = value.rsplit("@", 1)
             if not _valid_id(target_id, prefixes) or not revision_raw.isdigit():
-                issues.append(
-                    f"metadata.{PINNED_RELATION} entries must use ID@revision"
-                )
+                report(f"metadata.{PINNED_RELATION} entries must use ID@revision")
                 continue
             revision = int(revision_raw)
             if revision < 1:
-                issues.append(
-                    f"metadata.{PINNED_RELATION} revisions must be positive"
-                )
+                report(f"metadata.{PINNED_RELATION} revisions must be positive")
                 continue
             key = (target_id, revision)
             if key in seen_pins:
-                issues.append(
+                report(
                     f"metadata.{PINNED_RELATION} contains duplicate reference {value}"
                 )
                 continue
             seen_pins.add(key)
+            revisions = revisions_by_target.setdefault(target_id, set())
+            if revisions:
+                previous_revision = min(revisions)
+                report(
+                    f"metadata.{PINNED_RELATION} has conflicting revisions for "
+                    f"{target_id}: {previous_revision} and {revision}"
+                )
+            revisions.add(revision)
+        for target_id, revisions in revisions_by_target.items():
+            if len(revisions) != 1:
+                continue
+            revision = next(iter(revisions))
             references.append(
                 MetadataReference(PINNED_RELATION, target_id, revision)
             )
@@ -138,43 +202,56 @@ def parse_front_matter(text: str, prefixes: frozenset[str]) -> FrontMatterResult
 
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
-        return FrontMatterResult(None, 0, ("YAML front matter is required",))
+        message = "YAML front matter is required"
+        return FrontMatterResult(None, 0, (message,), (message,))
 
     closing_line = next(
         (index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---"),
         None,
     )
     if closing_line is None:
-        return FrontMatterResult(None, 0, ("YAML front matter is not closed",))
+        message = "YAML front matter is not closed"
+        return FrontMatterResult(None, 0, (message,), (message,))
 
     try:
-        loaded = yaml.safe_load("\n".join(lines[1:closing_line]))
+        loaded = yaml.load(
+            "\n".join(lines[1:closing_line]), Loader=UniqueKeySafeLoader
+        )
     except yaml.YAMLError as error:
         summary = str(error).splitlines()[0]
+        message = f"invalid YAML front matter: {summary}"
         return FrontMatterResult(
             None,
             closing_line + 1,
-            (f"invalid YAML front matter: {summary}",),
+            (message,),
+            (message,),
         )
     if not isinstance(loaded, dict):
+        message = "YAML front matter must be a mapping"
         return FrontMatterResult(
             None,
             closing_line + 1,
-            ("YAML front matter must be a mapping",),
+            (message,),
+            (message,),
         )
 
     raw = {str(key): value for key, value in loaded.items()}
     issues: list[str] = []
+    graph_issues: list[str] = []
     document_id = raw.get("id")
     if not _valid_id(document_id, prefixes):
-        issues.append("metadata.id must use a configured stable ID prefix")
+        message = "metadata.id must use a configured stable ID prefix"
+        issues.append(message)
+        graph_issues.append(message)
     revision = raw.get("revision")
     if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
-        issues.append("metadata.revision must be a positive integer")
+        message = "metadata.revision must be a positive integer"
+        issues.append(message)
+        graph_issues.append(message)
 
     document_type = _optional_string(raw, "type", issues)
     status = _optional_string(raw, "status", issues)
-    references = _references(raw, prefixes, issues)
+    references = _references(raw, prefixes, issues, graph_issues)
     metadata: DocumentMetadata | None = None
     if _valid_id(document_id, prefixes) and isinstance(revision, int) and not isinstance(
         revision, bool
@@ -201,4 +278,9 @@ def parse_front_matter(text: str, prefixes: frozenset[str]) -> FrontMatterResult
             references=references,
             additional_fields=additional,
         )
-    return FrontMatterResult(metadata, closing_line + 1, tuple(issues))
+    return FrontMatterResult(
+        metadata,
+        closing_line + 1,
+        tuple(issues),
+        tuple(graph_issues),
+    )

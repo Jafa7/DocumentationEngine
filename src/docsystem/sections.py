@@ -44,16 +44,20 @@ def parse_sections(text: str) -> tuple[MarkdownSection, ...]:
 
     for line_number, line in enumerate(lines, start=1):
         fence = FENCE_PATTERN.match(line)
-        if fence:
+        if fence_character is None and fence:
             marker = fence.group(1)
-            if fence_character is None:
-                fence_character = marker[0]
-                fence_length = len(marker)
-            elif marker[0] == fence_character and len(marker) >= fence_length:
-                fence_character = None
-                fence_length = 0
+            fence_character = marker[0]
+            fence_length = len(marker)
             continue
         if fence_character is not None:
+            if (
+                fence is not None
+                and fence.group(1)[0] == fence_character
+                and len(fence.group(1)) >= fence_length
+                and not line[fence.end() :].strip()
+            ):
+                fence_character = None
+                fence_length = 0
             continue
         match = ATX_HEADING_PATTERN.match(line)
         if match is None:

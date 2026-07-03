@@ -79,6 +79,45 @@ def test_missing_and_malformed_front_matter_remain_in_catalog(tmp_path: Path) ->
     assert any(message.startswith("invalid YAML front matter") for message in messages)
 
 
+def test_duplicate_top_level_and_nested_yaml_keys_are_rejected(tmp_path: Path) -> None:
+    area = configured_project(tmp_path)
+    (area / "README.md").write_text(
+        """\
+---
+id: DOC-001
+id: DOC-002
+revision: 1
+---
+# Duplicate ID
+""",
+        encoding="utf-8",
+    )
+    (area / "nested.md").write_text(
+        """\
+---
+id: DOC-003
+revision: 1
+policy:
+  owner: one
+  owner: two
+---
+# Duplicate nested key
+""",
+        encoding="utf-8",
+    )
+
+    messages = issue_messages(tmp_path)
+
+    assert (
+        "invalid YAML front matter: duplicate mapping key 'id' at line 3, column 1"
+        in messages
+    )
+    assert (
+        "invalid YAML front matter: duplicate mapping key 'owner' at line 6, column 3"
+        in messages
+    )
+
+
 def test_invalid_id_revision_and_duplicate_id_are_reported(tmp_path: Path) -> None:
     area = configured_project(tmp_path)
     write_document(area / "README.md", "id: BAD-001\nrevision: 0\n")
@@ -138,3 +177,29 @@ def test_stale_pin_is_a_non_blocking_diagnostic(tmp_path: Path) -> None:
     assert len(issues) == 1
     assert issues[0].severity == "warning"
     assert "pin DOC-001@1 is stale" in issues[0].message
+
+
+def test_conflicting_revision_pins_are_reported_and_omitted_from_graph(
+    tmp_path: Path,
+) -> None:
+    area = configured_project(tmp_path)
+    write_document(area / "README.md", "id: DOC-001\nrevision: 2\n")
+    write_document(
+        area / "review.md",
+        """\
+id: DOC-002
+revision: 1
+validated_against: [DOC-001@1, DOC-001@1, DOC-001@2, DOC-001@2]
+""",
+    )
+
+    catalog = build_catalog(load_config(tmp_path))
+    messages = [issue.message for issue in validate_metadata(catalog)]
+
+    assert "metadata.validated_against contains duplicate reference DOC-001@1" in messages
+    assert "metadata.validated_against contains duplicate reference DOC-001@2" in messages
+    assert (
+        "metadata.validated_against has conflicting revisions for DOC-001: 1 and 2"
+        in messages
+    )
+    assert build_dependency_graph(catalog).edges == ()

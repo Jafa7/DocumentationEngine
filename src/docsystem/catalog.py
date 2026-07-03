@@ -26,6 +26,7 @@ class ValidationIssue:
     path: PurePosixPath
     message: str
     severity: str = "error"
+    affects_graph: bool = False
 
 
 @dataclass(frozen=True)
@@ -40,6 +41,7 @@ class MarkdownDocument:
     metadata: DocumentMetadata | None
     sections: tuple[MarkdownSection, ...]
     metadata_issues: tuple[str, ...]
+    graph_issues: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -157,6 +159,7 @@ def build_catalog(config: ProjectConfig) -> MarkdownCatalog:
                 metadata=front_matter.metadata,
                 sections=parse_sections(content),
                 metadata_issues=front_matter.issues,
+                graph_issues=front_matter.graph_issues,
             )
         )
     return MarkdownCatalog(documents=tuple(documents))
@@ -166,7 +169,11 @@ def validate_metadata(catalog: MarkdownCatalog) -> tuple[ValidationIssue, ...]:
     """Validate stable IDs, revisions and semantic references."""
 
     issues = [
-        ValidationIssue(document.path, message)
+        ValidationIssue(
+            document.path,
+            message,
+            affects_graph=message in document.graph_issues,
+        )
         for document in catalog.documents
         for message in document.metadata_issues
     ]
@@ -182,6 +189,7 @@ def validate_metadata(catalog: MarkdownCatalog) -> tuple[ValidationIssue, ...]:
                 ValidationIssue(
                     document.path,
                     f"duplicate document ID {document_id}; also used by: {paths}",
+                    affects_graph=True,
                 )
                 for document in documents
             )
@@ -201,6 +209,7 @@ def validate_metadata(catalog: MarkdownCatalog) -> tuple[ValidationIssue, ...]:
                     ValidationIssue(
                         document.path,
                         f"metadata.{reference.relation} cannot reference its own ID",
+                        affects_graph=True,
                     )
                 )
                 continue
@@ -211,6 +220,7 @@ def validate_metadata(catalog: MarkdownCatalog) -> tuple[ValidationIssue, ...]:
                         document.path,
                         f"metadata.{reference.relation} references unknown ID "
                         f"{reference.target_id}",
+                        affects_graph=True,
                     )
                 )
                 continue

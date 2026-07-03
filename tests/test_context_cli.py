@@ -108,3 +108,80 @@ def test_stale_pin_warns_without_failing_validation(tmp_path: Path, capsys) -> N
     assert "WARNING: architecture/context.md:" in captured.err
     assert "DOC-001@3 is stale" in captured.err
     assert captured.out == "Markdown navigation is valid.\n"
+
+
+def test_forward_dependencies_fail_closed_for_source_graph_errors(
+    tmp_path: Path, capsys
+) -> None:
+    configured_documents(tmp_path)
+    source = tmp_path / "plan" / "architecture" / "context.md"
+    source.write_text(
+        source.read_text(encoding="utf-8").replace(
+            "depends_on: [DOC-001]",
+            "depends_on: [DOC-001, ../legacy.md, DOC-999]",
+        ),
+        encoding="utf-8",
+    )
+
+    assert dependencies(tmp_path, "DOC-002") == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "entry '../legacy.md' must use a configured stable ID" in captured.err
+    assert "references unknown ID DOC-999" in captured.err
+
+    assert dependencies(tmp_path, "DOC-001") == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_reverse_dependencies_fail_closed_for_any_graph_error(
+    tmp_path: Path, capsys
+) -> None:
+    configured_documents(tmp_path)
+    source = tmp_path / "plan" / "architecture" / "context.md"
+    source.write_text(
+        source.read_text(encoding="utf-8").replace(
+            "depends_on: [DOC-001]", "depends_on: [DOC-001, DOC-999]"
+        ),
+        encoding="utf-8",
+    )
+
+    assert dependencies(tmp_path, "DOC-001", reverse=True) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "references unknown ID DOC-999" in captured.err
+
+
+def test_stale_pin_warns_but_does_not_block_dependencies(
+    tmp_path: Path, capsys
+) -> None:
+    configured_documents(tmp_path)
+    readme = tmp_path / "plan" / "architecture" / "README.md"
+    readme.write_text(readme.read_text(encoding="utf-8").replace("revision: 3", "revision: 4"))
+
+    assert dependencies(tmp_path, "DOC-002") == 0
+    captured = capsys.readouterr()
+    assert captured.out == (
+        "depends_on\tDOC-001\t-\nvalidated_against\tDOC-001\t3\n"
+    )
+    assert "WARNING: architecture/context.md:" in captured.err
+    assert "DOC-001@3 is stale" in captured.err
+
+
+def test_non_graph_metadata_error_does_not_block_dependencies(
+    tmp_path: Path, capsys
+) -> None:
+    configured_documents(tmp_path)
+    source = tmp_path / "plan" / "architecture" / "context.md"
+    source.write_text(
+        source.read_text(encoding="utf-8").replace(
+            "revision: 1", "revision: 1\ntype: []"
+        ),
+        encoding="utf-8",
+    )
+
+    assert dependencies(tmp_path, "DOC-002") == 0
+    captured = capsys.readouterr()
+    assert captured.out == (
+        "depends_on\tDOC-001\t-\nvalidated_against\tDOC-001\t3\n"
+    )
+    assert captured.err == ""

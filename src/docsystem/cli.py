@@ -11,6 +11,7 @@ from docsystem.catalog import (
     build_dependency_graph,
     find_document,
     validate_catalog,
+    validate_metadata,
 )
 from docsystem.config import CONFIG_FILENAME, DEFAULT_CONFIG, load_config
 from docsystem.sections import extract_navigation, extract_section
@@ -125,7 +126,29 @@ def dependencies(project_root: Path, document_id: str, *, reverse: bool = False)
     try:
         config = load_config(project_root)
         markdown_catalog = build_catalog(config)
-        find_document(markdown_catalog, document_id)
+        document = find_document(markdown_catalog, document_id)
+        metadata_issues = validate_metadata(markdown_catalog)
+        relevant_issues = (
+            metadata_issues
+            if reverse
+            else tuple(
+                issue for issue in metadata_issues if issue.path == document.path
+            )
+        )
+        graph_errors = [
+            issue
+            for issue in relevant_issues
+            if issue.affects_graph and issue.severity != "warning"
+        ]
+        for issue in relevant_issues:
+            if issue.severity == "warning" or issue in graph_errors:
+                level = "WARNING" if issue.severity == "warning" else "ERROR"
+                print(
+                    f"{level}: {issue.path.as_posix()}: {issue.message}",
+                    file=sys.stderr,
+                )
+        if graph_errors:
+            return 1
         graph = build_dependency_graph(markdown_catalog)
     except ValueError as error:
         print(f"ERROR: {error}", file=sys.stderr)

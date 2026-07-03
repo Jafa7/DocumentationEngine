@@ -96,12 +96,15 @@ names in one directory is invalid.
 Cataloged documents start with YAML front matter. The initial core contract
 requires only a configured stable ID and a positive revision. Optional type,
 status and additional project fields remain policy data rather than hard-coded
-core behavior.
+core behavior. Duplicate keys are rejected recursively so identity and policy
+data cannot be silently overwritten by YAML parsing.
 
 Semantic relations use stable IDs so file moves do not rewrite the dependency
 graph. `validated_against` uses `ID@revision`; stale pins are reported without
 assuming whether a project treats the document as current truth or a historical
 snapshot. Human navigation continues to use ordinary relative Markdown links.
+Graph queries fail closed when invalid metadata prevents a complete answer;
+they never present a silently filtered partial graph as complete.
 
 ATX headings outside fenced code blocks form deterministic addressable
 sections. A section includes nested headings until the next heading at the same
