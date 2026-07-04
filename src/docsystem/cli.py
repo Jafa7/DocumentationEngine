@@ -11,6 +11,7 @@ from docsystem.catalog import (
     build_dependency_graph,
     find_document,
     validate_catalog,
+    validate_membership,
     validate_metadata,
 )
 from docsystem.config import CONFIG_FILENAME, DEFAULT_CONFIG, load_config
@@ -62,13 +63,19 @@ def doctor(project_root: Path) -> int:
     return 0
 
 
-def catalog(project_root: Path) -> int:
+def catalog(project_root: Path, *, explain: bool = False) -> int:
     try:
         config = load_config(project_root)
     except ValueError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
-    for document in build_catalog(config).documents:
+    markdown_catalog = build_catalog(config)
+    if explain:
+        for membership in markdown_catalog.memberships:
+            detail = membership.role or membership.reason or "-"
+            print(f"{membership.state}\t{detail}\t{membership.path.as_posix()}")
+        return 0
+    for document in markdown_catalog.documents:
         print(f"{document.role}\t{document.path.as_posix()}")
     return 0
 
@@ -129,7 +136,7 @@ def dependencies(project_root: Path, document_id: str, *, reverse: bool = False)
         document = find_document(markdown_catalog, document_id)
         metadata_issues = validate_metadata(markdown_catalog)
         relevant_issues = (
-            metadata_issues
+            (*validate_membership(markdown_catalog), *metadata_issues)
             if reverse
             else tuple(
                 issue for issue in metadata_issues if issue.path == document.path
@@ -188,6 +195,8 @@ def show_config(project_root: Path) -> int:
         print(f"area.{role}={path}")
     for role, prefix in sorted(config.identifiers.items()):
         print(f"identifier.{role}={prefix}")
+    for pattern in config.catalog_exclusions:
+        print(f"catalog.exclude={pattern}")
     print(f"projection.format={config.projection_format}")
     print(f"projection.keep_generations={config.keep_generations}")
     return 0
@@ -205,6 +214,12 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         command_parser = subparsers.add_parser(command, help=help_text)
         command_parser.add_argument("project", nargs="?", type=Path, default=Path.cwd())
+        if command == "catalog":
+            command_parser.add_argument(
+                "--explain",
+                action="store_true",
+                help="Classify every Markdown source under the documentation root.",
+            )
 
     read_parser = subparsers.add_parser(
         "read", help="Read a Markdown document or section by stable ID."
@@ -237,11 +252,12 @@ def main() -> int:
         )
     if args.command == "dependencies":
         return dependencies(args.project, args.document_id, reverse=args.reverse)
+    if args.command == "catalog":
+        return catalog(args.project, explain=args.explain)
     handlers = {
         "init": initialize,
         "doctor": doctor,
         "show-config": show_config,
-        "catalog": catalog,
         "validate": validate,
     }
     return handlers[args.command](args.project)

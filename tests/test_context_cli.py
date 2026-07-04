@@ -222,3 +222,15 @@ validated_against: [DOC-002@9]
     assert captured.out == "validated_against\tDOC-003\t9\n"
     assert "WARNING: architecture/independent.md:" in captured.err
     assert "DOC-002@9 is stale" in captured.err
+
+
+def test_reverse_dependencies_fail_closed_for_unmapped_markdown(
+    tmp_path: Path, capsys
+) -> None:
+    configured_documents(tmp_path)
+    (tmp_path / "plan" / "orphan.md").write_text("# Unmapped\n", encoding="utf-8")
+
+    assert dependencies(tmp_path, "DOC-001", reverse=True) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "ERROR: orphan.md: Markdown is not mapped" in captured.err

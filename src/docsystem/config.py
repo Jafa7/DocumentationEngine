@@ -31,6 +31,9 @@ document = "DOC"
 decision = "DEC"
 roadmap = "RM"
 
+[catalog]
+exclude = []
+
 [projection]
 format = "sharded-json"
 keep_generations = 2
@@ -46,6 +49,7 @@ class ProjectConfig:
     identifiers: dict[str, str]
     projection_format: str
     keep_generations: int
+    catalog_exclusions: tuple[str, ...] = ()
 
 
 def _relative_path(value: object, field: str) -> PurePosixPath:
@@ -55,6 +59,39 @@ def _relative_path(value: object, field: str) -> PurePosixPath:
     if path.is_absolute() or ".." in path.parts:
         raise ValueError(f"{field} must be a project-relative path")
     return path
+
+
+def _catalog_exclusions(raw: object) -> tuple[str, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, dict):
+        raise ValueError("catalog must be a table")
+    values = raw.get("exclude", [])
+    if not isinstance(values, list):
+        raise ValueError("catalog.exclude must be a list")
+
+    patterns: list[str] = []
+    seen: set[str] = set()
+    for index, value in enumerate(values):
+        field = f"catalog.exclude[{index}]"
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"{field} must be a non-empty string")
+        if "\\" in value:
+            raise ValueError(f"{field} must use POSIX '/' separators")
+        path = PurePosixPath(value)
+        if path.is_absolute() or ".." in path.parts:
+            raise ValueError(
+                f"{field} must be relative to the documentation root"
+            )
+        normalized = path.as_posix()
+        if normalized in seen:
+            raise ValueError(
+                f"catalog.exclude contains duplicate normalized pattern "
+                f"{normalized!r}"
+            )
+        seen.add(normalized)
+        patterns.append(normalized)
+    return tuple(patterns)
 
 
 def load_config(project_root: Path) -> ProjectConfig:
@@ -93,6 +130,8 @@ def load_config(project_root: Path) -> ProjectConfig:
     if len(set(normalized_identifiers.values())) != len(normalized_identifiers):
         raise ValueError("identifier prefixes must be unique")
 
+    catalog_exclusions = _catalog_exclusions(raw.get("catalog"))
+
     projection_format = projection.get("format")
     if projection_format != "sharded-json":
         raise ValueError("only sharded-json projection is supported")
@@ -108,4 +147,5 @@ def load_config(project_root: Path) -> ProjectConfig:
         identifiers=normalized_identifiers,
         projection_format=projection_format,
         keep_generations=keep_generations,
+        catalog_exclusions=catalog_exclusions,
     )

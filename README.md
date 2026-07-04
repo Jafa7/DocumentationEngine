@@ -24,6 +24,7 @@ python -m docsystem init .
 python -m docsystem doctor .
 python -m docsystem show-config .
 python -m docsystem catalog .
+python -m docsystem catalog . --explain
 python -m docsystem validate .
 python -m docsystem read DOC-001 .
 python -m docsystem read DOC-001 . --anchor purpose
@@ -35,9 +36,24 @@ python -m docsystem dependencies DOC-001 . --reverse
 documentation root. It does not create empty documentation hierarchies.
 
 `catalog` lists Markdown source files under paths mapped by logical roles in
-`[areas]`. `validate` requires each document to be linked from the nearest
-`README.md` or `index.md`; nested indexes must themselves be linked from the
-nearest parent index. `doctor` includes navigation and metadata validation.
+`[areas]`. `catalog --explain` classifies every Markdown file as included,
+excluded or unmapped. Unmapped Markdown is a validation error rather than a
+silent omission.
+
+Catalog exclusions are optional, ordered POSIX globs relative to the
+documentation root:
+
+```toml
+[catalog]
+exclude = ["templates/*-template.md"]
+```
+
+The first matching pattern is reported as the exclusion reason. An area mapped
+to `.` owns root documents and acts as a fallback when a more specific area
+does not match. `validate` requires each included document to be linked from
+the nearest `README.md` or `index.md`; nested indexes must themselves be linked
+from the nearest parent index. `doctor` includes membership, navigation and
+metadata validation.
 
 Every cataloged Markdown document starts with YAML front matter containing a
 stable `id` and positive `revision`. Semantic relations use stable IDs:

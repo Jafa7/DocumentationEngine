@@ -31,6 +31,16 @@ class ValidationIssue:
 
 
 @dataclass(frozen=True)
+class CatalogMembership:
+    """The explicit catalog classification of one Markdown source."""
+
+    state: str
+    path: PurePosixPath
+    role: str | None = None
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
 class MarkdownDocument:
     """A Markdown source file and its parsed context-engine data."""
 
@@ -50,6 +60,7 @@ class MarkdownCatalog:
     """A deterministic snapshot of configured Markdown source files."""
 
     documents: tuple[MarkdownDocument, ...]
+    memberships: tuple[CatalogMembership, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -131,21 +142,48 @@ def _markdown_links(
     return tuple(sorted(links, key=PurePosixPath.as_posix))
 
 
+def _excluded_paths(
+    root: Path, patterns: tuple[str, ...]
+) -> dict[PurePosixPath, str]:
+    excluded: dict[PurePosixPath, str] = {}
+    for pattern in patterns:
+        for path in sorted(root.glob(pattern), key=lambda item: item.as_posix()):
+            if not path.is_file() or path.suffix.lower() != ".md":
+                continue
+            relative = PurePosixPath(path.relative_to(root).as_posix())
+            excluded.setdefault(relative, pattern)
+    return excluded
+
+
 def build_catalog(config: ProjectConfig) -> MarkdownCatalog:
-    """Discover Markdown files below configured logical area paths."""
+    """Classify every Markdown file and parse included documents."""
 
     root = config.documentation_root
     if not root.is_dir():
-        return MarkdownCatalog(documents=())
+        return MarkdownCatalog(documents=(), memberships=())
 
     documents: list[MarkdownDocument] = []
+    memberships: list[CatalogMembership] = []
+    excluded_paths = _excluded_paths(root, config.catalog_exclusions)
     for path in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
         if not path.is_file() or path.suffix.lower() != ".md":
             continue
         relative = PurePosixPath(path.relative_to(root).as_posix())
+        exclusion = excluded_paths.get(relative)
+        if exclusion is not None:
+            memberships.append(
+                CatalogMembership("excluded", relative, reason=exclusion)
+            )
+            continue
         role = _area_for(relative, config)
         if role is None:
+            memberships.append(
+                CatalogMembership(
+                    "unmapped", relative, reason="no configured area"
+                )
+            )
             continue
+        memberships.append(CatalogMembership("included", relative, role=role))
         content = path.read_text(encoding="utf-8")
         front_matter = parse_front_matter(
             content, frozenset(config.identifiers.values())
@@ -163,7 +201,23 @@ def build_catalog(config: ProjectConfig) -> MarkdownCatalog:
                 graph_issues=front_matter.graph_issues,
             )
         )
-    return MarkdownCatalog(documents=tuple(documents))
+    return MarkdownCatalog(
+        documents=tuple(documents), memberships=tuple(memberships)
+    )
+
+
+def validate_membership(catalog: MarkdownCatalog) -> tuple[ValidationIssue, ...]:
+    """Reject Markdown that is neither included nor explicitly excluded."""
+
+    return tuple(
+        ValidationIssue(
+            membership.path,
+            "Markdown is not mapped to a configured area or catalog exclusion",
+            affects_graph=True,
+        )
+        for membership in catalog.memberships
+        if membership.state == "unmapped"
+    )
 
 
 def validate_metadata(catalog: MarkdownCatalog) -> tuple[ValidationIssue, ...]:
@@ -324,6 +378,8 @@ def validate_reachability(
 
     for document in catalog.documents:
         area_root = config.areas[document.role]
+        if document.is_index and document.path.parent == area_root:
+            continue
         directory = document.path.parent if not document.is_index else document.path.parent.parent
         nearest: MarkdownDocument | None = None
         while directory == area_root or area_root in directory.parents:
@@ -336,8 +392,6 @@ def validate_reachability(
             directory = directory.parent
 
         if nearest is None:
-            if document.is_index and document.path.parent == area_root:
-                continue
             issues.append(
                 ValidationIssue(
                     document.path,
@@ -362,7 +416,11 @@ def validate_catalog(
 
     return tuple(
         sorted(
-            (*validate_metadata(catalog), *validate_reachability(catalog, config)),
+            (
+                *validate_membership(catalog),
+                *validate_metadata(catalog),
+                *validate_reachability(catalog, config),
+            ),
             key=lambda issue: (issue.path.as_posix(), issue.severity, issue.message),
         )
     )

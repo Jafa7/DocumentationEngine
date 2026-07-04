@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from docsystem.cli import catalog, doctor, initialize, show_config, validate
+from docsystem.cli import build_parser, catalog, doctor, initialize, show_config, validate
 from docsystem.config import CONFIG_FILENAME
 
 
@@ -33,3 +33,53 @@ def test_doctor_reports_unreachable_markdown(tmp_path: Path) -> None:
 
     assert doctor(tmp_path) == 1
     assert validate(tmp_path) == 1
+
+
+def test_catalog_explain_is_deterministic_and_preserves_regular_output(
+    tmp_path: Path, capsys
+) -> None:
+    assert initialize(tmp_path) == 0
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "exclude = []", 'exclude = ["templates/*.md"]'
+        ),
+        encoding="utf-8",
+    )
+    root = tmp_path / "plan"
+    architecture = root / "architecture"
+    templates = root / "templates"
+    architecture.mkdir()
+    templates.mkdir()
+    (architecture / "README.md").write_text(
+        "---\nid: DOC-001\nrevision: 1\n---\n# Architecture\n",
+        encoding="utf-8",
+    )
+    (templates / "draft.md").write_text("# Template\n", encoding="utf-8")
+    (root / "orphan.md").write_text("# Orphan\n", encoding="utf-8")
+    capsys.readouterr()
+
+    assert catalog(tmp_path) == 0
+    assert capsys.readouterr().out == "architecture\tarchitecture/README.md\n"
+
+    assert catalog(tmp_path, explain=True) == 0
+    assert capsys.readouterr().out == (
+        "included\tarchitecture\tarchitecture/README.md\n"
+        "unmapped\tno configured area\torphan.md\n"
+        "excluded\ttemplates/*.md\ttemplates/draft.md\n"
+    )
+    args = build_parser().parse_args(["catalog", str(tmp_path), "--explain"])
+    assert args.explain is True
+
+
+def test_doctor_and_validate_reject_unmapped_markdown(
+    tmp_path: Path, capsys
+) -> None:
+    assert initialize(tmp_path) == 0
+    (tmp_path / "plan" / "orphan.md").write_text("# Orphan\n", encoding="utf-8")
+    capsys.readouterr()
+
+    assert validate(tmp_path) == 1
+    assert "Markdown is not mapped" in capsys.readouterr().err
+    assert doctor(tmp_path) == 1
+    assert "Markdown is not mapped" in capsys.readouterr().err

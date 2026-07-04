@@ -1,6 +1,11 @@
 from pathlib import Path, PurePosixPath
 
-from docsystem.catalog import build_catalog, validate_reachability
+from docsystem.catalog import (
+    build_catalog,
+    validate_catalog,
+    validate_membership,
+    validate_reachability,
+)
 from docsystem.config import CONFIG_FILENAME, DEFAULT_CONFIG, ProjectConfig, load_config
 
 
@@ -107,3 +112,120 @@ def test_external_and_image_links_do_not_create_navigation_edges(tmp_path: Path)
 
     assert len(issues) == 1
     assert issues[0].path == PurePosixPath("architecture/design.md")
+
+
+def test_catalog_classifies_included_excluded_and_unmapped_markdown(
+    tmp_path: Path,
+) -> None:
+    config_text = DEFAULT_CONFIG.replace(
+        "exclude = []",
+        'exclude = ["templates/*.md", "templates/*-template.md"]',
+    )
+    (tmp_path / CONFIG_FILENAME).write_text(config_text, encoding="utf-8")
+    root = tmp_path / "plan"
+    architecture = root / "architecture"
+    templates = root / "templates"
+    architecture.mkdir(parents=True)
+    templates.mkdir()
+    (architecture / "README.md").write_text(
+        "---\nid: DOC-001\nrevision: 1\n---\n# Architecture\n",
+        encoding="utf-8",
+    )
+    (templates / "broken-template.md").write_bytes(b"\xffnot UTF-8")
+    (root / "unmapped.md").write_text("# Unmapped\n", encoding="utf-8")
+
+    catalog = build_catalog(load_config(tmp_path))
+
+    assert [
+        (
+            membership.state,
+            membership.role,
+            membership.reason,
+            membership.path.as_posix(),
+        )
+        for membership in catalog.memberships
+    ] == [
+        ("included", "architecture", None, "architecture/README.md"),
+        (
+            "excluded",
+            None,
+            "templates/*.md",
+            "templates/broken-template.md",
+        ),
+        ("unmapped", None, "no configured area", "unmapped.md"),
+    ]
+    assert [document.path.as_posix() for document in catalog.documents] == [
+        "architecture/README.md"
+    ]
+    assert [issue.path.as_posix() for issue in validate_membership(catalog)] == [
+        "unmapped.md"
+    ]
+    assert all(
+        issue.path != PurePosixPath("templates/broken-template.md")
+        for issue in validate_catalog(catalog, load_config(tmp_path))
+    )
+
+
+def test_root_area_is_fallback_and_root_index_participates_in_reachability(
+    tmp_path: Path,
+) -> None:
+    config_text = DEFAULT_CONFIG.replace(
+        "[areas]\n", '[areas]\nworkspace = "."\n'
+    ).replace("exclude = []", 'exclude = ["draft.md"]')
+    (tmp_path / CONFIG_FILENAME).write_text(config_text, encoding="utf-8")
+    root = tmp_path / "plan"
+    modules = root / "modules"
+    notes = root / "notes"
+    modules.mkdir(parents=True)
+    notes.mkdir()
+    (root / "README.md").write_text(
+        """\
+---
+id: DOC-001
+revision: 1
+---
+# Workspace
+[Guide](guide.md)
+[Topic](notes/topic.md)
+""",
+        encoding="utf-8",
+    )
+    (root / "guide.md").write_text(
+        "---\nid: DOC-002\nrevision: 1\n---\n# Guide\n", encoding="utf-8"
+    )
+    (notes / "topic.md").write_text(
+        "---\nid: DOC-003\nrevision: 1\n---\n# Topic\n", encoding="utf-8"
+    )
+    (modules / "README.md").write_text(
+        "---\nid: DOC-010\nrevision: 1\n---\n# Modules\n", encoding="utf-8"
+    )
+    (root / "draft.md").write_text("---\nid: [\n---\n", encoding="utf-8")
+    config = load_config(tmp_path)
+
+    catalog = build_catalog(config)
+
+    assert {
+        membership.path.as_posix(): (membership.state, membership.role)
+        for membership in catalog.memberships
+    } == {
+        "README.md": ("included", "workspace"),
+        "draft.md": ("excluded", None),
+        "guide.md": ("included", "workspace"),
+        "modules/README.md": ("included", "modules"),
+        "notes/topic.md": ("included", "workspace"),
+    }
+    assert validate_catalog(catalog, config) == ()
+
+
+def test_unmapped_markdown_is_a_validation_error(tmp_path: Path) -> None:
+    root, config = configured_project(tmp_path)
+    (root / "orphan.md").write_text("# Orphan\n", encoding="utf-8")
+
+    issues = validate_catalog(build_catalog(config), config)
+
+    assert [(issue.path.as_posix(), issue.message) for issue in issues] == [
+        (
+            "orphan.md",
+            "Markdown is not mapped to a configured area or catalog exclusion",
+        )
+    ]

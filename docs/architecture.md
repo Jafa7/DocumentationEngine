@@ -81,9 +81,14 @@ operation.
 
 ## Markdown catalog and navigation
 
-The catalog discovers Markdown only below paths mapped to logical roles in the
-project configuration. A more deeply nested area mapping takes precedence when
-configured areas overlap.
+The catalog classifies every Markdown file below the documentation root.
+Included files belong to a configured logical role, excluded files record the
+first matching ordered catalog glob, and files in neither category are
+unmapped validation errors. Exclusions are applied before source parsing.
+
+An area mapped to `.` owns root-level documents and provides a fallback for the
+whole tree. A more deeply nested area mapping takes precedence when configured
+areas overlap.
 
 Human navigation is hierarchical. Every non-index document must be linked from
 the nearest `README.md` or `index.md` in its directory or an ancestor directory
