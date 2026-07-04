@@ -162,17 +162,27 @@ def test_malformed_anchor_attributes_without_assignment_are_diagnosed() -> None:
 ## Missing ID assignment
 <a name></a>
 ## Missing name assignment
+<a href="https://example.com" id></a>
+## Missing assignment after href
 <a href="https://example.com"></a>
 ## Ordinary link
+<a href="https://example.com" title="an id value"></a>
+## ID word in double quotes
+<a href='https://example.com' title='a name here'></a>
+## Name word in single quotes
 """
     )
 
     assert result.issues == (
         "malformed explicit anchor at line 1",
         "malformed explicit anchor at line 3",
+        "malformed explicit anchor at line 5",
     )
     assert [section.anchor for section in result.sections] == [
         "missing-id-assignment",
         "missing-name-assignment",
+        "missing-assignment-after-href",
         "ordinary-link",
+        "id-word-in-double-quotes",
+        "name-word-in-single-quotes",
     ]

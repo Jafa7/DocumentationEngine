@@ -13,9 +13,8 @@ EXPLICIT_ANCHOR_PATTERN = re.compile(
     r"^ {0,3}<a\s+(?:id|name)=([\"'])([^\"']+)\1\s*></a>\s*$",
     re.IGNORECASE,
 )
-ANCHOR_CANDIDATE_PATTERN = re.compile(
-    r"^\s*<a\b(?=[^>]*\s(?:id|name)(?=\s|=|/?>)).*$", re.IGNORECASE
-)
+ANCHOR_TAG_START_PATTERN = re.compile(r"^\s*<a\b", re.IGNORECASE)
+ATTRIBUTE_NAME_PATTERN = re.compile(r"(?:^|\s)([^\s=/>]+)(?=\s|=|/|$)")
 
 
 @dataclass(frozen=True)
@@ -54,6 +53,33 @@ def heading_anchor(title: str) -> str:
         if character.isalnum() or character in {" ", "-", "_", "\t"}
     ]
     return re.sub(r"\s+", "-", "".join(characters)).strip("-")
+
+
+def _is_explicit_anchor_candidate(line: str) -> bool:
+    """Detect id/name attribute tokens without inspecting quoted values."""
+
+    start = ANCHOR_TAG_START_PATTERN.match(line)
+    if start is None:
+        return False
+    opening: list[str] = []
+    quote: str | None = None
+    for character in line[start.end() :]:
+        if quote is not None:
+            if character == quote:
+                quote = None
+            opening.append(" ")
+        elif character in {'"', "'"}:
+            quote = character
+            opening.append(" ")
+        elif character == ">":
+            break
+        else:
+            opening.append(character)
+    names = {
+        match.group(1).casefold()
+        for match in ATTRIBUTE_NAME_PATTERN.finditer("".join(opening))
+    }
+    return bool(names & {"id", "name"})
 
 
 def parse_sections_result(text: str) -> SectionParseResult:
@@ -109,7 +135,7 @@ def parse_sections_result(text: str) -> SectionParseResult:
                 continue
             pending_anchors.append((value, line_number))
             continue
-        if ANCHOR_CANDIDATE_PATTERN.match(line) is not None:
+        if _is_explicit_anchor_candidate(line):
             orphan_pending()
             issues.append(f"malformed explicit anchor at line {line_number}")
             continue
