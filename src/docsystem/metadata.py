@@ -35,6 +35,7 @@ class DocumentMetadata:
     status: str | None
     references: tuple[MetadataReference, ...]
     additional_fields: tuple[tuple[str, object], ...]
+    legacy_references: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -128,12 +129,14 @@ def _references(
     prefixes: frozenset[str],
     issues: list[str],
     graph_issues: list[str],
-) -> tuple[MetadataReference, ...]:
+    allow_legacy_paths: bool,
+) -> tuple[tuple[MetadataReference, ...], tuple[tuple[str, str], ...]]:
     def report(message: str) -> None:
         issues.append(message)
         graph_issues.append(message)
 
     references: list[MetadataReference] = []
+    legacy_references: list[tuple[str, str]] = []
     for relation in RELATION_FIELDS:
         values = raw.get(relation, [])
         if not isinstance(values, list):
@@ -141,17 +144,32 @@ def _references(
             continue
         seen: set[str] = set()
         for value in values:
+            if isinstance(value, str):
+                if value in seen:
+                    report(
+                        f"metadata.{relation} contains duplicate reference {value}"
+                    )
+                    continue
+                seen.add(value)
             if not _valid_id(value, prefixes):
+                id_shaped = (
+                    isinstance(value, str)
+                    and DOCUMENT_ID_PATTERN.fullmatch(value) is not None
+                )
+                if (
+                    allow_legacy_paths
+                    and isinstance(value, str)
+                    and value
+                    and not id_shaped
+                ):
+                    legacy_references.append((relation, value))
+                    continue
                 report(
                     f"metadata.{relation} entry {value!r} must use a configured "
                     "stable ID"
                 )
                 continue
             assert isinstance(value, str)
-            if value in seen:
-                report(f"metadata.{relation} contains duplicate reference {value}")
-                continue
-            seen.add(value)
             references.append(MetadataReference(relation, value))
 
     pins = raw.get(PINNED_RELATION, [])
@@ -194,10 +212,15 @@ def _references(
             references.append(
                 MetadataReference(PINNED_RELATION, target_id, revision)
             )
-    return tuple(references)
+    return tuple(references), tuple(legacy_references)
 
 
-def parse_front_matter(text: str, prefixes: frozenset[str]) -> FrontMatterResult:
+def parse_front_matter(
+    text: str,
+    prefixes: frozenset[str],
+    *,
+    allow_legacy_paths: bool = False,
+) -> FrontMatterResult:
     """Parse leading YAML front matter without rejecting additional fields."""
 
     lines = text.splitlines()
@@ -251,7 +274,9 @@ def parse_front_matter(text: str, prefixes: frozenset[str]) -> FrontMatterResult
 
     document_type = _optional_string(raw, "type", issues)
     status = _optional_string(raw, "status", issues)
-    references = _references(raw, prefixes, issues, graph_issues)
+    references, legacy_references = _references(
+        raw, prefixes, issues, graph_issues, allow_legacy_paths
+    )
     metadata: DocumentMetadata | None = None
     if _valid_id(document_id, prefixes) and isinstance(revision, int) and not isinstance(
         revision, bool
@@ -277,6 +302,7 @@ def parse_front_matter(text: str, prefixes: frozenset[str]) -> FrontMatterResult
             status=status,
             references=references,
             additional_fields=additional,
+            legacy_references=legacy_references,
         )
     return FrontMatterResult(
         metadata,

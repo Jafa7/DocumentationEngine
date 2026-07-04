@@ -39,6 +39,10 @@ exclude = []
 [navigation]
 extend_through = []
 
+[relations]
+legacy_paths = "strict"
+snapshot_types = []
+
 [projection]
 format = "sharded-json"
 keep_generations = 2
@@ -56,6 +60,8 @@ class ProjectConfig:
     keep_generations: int
     catalog_exclusions: tuple[str, ...] = ()
     navigation_extend_through: tuple[str, ...] = ()
+    legacy_relation_mode: str = "strict"
+    snapshot_document_types: tuple[str, ...] = ()
 
 
 def _relative_path(value: object, field: str) -> PurePosixPath:
@@ -126,6 +132,26 @@ def _navigation_anchors(raw: object) -> tuple[str, ...]:
     return tuple(anchors)
 
 
+def _relations_policy(raw: object) -> tuple[str, tuple[str, ...]]:
+    if raw is None:
+        return "strict", ()
+    if not isinstance(raw, dict):
+        raise ValueError("relations must be a table")
+    mode = raw.get("legacy_paths", "strict")
+    if mode not in {"strict", "resolve-with-warning"}:
+        raise ValueError(
+            "relations.legacy_paths must be 'strict' or 'resolve-with-warning'"
+        )
+    types = raw.get("snapshot_types", [])
+    if not isinstance(types, list) or any(
+        not isinstance(item, str) or not item.strip() for item in types
+    ):
+        raise ValueError("relations.snapshot_types must be a list of non-empty strings")
+    if len(set(types)) != len(types):
+        raise ValueError("relations.snapshot_types must be unique")
+    return mode, tuple(types)
+
+
 def load_config(project_root: Path) -> ProjectConfig:
     root = project_root.resolve()
     config_path = root / CONFIG_FILENAME
@@ -164,6 +190,9 @@ def load_config(project_root: Path) -> ProjectConfig:
 
     catalog_exclusions = _catalog_exclusions(raw.get("catalog"))
     navigation_extend_through = _navigation_anchors(raw.get("navigation"))
+    legacy_relation_mode, snapshot_document_types = _relations_policy(
+        raw.get("relations")
+    )
 
     projection_format = projection.get("format")
     if projection_format != "sharded-json":
@@ -182,4 +211,6 @@ def load_config(project_root: Path) -> ProjectConfig:
         keep_generations=keep_generations,
         catalog_exclusions=catalog_exclusions,
         navigation_extend_through=navigation_extend_through,
+        legacy_relation_mode=legacy_relation_mode,
+        snapshot_document_types=snapshot_document_types,
     )

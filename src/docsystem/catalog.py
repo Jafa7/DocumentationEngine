@@ -45,6 +45,26 @@ class CatalogMembership:
 
 
 @dataclass(frozen=True)
+class RelationBoundary:
+    """A visible legacy relation that cannot become a graph edge."""
+
+    source_id: str
+    relation: str
+    value: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class RelationMigration:
+    """A deterministic legacy path to canonical ID mapping."""
+
+    source_id: str
+    relation: str
+    value: str
+    target_id: str
+
+
+@dataclass(frozen=True)
 class MarkdownDocument:
     """A Markdown source file and its parsed context-engine data."""
 
@@ -66,6 +86,9 @@ class MarkdownCatalog:
 
     documents: tuple[MarkdownDocument, ...]
     memberships: tuple[CatalogMembership, ...] = ()
+    legacy_edges: tuple[DependencyEdge, ...] = ()
+    relation_boundaries: tuple[RelationBoundary, ...] = ()
+    relation_migrations: tuple[RelationMigration, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -191,7 +214,9 @@ def build_catalog(config: ProjectConfig) -> MarkdownCatalog:
         memberships.append(CatalogMembership("included", relative, role=role))
         content = path.read_text(encoding="utf-8")
         front_matter = parse_front_matter(
-            content, frozenset(config.identifiers.values())
+            content,
+            frozenset(config.identifiers.values()),
+            allow_legacy_paths=config.legacy_relation_mode == "resolve-with-warning",
         )
         section_result = parse_sections_result(content)
         documents.append(
@@ -208,8 +233,78 @@ def build_catalog(config: ProjectConfig) -> MarkdownCatalog:
                 graph_issues=front_matter.graph_issues,
             )
         )
+    by_path = {
+        (root / document.path).resolve(): document
+        for document in documents
+        if document.metadata is not None
+    }
+    legacy_edges: list[DependencyEdge] = []
+    boundaries: list[RelationBoundary] = []
+    migrations: list[RelationMigration] = []
+    for document in documents:
+        if document.metadata is None:
+            continue
+        for relation, value in document.metadata.legacy_references:
+            parsed = urlsplit(value)
+            external = bool(parsed.scheme or parsed.netloc)
+            candidate = (
+                root / document.path.parent / unquote(parsed.path)
+            ).resolve()
+            target = by_path.get(candidate) if not external else None
+            if target is not None and target.metadata is not None:
+                if target.metadata.document_id == document.metadata.document_id:
+                    boundaries.append(
+                        RelationBoundary(
+                            document.metadata.document_id,
+                            relation,
+                            value,
+                            "self reference",
+                        )
+                    )
+                    continue
+                legacy_edges.append(
+                    DependencyEdge(
+                        relation,
+                        document.metadata.document_id,
+                        target.metadata.document_id,
+                    )
+                )
+                migrations.append(
+                    RelationMigration(
+                        document.metadata.document_id,
+                        relation,
+                        value,
+                        target.metadata.document_id,
+                    )
+                )
+            else:
+                reason = "external URL" if external else "resource/outside catalog"
+                boundaries.append(
+                    RelationBoundary(
+                        document.metadata.document_id, relation, value, reason
+                    )
+                )
     return MarkdownCatalog(
-        documents=tuple(documents), memberships=tuple(memberships)
+        documents=tuple(documents),
+        memberships=tuple(memberships),
+        legacy_edges=tuple(
+            sorted(
+                set(legacy_edges),
+                key=lambda edge: (edge.relation, edge.source_id, edge.target_id),
+            )
+        ),
+        relation_boundaries=tuple(
+            sorted(
+                boundaries,
+                key=lambda item: (item.source_id, item.relation, item.value),
+            )
+        ),
+        relation_migrations=tuple(
+            sorted(
+                migrations,
+                key=lambda item: (item.source_id, item.relation, item.value),
+            )
+        ),
     )
 
 
@@ -333,6 +428,42 @@ def validate_metadata(catalog: MarkdownCatalog) -> tuple[ValidationIssue, ...]:
     )
 
 
+def validate_adoption(catalog: MarkdownCatalog) -> tuple[ValidationIssue, ...]:
+    """Expose every opt-in legacy mapping and unresolved boundary."""
+
+    paths = {
+        document.metadata.document_id: document.path
+        for document in catalog.documents
+        if document.metadata is not None
+    }
+    issues = [
+        ValidationIssue(
+            paths[item.source_id],
+            f"legacy metadata.{item.relation} value {item.value!r} "
+            f"resolves to {item.target_id}",
+            severity="warning",
+        )
+        for item in catalog.relation_migrations
+    ]
+    for item in catalog.relation_boundaries:
+        self_reference = item.reason == "self reference"
+        issues.append(
+            ValidationIssue(
+                paths[item.source_id],
+                f"legacy metadata.{item.relation} value {item.value!r}: "
+                f"{item.reason}",
+                severity="error" if self_reference else "warning",
+                affects_graph=self_reference,
+            )
+        )
+    return tuple(
+        sorted(
+            issues,
+            key=lambda issue: (issue.path.as_posix(), issue.severity, issue.message),
+        )
+    )
+
+
 def build_dependency_graph(catalog: MarkdownCatalog) -> DependencyGraph:
     """Build a graph from valid references whose targets are unambiguous."""
 
@@ -357,6 +488,13 @@ def build_dependency_graph(catalog: MarkdownCatalog) -> DependencyGraph:
         if reference.target_id in known
         and reference.target_id != document.metadata.document_id
     }
+    edges.update(
+        edge
+        for edge in catalog.legacy_edges
+        if edge.source_id in known
+        and edge.target_id in known
+        and edge.source_id != edge.target_id
+    )
     return DependencyGraph(
         tuple(
             sorted(
@@ -449,6 +587,7 @@ def validate_catalog(
             (
                 *validate_membership(catalog),
                 *validate_metadata(catalog),
+                *validate_adoption(catalog),
                 *validate_sections(catalog, config),
                 *validate_reachability(catalog, config),
             ),

@@ -31,6 +31,11 @@ python -m docsystem read DOC-001 . --list
 python -m docsystem read DOC-001 . --anchor purpose
 python -m docsystem dependencies DOC-001 .
 python -m docsystem dependencies DOC-001 . --reverse
+python -m docsystem context DOC-001 . --depth 1
+python -m docsystem impact DOC-001 .
+python -m docsystem migration-report .
+python -m docsystem index . --write
+python -m docsystem changes .
 ```
 
 `init` creates a project-local `.docsystem.toml` and the configured
@@ -95,12 +100,40 @@ is an error.
 `dependencies` reports deterministic forward or reverse semantic edges.
 It fails without partial stdout when metadata errors make the requested graph
 incomplete; stale revision warnings remain non-blocking.
-Stale revision pins are visible warnings rather than blocking errors because
-historical snapshot policy is not part of the initial metadata contract.
 
-## Status
+Existing projects may opt into a migration bridge for relative path relations:
 
-The first milestones establish configuration, project bootstrapping,
-provider-neutral Markdown discovery, hierarchical navigation, stable metadata,
-addressable sections and dependency graphs. Sharded projections, bounded
-context packets and provider integrations remain subsequent milestones.
+```toml
+[relations]
+legacy_paths = "resolve-with-warning"
+snapshot_types = ["review", "experiment"]
+```
+
+Strict stable-ID relations remain the default. In the compatibility mode,
+resolvable paths become canonical graph edges and emit migration warnings.
+External URLs, resources and paths outside the catalog remain explicit
+boundaries. `migration-report` provides a deterministic dry-run report without
+editing Markdown.
+
+`context` emits a deterministic Markdown packet containing navigation excerpts,
+semantic dependencies, explicit section selections, H2 coverage, omissions,
+stale pins and unresolved boundaries. It never silently truncates to a token
+budget. `impact` reports reverse metadata dependencies and distinguishes
+semantic, related-navigation, freshness and configured historical-snapshot
+relations.
+
+`index --write` derives immutable content-hash generations below
+`.docsystem/cache`, then atomically selects the current generation.
+`index` checks freshness and `changes` reports changed documents and sections.
+Read operations verify the projection and visibly fall back to direct Markdown
+when it is absent, stale or incompatible. Markdown remains the only editable
+truth.
+
+See [the adoption guide](docs/adoption.md) for a complete profile and migration
+sequence.
+
+## Deliberate project-local boundaries
+
+Registry synchronization, finish orchestration, private history/backup and
+provider-specific adapters are not generalized by this vertical slice. They
+remain project-local until reusable contracts are proven.

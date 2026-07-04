@@ -8,7 +8,7 @@ Documentation Engine owns deterministic documentation mechanics:
 - Markdown metadata and stable IDs;
 - hierarchical navigation validation;
 - dependency and reverse-dependency graphs;
-- bounded context packets;
+- inspectable context packets with explicit coverage and omissions;
 - impact and changed-section analysis;
 - versioned, sharded machine projections;
 - bootstrap, diagnostics and migration tooling.
@@ -59,6 +59,7 @@ Project policy may configure:
 - lifecycle states;
 - review policy;
 - projection retention;
+- legacy path-relation migration and historical snapshot document types;
 - provider adapters.
 
 ## Scalable projection
@@ -78,6 +79,13 @@ The target projection is sharded and generation-based:
 A stable ID maps to a document shard without a global routing table. Consumers
 load only the target, required dependencies and reverse records needed for the
 operation.
+
+Each generation name is a hash of its canonical derived content. A new
+generation is assembled in a staging directory and renamed into place before
+the small `current.json` pointer is atomically replaced. Existing generation
+directories are never rewritten. Readers validate schema, generation identity,
+source hashes and required shards; invalid or stale projections fall back to
+direct Markdown with a diagnostic.
 
 ## Markdown catalog and navigation
 
@@ -111,6 +119,12 @@ snapshot. Human navigation continues to use ordinary relative Markdown links.
 Graph queries fail closed when invalid metadata prevents a complete answer;
 they never present a silently filtered partial graph as complete.
 
+For adoption only, `relations.legacy_paths = "resolve-with-warning"` allows the
+four path relations to resolve relative to their source document. Resolved
+values become ordinary canonical ID edges and remain visible as migration
+warnings. URLs and non-document resources are recorded as boundaries rather
+than invented edges. The strict stable-ID contract remains the default.
+
 ATX headings outside fenced code blocks form deterministic addressable
 sections. A section includes nested headings until the next heading at the same
 or a higher level. Duplicate generated headings receive deterministic numeric
@@ -126,12 +140,12 @@ canonical H2 anchors in `navigation.extend_through`; the result remains one
 contiguous prefix ending after the furthest matching section. Missing anchors
 fall back to the default, while a configured non-H2 match is invalid.
 
-## Planned milestones
+## Product sequence
 
 1. Configuration contract, bootstrap and diagnostics.
 2. Markdown catalog and hierarchical reachability validation.
 3. Stable metadata, addressable sections and dependency graphs.
-4. Sharded projection, context and impact commands.
-5. Migration/adoption workflow for existing projects.
+4. Working context, impact, adoption and sharded-projection vertical slice.
+5. Mature migration workflow and lifecycle orchestration.
 6. Thin Codex integration and generated agent instructions.
 7. MCP adapter and additional client integrations.
