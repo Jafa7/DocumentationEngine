@@ -14,7 +14,7 @@ EXPLICIT_ANCHOR_PATTERN = re.compile(
     re.IGNORECASE,
 )
 ANCHOR_CANDIDATE_PATTERN = re.compile(
-    r"^\s*<a\b.*\b(?:id|name)\s*=.*$", re.IGNORECASE
+    r"^\s*<a\b(?=[^>]*\s(?:id|name)(?=\s|=|/?>)).*$", re.IGNORECASE
 )
 
 

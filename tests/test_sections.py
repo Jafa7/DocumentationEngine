@@ -153,3 +153,26 @@ def test_explicit_anchor_inside_fence_is_ignored() -> None:
         ("Visible", "visible")
     ]
     assert result.issues == ()
+
+
+def test_malformed_anchor_attributes_without_assignment_are_diagnosed() -> None:
+    result = parse_sections_result(
+        """\
+<a id></a>
+## Missing ID assignment
+<a name></a>
+## Missing name assignment
+<a href="https://example.com"></a>
+## Ordinary link
+"""
+    )
+
+    assert result.issues == (
+        "malformed explicit anchor at line 1",
+        "malformed explicit anchor at line 3",
+    )
+    assert [section.anchor for section in result.sections] == [
+        "missing-id-assignment",
+        "missing-name-assignment",
+        "ordinary-link",
+    ]
