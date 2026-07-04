@@ -11,6 +11,7 @@ def test_default_config_loads(tmp_path: Path) -> None:
     assert config.documentation_root == tmp_path / "plan"
     assert config.areas["roadmap"].as_posix() == "roadmap"
     assert config.catalog_exclusions == ()
+    assert config.navigation_extend_through == ()
     assert config.projection_format == "sharded-json"
 
 
@@ -56,6 +57,65 @@ def test_catalog_exclusions_are_ordered_and_normalized(tmp_path: Path) -> None:
         "templates/*-template.md",
         "resources/**/*.md",
     )
+
+
+def test_navigation_table_is_optional_and_preserves_anchor_order(tmp_path: Path) -> None:
+    config = DEFAULT_CONFIG.replace(
+        'extend_through = []', 'extend_through = ["резюме", "contents"]'
+    )
+    (tmp_path / CONFIG_FILENAME).write_text(config, encoding="utf-8")
+    assert load_config(tmp_path).navigation_extend_through == (
+        "резюме",
+        "contents",
+    )
+
+    legacy = config.replace(
+        '[navigation]\nextend_through = ["резюме", "contents"]\n\n', ""
+    )
+    (tmp_path / CONFIG_FILENAME).write_text(legacy, encoding="utf-8")
+    assert load_config(tmp_path).navigation_extend_through == ()
+
+
+def test_navigation_must_be_a_table(tmp_path: Path) -> None:
+    config = 'navigation = "invalid"\n' + DEFAULT_CONFIG.replace(
+        "[navigation]\nextend_through = []\n\n", ""
+    )
+    (tmp_path / CONFIG_FILENAME).write_text(config, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="navigation must be a table"):
+        load_config(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("replacement", "message"),
+    [
+        ('extend_through = ""', "navigation.extend_through must be a list"),
+        (
+            'extend_through = [""]',
+            r"navigation\.extend_through\[0] must be a non-empty string",
+        ),
+        (
+            "extend_through = [1]",
+            r"navigation\.extend_through\[0] must be a non-empty string",
+        ),
+        (
+            'extend_through = ["bad anchor"]',
+            r"navigation\.extend_through\[0] has unsupported anchor syntax",
+        ),
+        (
+            'extend_through = ["summary", "summary"]',
+            "navigation.extend_through contains duplicate anchor 'summary'",
+        ),
+    ],
+)
+def test_invalid_navigation_configuration_is_rejected(
+    tmp_path: Path, replacement: str, message: str
+) -> None:
+    config = DEFAULT_CONFIG.replace("extend_through = []", replacement)
+    (tmp_path / CONFIG_FILENAME).write_text(config, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        load_config(tmp_path)
 
 
 @pytest.mark.parametrize(

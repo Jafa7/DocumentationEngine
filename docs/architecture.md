@@ -113,7 +113,18 @@ they never present a silently filtered partial graph as complete.
 
 ATX headings outside fenced code blocks form deterministic addressable
 sections. A section includes nested headings until the next heading at the same
-or a higher level. Duplicate headings receive deterministic numeric suffixes.
+or a higher level. Duplicate generated headings receive deterministic numeric
+suffixes.
+
+A standalone HTML anchor containing only `id` or `name` may immediately precede
+an ATX heading. Its valid value becomes the exact canonical anchor; generated
+slugging remains unchanged for all other headings. Parser diagnostics reject
+malformed, orphaned, multiple, duplicate and explicit/generated collisions.
+
+The default navigation read ends before the first H2. A project may configure
+canonical H2 anchors in `navigation.extend_through`; the result remains one
+contiguous prefix ending after the furthest matching section. Missing anchors
+fall back to the default, while a configured non-H2 match is invalid.
 
 ## Planned milestones
 

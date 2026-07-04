@@ -27,6 +27,7 @@ python -m docsystem catalog .
 python -m docsystem catalog . --explain
 python -m docsystem validate .
 python -m docsystem read DOC-001 .
+python -m docsystem read DOC-001 . --list
 python -m docsystem read DOC-001 . --anchor purpose
 python -m docsystem dependencies DOC-001 .
 python -m docsystem dependencies DOC-001 . --reverse
@@ -63,7 +64,35 @@ preserved for project-specific policy. Duplicate YAML mapping keys are invalid
 at every nesting level.
 
 `read` resolves a whole document, navigation prefix or ATX section by stable
-ID. `dependencies` reports deterministic forward or reverse semantic edges.
+ID. `read --list` emits `anchor`, `Hn`, `start:end` and `title` as tab-separated
+fields in document order.
+
+A heading may declare a stable canonical anchor on the immediately preceding
+line:
+
+```html
+<a id="stable-section"></a>
+## Section title
+```
+
+`name` is also accepted, as are single quotes. The standalone tag may contain
+only the `id` or `name` attribute. Anchor values start with a Unicode
+alphanumeric character and then use Unicode alphanumerics or `-_.:`. The value
+is preserved exactly. Malformed, orphaned, multiple, duplicate or colliding
+anchors are errors rather than silently repaired.
+
+Navigation may extend the default prefix through the furthest matching H2:
+
+```toml
+[navigation]
+extend_through = ["summary", "contents"]
+```
+
+If no configured anchor exists in a document, the original prefix before the
+first H2 is returned. A configured anchor resolving to another heading level
+is an error.
+
+`dependencies` reports deterministic forward or reverse semantic edges.
 It fails without partial stdout when metadata errors make the requested graph
 incomplete; stale revision warnings remain non-blocking.
 Stale revision pins are visible warnings rather than blocking errors because

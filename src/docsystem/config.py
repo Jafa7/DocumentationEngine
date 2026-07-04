@@ -7,6 +7,8 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from docsystem.sections import is_valid_anchor
+
 CONFIG_FILENAME = ".docsystem.toml"
 PREFIX_PATTERN = re.compile(r"^[A-Z][A-Z0-9]{1,15}$")
 DEFAULT_CONFIG = """\
@@ -34,6 +36,9 @@ roadmap = "RM"
 [catalog]
 exclude = []
 
+[navigation]
+extend_through = []
+
 [projection]
 format = "sharded-json"
 keep_generations = 2
@@ -50,6 +55,7 @@ class ProjectConfig:
     projection_format: str
     keep_generations: int
     catalog_exclusions: tuple[str, ...] = ()
+    navigation_extend_through: tuple[str, ...] = ()
 
 
 def _relative_path(value: object, field: str) -> PurePosixPath:
@@ -94,6 +100,32 @@ def _catalog_exclusions(raw: object) -> tuple[str, ...]:
     return tuple(patterns)
 
 
+def _navigation_anchors(raw: object) -> tuple[str, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, dict):
+        raise ValueError("navigation must be a table")
+    values = raw.get("extend_through", [])
+    if not isinstance(values, list):
+        raise ValueError("navigation.extend_through must be a list")
+
+    anchors: list[str] = []
+    seen: set[str] = set()
+    for index, value in enumerate(values):
+        field = f"navigation.extend_through[{index}]"
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"{field} must be a non-empty string")
+        if not is_valid_anchor(value):
+            raise ValueError(f"{field} has unsupported anchor syntax")
+        if value in seen:
+            raise ValueError(
+                f"navigation.extend_through contains duplicate anchor {value!r}"
+            )
+        seen.add(value)
+        anchors.append(value)
+    return tuple(anchors)
+
+
 def load_config(project_root: Path) -> ProjectConfig:
     root = project_root.resolve()
     config_path = root / CONFIG_FILENAME
@@ -131,6 +163,7 @@ def load_config(project_root: Path) -> ProjectConfig:
         raise ValueError("identifier prefixes must be unique")
 
     catalog_exclusions = _catalog_exclusions(raw.get("catalog"))
+    navigation_extend_through = _navigation_anchors(raw.get("navigation"))
 
     projection_format = projection.get("format")
     if projection_format != "sharded-json":
@@ -148,4 +181,5 @@ def load_config(project_root: Path) -> ProjectConfig:
         projection_format=projection_format,
         keep_generations=keep_generations,
         catalog_exclusions=catalog_exclusions,
+        navigation_extend_through=navigation_extend_through,
     )

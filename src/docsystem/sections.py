@@ -9,6 +9,13 @@ ATX_HEADING_PATTERN = re.compile(
     r"^ {0,3}(#{1,6})[ \t]+(.+?)(?:[ \t]+#+[ \t]*)?$"
 )
 FENCE_PATTERN = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+EXPLICIT_ANCHOR_PATTERN = re.compile(
+    r"^ {0,3}<a\s+(?:id|name)=([\"'])([^\"']+)\1\s*></a>\s*$",
+    re.IGNORECASE,
+)
+ANCHOR_CANDIDATE_PATTERN = re.compile(
+    r"^\s*<a\b.*\b(?:id|name)\s*=.*$", re.IGNORECASE
+)
 
 
 @dataclass(frozen=True)
@@ -22,6 +29,22 @@ class MarkdownSection:
     end_line: int
 
 
+@dataclass(frozen=True)
+class SectionParseResult:
+    """Addressable sections plus deterministic parser diagnostics."""
+
+    sections: tuple[MarkdownSection, ...]
+    issues: tuple[str, ...]
+
+
+def is_valid_anchor(value: str) -> bool:
+    """Return whether a canonical anchor uses the supported stable syntax."""
+
+    return bool(value) and value[0].isalnum() and all(
+        character.isalnum() or character in "-_.:" for character in value
+    )
+
+
 def heading_anchor(title: str) -> str:
     """Create a deterministic GitHub-like Unicode heading anchor."""
 
@@ -33,18 +56,31 @@ def heading_anchor(title: str) -> str:
     return re.sub(r"\s+", "-", "".join(characters)).strip("-")
 
 
-def parse_sections(text: str) -> tuple[MarkdownSection, ...]:
-    """Parse ATX headings, ignoring headings inside fenced code blocks."""
+def parse_sections_result(text: str) -> SectionParseResult:
+    """Parse ATX headings and explicit anchors without repairing ambiguity."""
 
     lines = text.splitlines()
     headings: list[tuple[str, str, int, int]] = []
+    issues: list[str] = []
     anchor_counts: dict[str, int] = {}
+    anchor_owners: dict[str, tuple[str, int]] = {}
+    explicit_owners: dict[str, int] = {}
+    pending_anchors: list[tuple[str, int]] = []
     fence_character: str | None = None
     fence_length = 0
+
+    def orphan_pending() -> None:
+        for anchor, anchor_line in pending_anchors:
+            issues.append(
+                f"orphaned explicit anchor {anchor!r} at line {anchor_line}; "
+                "it must directly precede an ATX heading"
+            )
+        pending_anchors.clear()
 
     for line_number, line in enumerate(lines, start=1):
         fence = FENCE_PATTERN.match(line)
         if fence_character is None and fence:
+            orphan_pending()
             marker = fence.group(1)
             if marker[0] == "`" and "`" in line[fence.end() :]:
                 continue
@@ -61,15 +97,70 @@ def parse_sections(text: str) -> tuple[MarkdownSection, ...]:
                 fence_character = None
                 fence_length = 0
             continue
+
+        explicit_match = EXPLICIT_ANCHOR_PATTERN.match(line)
+        if explicit_match is not None:
+            value = explicit_match.group(2)
+            if not is_valid_anchor(value):
+                orphan_pending()
+                issues.append(
+                    f"malformed explicit anchor {value!r} at line {line_number}"
+                )
+                continue
+            pending_anchors.append((value, line_number))
+            continue
+        if ANCHOR_CANDIDATE_PATTERN.match(line) is not None:
+            orphan_pending()
+            issues.append(f"malformed explicit anchor at line {line_number}")
+            continue
+
         match = ATX_HEADING_PATTERN.match(line)
         if match is None:
+            orphan_pending()
             continue
         title = match.group(2).strip()
-        base_anchor = heading_anchor(title)
-        occurrence = anchor_counts.get(base_anchor, 0)
-        anchor_counts[base_anchor] = occurrence + 1
-        anchor = base_anchor if occurrence == 0 else f"{base_anchor}-{occurrence}"
+        explicit = len(pending_anchors) == 1
+        if len(pending_anchors) > 1:
+            rendered = ", ".join(
+                f"{anchor!r} at line {anchor_line}"
+                for anchor, anchor_line in pending_anchors
+            )
+            issues.append(
+                f"multiple explicit anchors before heading at line {line_number}: "
+                f"{rendered}"
+            )
+        if explicit:
+            anchor, anchor_line = pending_anchors[0]
+        else:
+            base_anchor = heading_anchor(title)
+            occurrence = anchor_counts.get(base_anchor, 0)
+            anchor_counts[base_anchor] = occurrence + 1
+            anchor = (
+                base_anchor if occurrence == 0 else f"{base_anchor}-{occurrence}"
+            )
+            anchor_line = line_number
+        pending_anchors.clear()
+
+        owner = anchor_owners.get(anchor)
+        if explicit and anchor in explicit_owners:
+            issues.append(
+                f"duplicate explicit anchor {anchor!r} at line {anchor_line}; "
+                f"first used at line {explicit_owners[anchor]}"
+            )
+        elif owner is not None:
+            owner_kind, owner_line = owner
+            current_kind = "explicit" if explicit else "generated"
+            issues.append(
+                f"anchor collision {anchor!r}: {owner_kind} anchor at line "
+                f"{owner_line} and {current_kind} anchor at line {anchor_line}"
+            )
+        if explicit:
+            explicit_owners.setdefault(anchor, anchor_line)
+        anchor_owners.setdefault(
+            anchor, ("explicit" if explicit else "generated", anchor_line)
+        )
         headings.append((title, anchor, len(match.group(1)), line_number))
+    orphan_pending()
 
     sections: list[MarkdownSection] = []
     for index, (title, anchor, level, start_line) in enumerate(headings):
@@ -81,7 +172,13 @@ def parse_sections(text: str) -> tuple[MarkdownSection, ...]:
         sections.append(
             MarkdownSection(title, anchor, level, start_line, end_line)
         )
-    return tuple(sections)
+    return SectionParseResult(tuple(sections), tuple(issues))
+
+
+def parse_sections(text: str) -> tuple[MarkdownSection, ...]:
+    """Parse addressable sections while preserving the original public API."""
+
+    return parse_sections_result(text).sections
 
 
 def extract_section(text: str, section: MarkdownSection) -> str:
@@ -91,11 +188,39 @@ def extract_section(text: str, section: MarkdownSection) -> str:
     return "\n".join(lines[section.start_line - 1 : section.end_line]).rstrip() + "\n"
 
 
-def extract_navigation(text: str, sections: tuple[MarkdownSection, ...]) -> str:
-    """Return front matter, title and introduction before the first H2."""
+def navigation_issues(
+    sections: tuple[MarkdownSection, ...], extend_through: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Validate document-specific navigation extension anchors."""
+
+    issues: list[str] = []
+    for anchor in extend_through:
+        for section in sections:
+            if section.anchor == anchor and section.level != 2:
+                issues.append(
+                    f"navigation.extend_through anchor {anchor!r} resolves to "
+                    f"H{section.level}, expected H2"
+                )
+    return tuple(issues)
+
+
+def extract_navigation(
+    text: str,
+    sections: tuple[MarkdownSection, ...],
+    extend_through: tuple[str, ...] = (),
+) -> str:
+    """Return the default prefix or extend it through configured H2 sections."""
 
     first_h2 = next((section for section in sections if section.level == 2), None)
+    lines = text.splitlines()
+    matching = [
+        section
+        for section in sections
+        if section.level == 2 and section.anchor in extend_through
+    ]
+    if matching:
+        end_line = max(section.end_line for section in matching)
+        return "\n".join(lines[:end_line]) + "\n"
     if first_h2 is None:
         return text if text.endswith("\n") else f"{text}\n"
-    lines = text.splitlines()
     return "\n".join(lines[: first_h2.start_line - 1]).rstrip() + "\n"

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from docsystem.cli import dependencies, read_document, validate
+from docsystem.cli import build_parser, dependencies, doctor, read_document, validate
 from docsystem.config import CONFIG_FILENAME, DEFAULT_CONFIG
 
 
@@ -73,6 +73,22 @@ def test_read_document_supports_full_navigation_and_section(
     assert "## Other\n\nOther text." in capsys.readouterr().out
 
 
+def test_read_document_lists_sections_in_machine_stable_order(
+    tmp_path: Path, capsys
+) -> None:
+    configured_documents(tmp_path)
+
+    assert read_document(tmp_path, "DOC-002", list_sections=True) == 0
+    assert capsys.readouterr().out == (
+        "context\tH1\t8:22\tContext\n"
+        "selected-section\tH2\t12:19\tSelected section\n"
+        "nested\tH3\t16:19\tNested\n"
+        "other\tH2\t20:22\tOther\n"
+    )
+    args = build_parser().parse_args(["read", "DOC-002", "--list"])
+    assert args.list_sections is True
+
+
 def test_read_document_reports_unknown_id_and_anchor(tmp_path: Path, capsys) -> None:
     configured_documents(tmp_path)
 
@@ -80,6 +96,30 @@ def test_read_document_reports_unknown_id_and_anchor(tmp_path: Path, capsys) -> 
     assert "document ID not found: DOC-999" in capsys.readouterr().err
     assert read_document(tmp_path, "DOC-002", anchor="missing") == 1
     assert "anchor not found in DOC-002: missing" in capsys.readouterr().err
+
+
+def test_read_fails_without_stdout_on_section_diagnostics(
+    tmp_path: Path, capsys
+) -> None:
+    configured_documents(tmp_path)
+    source = tmp_path / "plan" / "architecture" / "context.md"
+    source.write_text(
+        source.read_text(encoding="utf-8").replace(
+            "## Selected section",
+            '<a id="duplicate"></a>\n## Selected section\n'
+            '<a id="duplicate"></a>\n## Duplicate',
+        ),
+        encoding="utf-8",
+    )
+
+    assert read_document(tmp_path, "DOC-002", list_sections=True) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "duplicate explicit anchor 'duplicate'" in captured.err
+    assert validate(tmp_path) == 1
+    assert "duplicate explicit anchor 'duplicate'" in capsys.readouterr().err
+    assert doctor(tmp_path) == 1
+    assert "duplicate explicit anchor 'duplicate'" in capsys.readouterr().err
 
 
 def test_dependencies_support_forward_and_reverse_queries(
@@ -185,6 +225,56 @@ def test_non_graph_metadata_error_does_not_block_dependencies(
         "depends_on\tDOC-001\t-\nvalidated_against\tDOC-001\t3\n"
     )
     assert captured.err == ""
+
+
+def test_navigation_extension_is_contiguous_and_falls_back_when_absent(
+    tmp_path: Path, capsys
+) -> None:
+    configured_documents(tmp_path)
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "extend_through = []",
+            'extend_through = ["selected-section", "other"]',
+        ),
+        encoding="utf-8",
+    )
+
+    assert read_document(tmp_path, "DOC-002", navigation=True) == 0
+    output = capsys.readouterr().out
+    assert "## Selected section" in output
+    assert "### Nested" in output
+    assert output.endswith("## Other\n\nOther text.\n")
+
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            'extend_through = ["selected-section", "other"]',
+            'extend_through = ["not-present"]',
+        ),
+        encoding="utf-8",
+    )
+    assert read_document(tmp_path, "DOC-002", navigation=True) == 0
+    assert capsys.readouterr().out.endswith("# Context\n\nSummary.\n")
+
+
+def test_navigation_extension_requires_matching_h2(
+    tmp_path: Path, capsys
+) -> None:
+    configured_documents(tmp_path)
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "extend_through = []", 'extend_through = ["nested"]'
+        ),
+        encoding="utf-8",
+    )
+
+    assert read_document(tmp_path, "DOC-002", navigation=True) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "anchor 'nested' resolves to H3, expected H2" in captured.err
+    assert validate(tmp_path) == 1
+    assert "anchor 'nested' resolves to H3, expected H2" in capsys.readouterr().err
 
 
 def test_reverse_dependencies_only_report_warnings_related_to_target(

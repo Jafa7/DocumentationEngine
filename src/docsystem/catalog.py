@@ -9,7 +9,11 @@ from urllib.parse import unquote, urlsplit
 
 from docsystem.config import ProjectConfig
 from docsystem.metadata import DocumentMetadata, parse_front_matter
-from docsystem.sections import MarkdownSection, parse_sections
+from docsystem.sections import (
+    MarkdownSection,
+    navigation_issues,
+    parse_sections_result,
+)
 
 INDEX_NAMES = frozenset({"readme.md", "index.md"})
 INLINE_LINK_PATTERN = re.compile(r"(?<!!)\[[^\]]*]\(\s*(?:<([^>]+)>|([^) \t]+))")
@@ -51,6 +55,7 @@ class MarkdownDocument:
     content: str
     metadata: DocumentMetadata | None
     sections: tuple[MarkdownSection, ...]
+    section_issues: tuple[str, ...]
     metadata_issues: tuple[str, ...]
     graph_issues: tuple[str, ...]
 
@@ -188,6 +193,7 @@ def build_catalog(config: ProjectConfig) -> MarkdownCatalog:
         front_matter = parse_front_matter(
             content, frozenset(config.identifiers.values())
         )
+        section_result = parse_sections_result(content)
         documents.append(
             MarkdownDocument(
                 role=role,
@@ -196,7 +202,8 @@ def build_catalog(config: ProjectConfig) -> MarkdownCatalog:
                 is_index=path.name.lower() in INDEX_NAMES,
                 content=content,
                 metadata=front_matter.metadata,
-                sections=parse_sections(content),
+                sections=section_result.sections,
+                section_issues=section_result.issues,
                 metadata_issues=front_matter.issues,
                 graph_issues=front_matter.graph_issues,
             )
@@ -217,6 +224,29 @@ def validate_membership(catalog: MarkdownCatalog) -> tuple[ValidationIssue, ...]
         )
         for membership in catalog.memberships
         if membership.state == "unmapped"
+    )
+
+
+def document_section_issues(
+    document: MarkdownDocument, config: ProjectConfig
+) -> tuple[str, ...]:
+    """Return parser and navigation-policy diagnostics for one document."""
+
+    return (
+        *document.section_issues,
+        *navigation_issues(document.sections, config.navigation_extend_through),
+    )
+
+
+def validate_sections(
+    catalog: MarkdownCatalog, config: ProjectConfig
+) -> tuple[ValidationIssue, ...]:
+    """Validate stable section addressing and navigation anchors."""
+
+    return tuple(
+        ValidationIssue(document.path, message)
+        for document in catalog.documents
+        for message in document_section_issues(document, config)
     )
 
 
@@ -419,6 +449,7 @@ def validate_catalog(
             (
                 *validate_membership(catalog),
                 *validate_metadata(catalog),
+                *validate_sections(catalog, config),
                 *validate_reachability(catalog, config),
             ),
             key=lambda issue: (issue.path.as_posix(), issue.severity, issue.message),

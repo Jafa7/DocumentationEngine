@@ -9,6 +9,7 @@ from pathlib import Path
 from docsystem.catalog import (
     build_catalog,
     build_dependency_graph,
+    document_section_issues,
     find_document,
     validate_catalog,
     validate_membership,
@@ -103,11 +104,26 @@ def read_document(
     *,
     anchor: str | None = None,
     navigation: bool = False,
+    list_sections: bool = False,
 ) -> int:
     try:
         config = load_config(project_root)
         document = find_document(build_catalog(config), document_id)
-        if anchor is not None:
+        section_issues = document_section_issues(document, config)
+        if section_issues:
+            for message in section_issues:
+                print(
+                    f"ERROR: {document.path.as_posix()}: {message}",
+                    file=sys.stderr,
+                )
+            return 1
+        if list_sections:
+            output = "".join(
+                f"{section.anchor}\tH{section.level}\t"
+                f"{section.start_line}:{section.end_line}\t{section.title}\n"
+                for section in document.sections
+            )
+        elif anchor is not None:
             section = next(
                 (item for item in document.sections if item.anchor == anchor), None
             )
@@ -115,7 +131,11 @@ def read_document(
                 raise ValueError(f"anchor not found in {document_id}: {anchor}")
             output = extract_section(document.content, section)
         elif navigation:
-            output = extract_navigation(document.content, document.sections)
+            output = extract_navigation(
+                document.content,
+                document.sections,
+                config.navigation_extend_through,
+            )
         else:
             output = (
                 document.content
@@ -197,6 +217,8 @@ def show_config(project_root: Path) -> int:
         print(f"identifier.{role}={prefix}")
     for pattern in config.catalog_exclusions:
         print(f"catalog.exclude={pattern}")
+    for anchor in config.navigation_extend_through:
+        print(f"navigation.extend_through={anchor}")
     print(f"projection.format={config.projection_format}")
     print(f"projection.keep_generations={config.keep_generations}")
     return 0
@@ -229,6 +251,7 @@ def build_parser() -> argparse.ArgumentParser:
     selection = read_parser.add_mutually_exclusive_group()
     selection.add_argument("--anchor")
     selection.add_argument("--navigation", action="store_true")
+    selection.add_argument("--list", action="store_true", dest="list_sections")
 
     dependencies_parser = subparsers.add_parser(
         "dependencies", help="List forward or reverse semantic dependencies."
@@ -249,6 +272,7 @@ def main() -> int:
             args.document_id,
             anchor=args.anchor,
             navigation=args.navigation,
+            list_sections=args.list_sections,
         )
     if args.command == "dependencies":
         return dependencies(args.project, args.document_id, reverse=args.reverse)
