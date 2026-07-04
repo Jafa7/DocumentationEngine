@@ -32,6 +32,7 @@ class ValidationIssue:
     severity: str = "error"
     affects_graph: bool = False
     target_id: str | None = None
+    category: str | None = None
 
 
 @dataclass(frozen=True)
@@ -442,6 +443,7 @@ def validate_adoption(catalog: MarkdownCatalog) -> tuple[ValidationIssue, ...]:
             f"legacy metadata.{item.relation} value {item.value!r} "
             f"resolves to {item.target_id}",
             severity="warning",
+            category="adoption-resolved",
         )
         for item in catalog.relation_migrations
     ]
@@ -454,6 +456,7 @@ def validate_adoption(catalog: MarkdownCatalog) -> tuple[ValidationIssue, ...]:
                 f"{item.reason}",
                 severity="error" if self_reference else "warning",
                 affects_graph=self_reference,
+                category=None if self_reference else "adoption-boundary",
             )
         )
     return tuple(

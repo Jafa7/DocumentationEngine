@@ -26,6 +26,7 @@ python -m docsystem show-config .
 python -m docsystem catalog .
 python -m docsystem catalog . --explain
 python -m docsystem validate .
+python -m docsystem validate . --verbose-adoption
 python -m docsystem read DOC-001 .
 python -m docsystem read DOC-001 . --list
 python -m docsystem read DOC-001 . --anchor purpose
@@ -114,6 +115,12 @@ resolvable paths become canonical graph edges and emit migration warnings.
 External URLs, resources and paths outside the catalog remain explicit
 boundaries. `migration-report` provides a deterministic dry-run report without
 editing Markdown.
+
+By default, `validate` and `doctor` summarize expected resolved mappings and
+resource boundaries by count while printing stale pins and other warnings
+individually. Pass `--verbose-adoption` to either command for every row-level
+adoption warning. `migration-report` always remains the complete deterministic
+inventory.
 
 `context` emits a deterministic Markdown packet containing navigation excerpts,
 semantic dependencies, explicit section selections, H2 coverage, omissions,

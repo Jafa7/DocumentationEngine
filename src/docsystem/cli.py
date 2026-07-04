@@ -30,6 +30,51 @@ from docsystem.projection import (
 from docsystem.sections import extract_navigation, extract_section
 
 
+def _print_validation_issues(
+    issues: tuple[ValidationIssue, ...],
+    *,
+    verbose_adoption: bool,
+) -> bool:
+    adoption_counts = {
+        "adoption-resolved": 0,
+        "adoption-boundary": 0,
+    }
+    visible: list[ValidationIssue] = []
+    for issue in issues:
+        compactable = (
+            issue.severity == "warning" and issue.category in adoption_counts
+        )
+        if compactable and not verbose_adoption:
+            adoption_counts[issue.category] += 1
+        else:
+            visible.append(issue)
+
+    summaries = (
+        (
+            adoption_counts["adoption-resolved"],
+            "legacy relation values resolve to stable IDs",
+        ),
+        (
+            adoption_counts["adoption-boundary"],
+            "legacy relation values remain resource/outside boundaries",
+        ),
+    )
+    for count, description in summaries:
+        if count:
+            print(
+                f"WARNING: {count} {description}; run "
+                "`docsystem migration-report PROJECT` for row-level details.",
+                file=sys.stderr,
+            )
+    for issue in visible:
+        level = "WARNING" if issue.severity == "warning" else "ERROR"
+        print(
+            f"{level}: {issue.path.as_posix()}: {issue.message}",
+            file=sys.stderr,
+        )
+    return any(issue.severity != "warning" for issue in issues)
+
+
 def initialize(project_root: Path) -> int:
     root = project_root.resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -45,28 +90,23 @@ def initialize(project_root: Path) -> int:
     return 0
 
 
-def doctor(project_root: Path) -> int:
+def doctor(project_root: Path, *, verbose_adoption: bool = False) -> int:
     try:
         config = load_config(project_root)
     except ValueError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
-    errors: list[str] = []
-    warnings: list[str] = []
     if not config.documentation_root.is_dir():
-        errors.append(f"documentation root does not exist: {config.documentation_root}")
-    else:
-        for issue in validate_catalog(build_catalog(config), config):
-            rendered = f"{issue.path.as_posix()}: {issue.message}"
-            if issue.severity == "warning":
-                warnings.append(rendered)
-            else:
-                errors.append(rendered)
-    for warning in warnings:
-        print(f"WARNING: {warning}", file=sys.stderr)
-    if errors:
-        for error in errors:
-            print(f"ERROR: {error}", file=sys.stderr)
+        print(
+            f"ERROR: documentation root does not exist: "
+            f"{config.documentation_root}",
+            file=sys.stderr,
+        )
+        return 1
+    issues = validate_catalog(build_catalog(config), config)
+    if _print_validation_issues(
+        issues, verbose_adoption=verbose_adoption
+    ):
         return 1
     print("Configuration is valid.")
     print(f"Documentation root: {config.documentation_root}")
@@ -92,18 +132,16 @@ def catalog(project_root: Path, *, explain: bool = False) -> int:
     return 0
 
 
-def validate(project_root: Path) -> int:
+def validate(project_root: Path, *, verbose_adoption: bool = False) -> int:
     try:
         config = load_config(project_root)
     except ValueError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
     issues = validate_catalog(build_catalog(config), config)
-    errors = [issue for issue in issues if issue.severity != "warning"]
-    for issue in issues:
-        level = "WARNING" if issue.severity == "warning" else "ERROR"
-        print(f"{level}: {issue.path.as_posix()}: {issue.message}", file=sys.stderr)
-    if errors:
+    if _print_validation_issues(
+        issues, verbose_adoption=verbose_adoption
+    ):
         return 1
     print("Markdown navigation is valid.")
     return 0
@@ -619,6 +657,12 @@ def build_parser() -> argparse.ArgumentParser:
                 action="store_true",
                 help="Classify every Markdown source under the documentation root.",
             )
+        if command in {"doctor", "validate"}:
+            command_parser.add_argument(
+                "--verbose-adoption",
+                action="store_true",
+                help="Print every legacy adoption warning instead of summaries.",
+            )
 
     read_parser = subparsers.add_parser(
         "read", help="Read a Markdown document or section by stable ID."
@@ -696,10 +740,16 @@ def main() -> int:
         return index_projection(args.project, write=args.write)
     if args.command == "changes":
         return changes(args.project)
+    if args.command == "doctor":
+        return doctor(
+            args.project, verbose_adoption=args.verbose_adoption
+        )
+    if args.command == "validate":
+        return validate(
+            args.project, verbose_adoption=args.verbose_adoption
+        )
     handlers = {
         "init": initialize,
-        "doctor": doctor,
         "show-config": show_config,
-        "validate": validate,
     }
     return handlers[args.command](args.project)

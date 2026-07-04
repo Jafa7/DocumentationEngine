@@ -47,6 +47,7 @@ Run the adoption sequence without editing source files:
 ```bash
 docsystem catalog . --explain
 docsystem validate .
+docsystem validate . --verbose-adoption
 docsystem migration-report .
 docsystem context PDOC-001 . --depth 1
 docsystem impact PDOC-001 .
@@ -66,6 +67,11 @@ boundary	SOURCE_ID	relation	value	reason
 `boundary` rows require a human decision: external provenance and resources
 must not be converted into invented document IDs. This milestone intentionally
 does not bulk-edit Markdown.
+
+Default `validate` and `doctor` output compacts these expected adoption rows
+into counts so operational diagnostics remain small. Both accept
+`--verbose-adoption` when the full warning context is needed. Stale pins and
+other non-adoption warnings are always printed individually.
 
 After an index is written, `read`, `context` and `impact` validate it before
 serving the same Markdown semantics. An absent, stale, corrupt or incompatible

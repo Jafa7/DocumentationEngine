@@ -5,6 +5,7 @@ from docsystem.cli import (
     build_parser,
     changes,
     context,
+    doctor,
     impact,
     index_projection,
     migration_report,
@@ -148,15 +149,70 @@ def test_duplicate_legacy_path_is_a_graph_error(tmp_path: Path) -> None:
     )
 
 
-def test_legacy_adoption_diagnostics_are_warnings(
+def test_legacy_adoption_diagnostics_are_concise_or_verbose(
     tmp_path: Path, capsys
 ) -> None:
     vertical_project(tmp_path)
 
     assert validate(tmp_path) == 0
-    diagnostics = capsys.readouterr().err
-    assert "legacy metadata.depends_on value 'README.md' resolves to DOC-001" in diagnostics
-    assert "legacy metadata.derived_from value 'asset.png': resource/outside catalog" in diagnostics
+    concise = capsys.readouterr().err
+    assert "2 legacy relation values resolve to stable IDs" in concise
+    assert "2 legacy relation values remain resource/outside boundaries" in concise
+    assert "DOC-002@1 is stale" in concise
+    assert "legacy metadata.depends_on value 'README.md'" not in concise
+
+    assert doctor(tmp_path) == 0
+    doctor_concise = capsys.readouterr().err
+    assert "2 legacy relation values resolve to stable IDs" in doctor_concise
+    assert "DOC-002@1 is stale" in doctor_concise
+
+    assert validate(tmp_path, verbose_adoption=True) == 0
+    verbose = capsys.readouterr().err
+    assert (
+        "legacy metadata.depends_on value 'README.md' resolves to DOC-001"
+        in verbose
+    )
+    assert (
+        "legacy metadata.derived_from value 'asset.png': resource/outside catalog"
+        in verbose
+    )
+    assert "legacy relation values resolve to stable IDs;" not in verbose
+
+    assert doctor(tmp_path, verbose_adoption=True) == 0
+    doctor_verbose = capsys.readouterr().err
+    assert (
+        "legacy metadata.related value 'review.md' resolves to DOC-003"
+        in doctor_verbose
+    )
+
+    validate_args = build_parser().parse_args(
+        ["validate", str(tmp_path), "--verbose-adoption"]
+    )
+    doctor_args = build_parser().parse_args(
+        ["doctor", str(tmp_path), "--verbose-adoption"]
+    )
+    assert validate_args.verbose_adoption is True
+    assert doctor_args.verbose_adoption is True
+
+
+def test_concise_adoption_output_preserves_errors(
+    tmp_path: Path, capsys
+) -> None:
+    root = vertical_project(tmp_path)
+    target = root / "target.md"
+    target.write_text(
+        target.read_text(encoding="utf-8").replace(
+            "depends_on: [README.md]",
+            "depends_on: [README.md, DOC-999]",
+        ),
+        encoding="utf-8",
+    )
+
+    assert validate(tmp_path) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "references unknown ID DOC-999" in captured.err
+    assert "2 legacy relation values resolve to stable IDs" in captured.err
 
 
 def test_context_and_impact_expose_coverage_boundaries_and_snapshots(
