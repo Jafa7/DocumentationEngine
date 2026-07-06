@@ -7,3 +7,5 @@ __pycache__/
 /plan
 /.docsystem.toml
 /.docsystem/
+/.claude/
+/.paradigmarium/

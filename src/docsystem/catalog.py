@@ -214,11 +214,7 @@ def build_catalog(config: ProjectConfig) -> MarkdownCatalog:
             continue
         memberships.append(CatalogMembership("included", relative, role=role))
         content = path.read_text(encoding="utf-8")
-        front_matter = parse_front_matter(
-            content,
-            frozenset(config.identifiers.values()),
-            allow_legacy_paths=config.legacy_relation_mode == "resolve-with-warning",
-        )
+        front_matter = parse_front_matter(content, frozenset(config.identifiers.values()))
         section_result = parse_sections_result(content)
         documents.append(
             MarkdownDocument(
@@ -263,13 +259,18 @@ def build_catalog(config: ProjectConfig) -> MarkdownCatalog:
                         )
                     )
                     continue
-                legacy_edges.append(
-                    DependencyEdge(
-                        relation,
-                        document.metadata.document_id,
-                        target.metadata.document_id,
+                if config.legacy_relation_mode == "resolve-with-warning":
+                    legacy_edges.append(
+                        DependencyEdge(
+                            relation,
+                            document.metadata.document_id,
+                            target.metadata.document_id,
+                        )
                     )
-                )
+                # `relation_migrations` stays mode-independent: it is the
+                # deterministic inventory `migration-report`/`migrate`/
+                # `readiness` rely on, even before a project opts into
+                # `resolve-with-warning`.
                 migrations.append(
                     RelationMigration(
                         document.metadata.document_id,
@@ -429,24 +430,50 @@ def validate_metadata(catalog: MarkdownCatalog) -> tuple[ValidationIssue, ...]:
     )
 
 
-def validate_adoption(catalog: MarkdownCatalog) -> tuple[ValidationIssue, ...]:
-    """Expose every opt-in legacy mapping and unresolved boundary."""
+def validate_adoption(
+    catalog: MarkdownCatalog, config: ProjectConfig
+) -> tuple[ValidationIssue, ...]:
+    """Expose every opt-in legacy mapping and unresolved boundary.
+
+    Boundaries (external URLs and resources/paths outside the catalog) are
+    never document relations, so they remain non-blocking warnings in both
+    `strict` and `resolve-with-warning` mode. A legacy path that resolves to
+    an in-catalog document is a real document relation: in
+    `resolve-with-warning` mode it is a migratable warning and a graph edge;
+    in `strict` mode it remains a blocking error until it is migrated to a
+    stable ID (see `docsystem migrate`) or the project opts into
+    `resolve-with-warning`.
+    """
 
     paths = {
         document.metadata.document_id: document.path
         for document in catalog.documents
         if document.metadata is not None
     }
-    issues = [
-        ValidationIssue(
-            paths[item.source_id],
-            f"legacy metadata.{item.relation} value {item.value!r} "
-            f"resolves to {item.target_id}",
-            severity="warning",
-            category="adoption-resolved",
-        )
-        for item in catalog.relation_migrations
-    ]
+    issues: list[ValidationIssue] = []
+    for item in catalog.relation_migrations:
+        if config.legacy_relation_mode == "strict":
+            issues.append(
+                ValidationIssue(
+                    paths[item.source_id],
+                    f"metadata.{item.relation} entry {item.value!r} must use a "
+                    "configured stable ID (it resolves to "
+                    f"{item.target_id}; migrate it with `docsystem migrate` or "
+                    "enable relations.legacy_paths = resolve-with-warning)",
+                    severity="error",
+                    affects_graph=True,
+                )
+            )
+        else:
+            issues.append(
+                ValidationIssue(
+                    paths[item.source_id],
+                    f"legacy metadata.{item.relation} value {item.value!r} "
+                    f"resolves to {item.target_id}",
+                    severity="warning",
+                    category="adoption-resolved",
+                )
+            )
     for item in catalog.relation_boundaries:
         self_reference = item.reason == "self reference"
         issues.append(
@@ -590,7 +617,7 @@ def validate_catalog(
             (
                 *validate_membership(catalog),
                 *validate_metadata(catalog),
-                *validate_adoption(catalog),
+                *validate_adoption(catalog, config),
                 *validate_sections(catalog, config),
                 *validate_reachability(catalog, config),
             ),

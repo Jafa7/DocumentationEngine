@@ -1,3 +1,6 @@
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 from docsystem.catalog import build_catalog, build_dependency_graph
@@ -316,6 +319,43 @@ def test_context_anchor_error_has_no_partial_stdout(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "anchor not found in DOC-002: missing" in captured.err
+
+
+def test_cli_context_command_matches_library_output_from_unrelated_cwd(
+    tmp_path: Path, capsys
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    vertical_project(project_root)
+
+    assert context(project_root, "DOC-002", depth=1) == 0
+    expected_stdout = capsys.readouterr().out
+
+    unrelated_cwd = tmp_path / "unrelated-cwd"
+    unrelated_cwd.mkdir()
+    repo_src = Path(__file__).resolve().parents[1] / "src"
+    env = dict(os.environ, PYTHONPATH=str(repo_src))
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "docsystem",
+            "context",
+            "DOC-002",
+            str(project_root),
+            "--depth",
+            "1",
+        ],
+        cwd=unrelated_cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == expected_stdout
+    assert list(unrelated_cwd.iterdir()) == []
 
 
 def test_projection_retains_current_generation_with_configured_limit(

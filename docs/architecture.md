@@ -11,7 +11,7 @@ Documentation Engine owns deterministic documentation mechanics:
 - inspectable context packets with explicit coverage and omissions;
 - impact and changed-section analysis;
 - versioned, sharded machine projections;
-- bootstrap, diagnostics and migration tooling.
+- bootstrap, diagnostics, adoption readiness reporting and migration tooling.
 
 It does not decide whether an architectural claim is correct, whether a review
 is persuasive, or whether selected context is semantically sufficient.
@@ -123,7 +123,28 @@ For adoption only, `relations.legacy_paths = "resolve-with-warning"` allows the
 four path relations to resolve relative to their source document. Resolved
 values become ordinary canonical ID edges and remain visible as migration
 warnings. URLs and non-document resources are recorded as boundaries rather
-than invented edges. The strict stable-ID contract remains the default.
+than invented edges. The strict stable-ID contract remains the default: a
+legacy path resolving to a cataloged document is still blocked in `strict`
+mode until it is migrated or the project opts into `resolve-with-warning`.
+Boundaries are never document relations, so they never require
+`resolve-with-warning`: they are non-blocking in both modes. Catalog
+resolution of legacy values (`relation_migrations`, `relation_boundaries`) is
+independent of `relations.legacy_paths`, so `migration-report` and
+`readiness` can report what a project could migrate before it opts into the
+compatibility mode; only the resulting graph edges and validation severity
+depend on the configured mode.
+
+`docsystem migrate` computes a deterministic plan of the same resolved
+mappings, previews it by default, and — only with an explicit `--apply` —
+rewrites the exact YAML scalar span of each resolved value in place, leaving
+the rest of the document (formatting, comments, unknown fields, the body and
+all boundaries) untouched. `apply` re-validates the plan against a scratch
+copy of the documentation tree before writing, and writes every affected file
+through a temporary file that is renamed into place only after all temporary
+writes succeed, so a failure never leaves a partially migrated multi-file
+change. `docsystem readiness` is a read-only report over the same catalog
+data — blocking errors, resolvable migrations, boundaries, stale pins and
+projection state — with no source-mutating side effects.
 
 ATX headings outside fenced code blocks form deterministic addressable
 sections. A section includes nested headings until the next heading at the same
@@ -146,6 +167,7 @@ fall back to the default, while a configured non-H2 match is invalid.
 2. Markdown catalog and hierarchical reachability validation.
 3. Stable metadata, addressable sections and dependency graphs.
 4. Working context, impact, adoption and sharded-projection vertical slice.
-5. Mature migration workflow and lifecycle orchestration.
+5. Mature migration workflow (`migrate`, `readiness`) for legacy path
+   relations; lifecycle orchestration beyond this remains project-local.
 6. Thin Codex integration and generated agent instructions.
 7. MCP adapter and additional client integrations.

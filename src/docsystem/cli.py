@@ -19,6 +19,7 @@ from docsystem.catalog import (
     validate_metadata,
 )
 from docsystem.config import CONFIG_FILENAME, DEFAULT_CONFIG, load_config
+from docsystem.migration import apply_migration_plan, build_migration_plan, validate_plan
 from docsystem.projection import (
     build_projection,
     projection_status,
@@ -27,6 +28,7 @@ from docsystem.projection import (
 from docsystem.projection import (
     changes as projection_changes,
 )
+from docsystem.readiness import evaluate_readiness
 from docsystem.sections import extract_navigation, extract_section
 
 
@@ -268,7 +270,7 @@ def context(
             issue
             for issue in (
                 *validate_metadata(catalog_value),
-                *validate_adoption(catalog_value),
+                *validate_adoption(catalog_value, config),
             )
             if issue.affects_graph
             and issue.severity != "warning"
@@ -429,7 +431,7 @@ def impact(project_root: Path, document_id: str) -> int:
             for issue in (
                 *validate_membership(catalog_value),
                 *validate_metadata(catalog_value),
-                *validate_adoption(catalog_value),
+                *validate_adoption(catalog_value, config),
             )
             if issue.affects_graph and issue.severity != "warning"
         ]
@@ -502,6 +504,108 @@ def migration_report(project_root: Path) -> int:
             f"{item.value}\t{item.reason}"
         )
     return 0
+
+
+def migrate(project_root: Path, *, apply: bool = False) -> int:
+    """Preview, by default, or (with `apply`) write resolved legacy relations.
+
+    Preview is entirely read-only. `apply` computes the same plan, validates
+    it against a scratch copy of the documentation tree, and only then
+    rewrites the affected Markdown files atomically.
+    """
+
+    try:
+        config = load_config(project_root)
+    except ValueError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    if not config.documentation_root.is_dir():
+        print(
+            f"ERROR: documentation root does not exist: {config.documentation_root}",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        catalog_value = build_catalog(config)
+        plan = build_migration_plan(config, catalog_value)
+        problems = validate_plan(config, plan)
+    except (OSError, UnicodeError, ValueError) as error:
+        print(f"ERROR: failed to build migration plan: {error}", file=sys.stderr)
+        return 1
+    if problems:
+        for problem in problems:
+            print(f"ERROR: {problem}", file=sys.stderr)
+        return 1
+    if not plan.changes:
+        print("No resolvable legacy relation migrations found.")
+        return 0
+
+    for change in plan.changes:
+        print(
+            f"would-migrate\t{change.source_id}\t{change.relation}\t"
+            f"{change.old_value}\t{change.new_value}\t{change.path.as_posix()}"
+        )
+    if apply:
+        try:
+            apply_migration_plan(config, plan)
+        except (OSError, ValueError) as error:
+            print(f"ERROR: failed to apply migration: {error}", file=sys.stderr)
+            return 1
+        print(
+            f"Applied {len(plan.changes)} legacy relation migration(s) across "
+            f"{len(plan.updated_contents)} file(s)."
+        )
+    else:
+        print(
+            f"Preview only; {len(plan.changes)} legacy relation migration(s) across "
+            f"{len(plan.updated_contents)} file(s). Re-run with --apply to write."
+        )
+    return 0
+
+
+def readiness(project_root: Path) -> int:
+    """Report, read-only, whether an existing project is adoption-ready.
+
+    Stable summary data (counts, projection state, the next safe command)
+    goes to stdout; ERROR/WARNING diagnostics go to stderr, matching
+    `validate`, `doctor` and `migrate`.
+    """
+
+    try:
+        config = load_config(project_root)
+    except ValueError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    catalog_value = build_catalog(config)
+    report = evaluate_readiness(config, catalog_value)
+
+    print(f"# Adoption readiness: {project_root}")
+    print()
+    if not report.documentation_root_exists:
+        print(
+            f"ERROR: documentation root does not exist: {config.documentation_root}",
+            file=sys.stderr,
+        )
+        print(f"- Next safe command: {report.next_command(str(project_root))}")
+        return 1
+
+    print(f"- Blocking structural/configuration errors: {len(report.blocking)}")
+    for issue in report.blocking:
+        level = "WARNING" if issue.severity == "warning" else "ERROR"
+        print(f"  {level}: {issue.path.as_posix()}: {issue.message}", file=sys.stderr)
+    print(f"- Resolvable legacy relation migrations: {len(report.resolvable_migrations)}")
+    print(f"- Explicit unresolved/resource boundaries: {len(report.boundaries)}")
+    print(f"- Stale freshness pins: {len(report.stale_pins)}")
+    for issue in report.stale_pins:
+        print(f"  WARNING: {issue.path.as_posix()}: {issue.message}", file=sys.stderr)
+    print(f"- Projection: {report.projection_state} ({report.projection_reason})")
+    print()
+    print(
+        "Run `docsystem migration-report` or `docsystem validate --verbose-adoption` "
+        "for row-level migration and boundary detail."
+    )
+    print(f"- Next safe command: {report.next_command(str(project_root))}")
+    return 0 if report.ready else 1
 
 
 def index_projection(project_root: Path, *, write: bool = False) -> int:
@@ -700,6 +804,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     report_parser.add_argument("project", nargs="?", type=Path, default=Path.cwd())
 
+    migrate_parser = subparsers.add_parser(
+        "migrate",
+        help="Preview (default) or apply resolvable legacy relation migrations.",
+    )
+    migrate_parser.add_argument("project", nargs="?", type=Path, default=Path.cwd())
+    migrate_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write resolved values into Markdown source. Default is a "
+        "non-mutating preview.",
+    )
+
+    readiness_parser = subparsers.add_parser(
+        "readiness", help="Report adoption readiness without writing source."
+    )
+    readiness_parser.add_argument("project", nargs="?", type=Path, default=Path.cwd())
+
     index_parser = subparsers.add_parser("index", help="Check or write the projection.")
     index_parser.add_argument("project", nargs="?", type=Path, default=Path.cwd())
     index_parser.add_argument("--write", action="store_true")
@@ -736,6 +857,10 @@ def main() -> int:
         return impact(args.project, args.document_id)
     if args.command == "migration-report":
         return migration_report(args.project)
+    if args.command == "migrate":
+        return migrate(args.project, apply=args.apply)
+    if args.command == "readiness":
+        return readiness(args.project)
     if args.command == "index":
         return index_projection(args.project, write=args.write)
     if args.command == "changes":

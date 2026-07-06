@@ -17,6 +17,29 @@ Paradigmarium.
 - Mechanical maintenance is automated; semantic decisions remain reviewable.
 - AI integrations are adapters around a provider-neutral core.
 
+## Development setup vs. consumer install
+
+Development work in this checkout runs the CLI as a module against `src/`,
+either via `python -m docsystem ...` in an editable install or with
+`PYTHONPATH=src`. Downstream consumers (such as Paradigmarium) instead depend
+on `docsystem` as an ordinary installed package and invoke the `docsystem`
+console script produced by the build, with no `PYTHONPATH` and no direct
+import of this repository's sources.
+
+`uv.lock` pins the resolved dependency graph for this checkout.
+`uv lock --check` verifies the lockfile matches `pyproject.toml`.
+
+`scripts/installed_cli_smoke.sh` is the reproducible check for the consumer
+path: it builds a wheel from the current checkout, installs it into an
+isolated venv, and runs the installed `docsystem` entry point against a fresh
+fixture project from an unrelated working directory. It requires no API
+credentials, does not modify this repository, and cleans up all temporary
+files on exit.
+
+```bash
+./scripts/installed_cli_smoke.sh
+```
+
 ## Initial CLI
 
 ```bash
@@ -35,6 +58,9 @@ python -m docsystem dependencies DOC-001 . --reverse
 python -m docsystem context DOC-001 . --depth 1
 python -m docsystem impact DOC-001 .
 python -m docsystem migration-report .
+python -m docsystem readiness .
+python -m docsystem migrate .
+python -m docsystem migrate . --apply
 python -m docsystem index . --write
 python -m docsystem changes .
 ```
@@ -112,15 +138,41 @@ snapshot_types = ["review", "experiment"]
 
 Strict stable-ID relations remain the default. In the compatibility mode,
 resolvable paths become canonical graph edges and emit migration warnings.
-External URLs, resources and paths outside the catalog remain explicit
-boundaries. `migration-report` provides a deterministic dry-run report without
-editing Markdown.
+External URLs, resources and paths outside the catalog are never document
+relations, so they remain explicit, non-blocking boundaries in both `strict`
+and `resolve-with-warning` mode. A relative path that *does* resolve to a
+cataloged document is a real document relation: in `strict` mode it is a
+blocking error until it is migrated to a stable ID or the project opts into
+`resolve-with-warning`. `migration-report` reports both resolved mappings and
+boundaries as a deterministic dry-run, independent of the current
+`relations.legacy_paths` mode, without editing Markdown.
 
 By default, `validate` and `doctor` summarize expected resolved mappings and
 resource boundaries by count while printing stale pins and other warnings
 individually. Pass `--verbose-adoption` to either command for every row-level
 adoption warning. `migration-report` always remains the complete deterministic
 inventory.
+
+`readiness` is a read-only report for adopting an existing Markdown project.
+It distinguishes blocking structural/configuration errors, resolvable legacy
+relation migrations, explicit unresolved/resource boundaries, stale freshness
+pins and projection state (absent/stale/current), and prints the single safe
+next command. It never writes to Markdown, configuration or the projection
+cache.
+
+`migrate` previews, by default, every legacy relation value that
+`migration-report` already classifies as unambiguously resolved. Preview is
+read-only. `migrate --apply` re-validates the same plan against a scratch copy
+of the documentation tree and then rewrites only the exact resolved scalar in
+`derived_from`, `depends_on`, `related` or `supersedes` for each affected
+document — front matter formatting, comments, unknown fields, the document
+body and unresolved boundaries are left byte-for-byte untouched. Multi-file
+runs are all-or-nothing: if validation or a write fails, no file is left
+partially migrated. Re-running `migrate --apply` after a successful migration
+reports no further changes. Once every resolvable legacy relation has been
+migrated, a project whose remaining legacy values are all boundaries (URLs and
+resources) can drop `relations.legacy_paths = resolve-with-warning` and use
+`strict` mode without those boundaries becoming errors.
 
 `context` emits a deterministic Markdown packet containing navigation excerpts,
 semantic dependencies, explicit section selections, H2 coverage, omissions,

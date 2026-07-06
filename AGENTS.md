@@ -6,5 +6,6 @@
 - Prefer deterministic scripts for mechanical documentation maintenance.
 - Preserve existing project files during bootstrap and migration.
 - Every change to configuration behavior requires tests.
-- Run `python -m pytest` before handing work off.
-
+- Run `TMPDIR=/tmp TMP=/tmp TEMP=/tmp uv run pytest` before handing work off.
+  WSL sessions may inherit Windows temp directories; native `/tmp` keeps
+  pytest capture deterministic.

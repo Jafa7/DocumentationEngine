@@ -129,7 +129,6 @@ def _references(
     prefixes: frozenset[str],
     issues: list[str],
     graph_issues: list[str],
-    allow_legacy_paths: bool,
 ) -> tuple[tuple[MetadataReference, ...], tuple[tuple[str, str], ...]]:
     def report(message: str) -> None:
         issues.append(message)
@@ -156,12 +155,12 @@ def _references(
                     isinstance(value, str)
                     and DOCUMENT_ID_PATTERN.fullmatch(value) is not None
                 )
-                if (
-                    allow_legacy_paths
-                    and isinstance(value, str)
-                    and value
-                    and not id_shaped
-                ):
+                if isinstance(value, str) and value and not id_shaped:
+                    # A non-ID plain string is always a legacy-reference
+                    # candidate; the catalog layer resolves it against
+                    # `relations.legacy_paths` and classifies it as either a
+                    # migratable document relation or a permanent boundary
+                    # (URL/resource) that is never itself a stable ID.
                     legacy_references.append((relation, value))
                     continue
                 report(
@@ -218,8 +217,6 @@ def _references(
 def parse_front_matter(
     text: str,
     prefixes: frozenset[str],
-    *,
-    allow_legacy_paths: bool = False,
 ) -> FrontMatterResult:
     """Parse leading YAML front matter without rejecting additional fields."""
 
@@ -274,9 +271,7 @@ def parse_front_matter(
 
     document_type = _optional_string(raw, "type", issues)
     status = _optional_string(raw, "status", issues)
-    references, legacy_references = _references(
-        raw, prefixes, issues, graph_issues, allow_legacy_paths
-    )
+    references, legacy_references = _references(raw, prefixes, issues, graph_issues)
     metadata: DocumentMetadata | None = None
     if _valid_id(document_id, prefixes) and isinstance(revision, int) and not isinstance(
         revision, bool

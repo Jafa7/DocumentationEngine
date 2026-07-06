@@ -166,7 +166,10 @@ def test_forward_dependencies_fail_closed_for_source_graph_errors(
     assert dependencies(tmp_path, "DOC-002") == 1
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "entry '../legacy.md' must use a configured stable ID" in captured.err
+    # `../legacy.md` does not resolve to a cataloged document, so it is a
+    # permanent boundary rather than a document relation: it never blocks,
+    # even in the default strict mode.
+    assert "legacy.md" not in captured.err
     assert "references unknown ID DOC-999" in captured.err
 
     assert dependencies(tmp_path, "DOC-001") == 0

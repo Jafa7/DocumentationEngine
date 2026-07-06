@@ -148,12 +148,18 @@ validated_against: [DOC-001@1, DOC-001@1, DOC-001@0, invalid]
 """,
     )
 
-    messages = issue_messages(tmp_path)
+    catalog = build_catalog(load_config(tmp_path))
+    messages = [issue.message for issue in validate_metadata(catalog)]
 
-    assert (
-        "metadata.derived_from entry '../legacy/source.md' must use a configured "
-        "stable ID"
-    ) in messages
+    # `../legacy/source.md` does not resolve to a cataloged document: it is a
+    # permanent boundary (not a document relation), so it is no longer a
+    # metadata-level error even in the default strict mode. It still shows up
+    # as a boundary for `migration-report`/`readiness`.
+    assert not any("../legacy/source.md" in message for message in messages)
+    assert any(
+        item.value == "../legacy/source.md" and item.reason == "resource/outside catalog"
+        for item in catalog.relation_boundaries
+    )
     assert "metadata.depends_on cannot reference its own ID" in messages
     assert "metadata.depends_on references unknown ID DOC-999" in messages
     assert "metadata.depends_on contains duplicate reference DOC-001" in messages
