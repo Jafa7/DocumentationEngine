@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import sys
@@ -252,6 +253,25 @@ def test_context_and_impact_expose_coverage_boundaries_and_snapshots(
     assert args.include == ["DOC-003#findings"]
 
 
+def test_context_packet_stats_report_counts_and_body_size(
+    tmp_path: Path, capsys
+) -> None:
+    vertical_project(tmp_path)
+
+    assert context(tmp_path, "DOC-002", depth=1, includes=["DOC-003#findings"]) == 0
+    output = capsys.readouterr().out
+    body, separator, stats = output.partition("\n## Packet stats\n")
+    assert separator, "packet must end with a Packet stats section"
+    assert body.endswith("- Expand with --depth, --include-related, or --include ID#anchor.\n")
+    assert "- Included documents: 3" in stats
+    assert "- Explicit sections: 1" in stats
+    assert "- Omitted H2 sections: 1" in stats
+    assert (
+        f"- Body size: {body.count(chr(10))} lines, "
+        f"{len(body.encode('utf-8'))} UTF-8 bytes" in stats
+    )
+
+
 def test_projection_preserves_output_and_detects_stale_changes(
     tmp_path: Path, capsys
 ) -> None:
@@ -281,6 +301,43 @@ def test_projection_preserves_output_and_detects_stale_changes(
     assert context(tmp_path, "DOC-002", depth=1) == 0
     captured = capsys.readouterr()
     assert "projection stale; using direct Markdown" in captured.err
+
+
+def test_changes_json_is_deterministic_and_machine_readable(
+    tmp_path: Path, capsys
+) -> None:
+    root = vertical_project(tmp_path)
+
+    assert changes(tmp_path, json_output=True) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {"schema_version": 1, "status": "absent", "changes": []}
+
+    assert index_projection(tmp_path, write=True) == 0
+    capsys.readouterr()
+
+    target = root / "target.md"
+    target.write_text(
+        target.read_text(encoding="utf-8").replace(
+            "Detailed target content.", "Changed target content."
+        ),
+        encoding="utf-8",
+    )
+    assert changes(tmp_path, json_output=True) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "schema_version": 1,
+        "status": "compared",
+        "changes": [
+            {
+                "document_id": "DOC-002",
+                "kind": "changed",
+                "sections": ["details", "target"],
+            }
+        ],
+    }
+
+    args = build_parser().parse_args(["changes", str(tmp_path), "--json"])
+    assert args.json_output is True
 
 
 def test_projection_generation_is_immutable_and_corruption_falls_back(

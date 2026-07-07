@@ -7,6 +7,24 @@ grows.
 The project is in an early extraction stage. Its first integration fixture is
 Paradigmarium.
 
+## Connecting Documentation Engine to your project
+
+**If you are an AI agent** asked to set this up: follow
+[docs/setup-guide.md](docs/setup-guide.md) step by step. It contains the
+install/adoption flow, required user questions, backup-policy setup and checks.
+Do not improvise a local backup path or commit private planning paths.
+
+**If you are a human**: paste this to the agent in the project you want to
+adopt:
+
+```text
+Connect Documentation Engine to this project.
+Repository: https://github.com/Jafa7/DocumentationEngine
+Read docs/setup-guide.md in that repository and follow it exactly.
+Ask me where local disaster-recovery backups should be stored before touching
+ignored/private documentation or local configuration.
+```
+
 ## Principles
 
 - Markdown is the editable source of truth.
@@ -40,6 +58,16 @@ files on exit.
 ./scripts/installed_cli_smoke.sh
 ```
 
+When working from Windows, stage and commit this repository from inside WSL,
+not with Windows Git over `\\wsl.localhost`. Windows-side staging can drop
+the executable bit on shell scripts. CI expects
+`scripts/installed_cli_smoke.sh` to remain executable (`100755`):
+
+```bash
+git ls-files --stage scripts/installed_cli_smoke.sh
+test -x scripts/installed_cli_smoke.sh
+```
+
 ## Initial CLI
 
 ```bash
@@ -48,6 +76,7 @@ python -m docsystem doctor .
 python -m docsystem show-config .
 python -m docsystem catalog .
 python -m docsystem catalog . --explain
+python -m docsystem catalog . --explain --json
 python -m docsystem validate .
 python -m docsystem validate . --verbose-adoption
 python -m docsystem read DOC-001 .
@@ -58,11 +87,14 @@ python -m docsystem dependencies DOC-001 . --reverse
 python -m docsystem context DOC-001 . --depth 1
 python -m docsystem impact DOC-001 .
 python -m docsystem migration-report .
+python -m docsystem migration-report . --json
 python -m docsystem readiness .
+python -m docsystem readiness . --json
 python -m docsystem migrate .
 python -m docsystem migrate . --apply
 python -m docsystem index . --write
 python -m docsystem changes .
+python -m docsystem changes . --json
 ```
 
 `init` creates a project-local `.docsystem.toml` and the configured
@@ -160,6 +192,15 @@ pins and projection state (absent/stale/current), and prints the single safe
 next command. It never writes to Markdown, configuration or the projection
 cache.
 
+`readiness`, `migration-report`, `catalog --explain` and `changes` accept
+`--json` and print one deterministic JSON value (sorted keys, stable field
+names) instead of text, carrying the same information the text form prints
+plus what it sends to stderr, so a machine client never has to parse human
+prose. Every `--json` root is an object carrying `"schema_version": 1`;
+the version is bumped only on a breaking change to an existing field, so a
+consumer can detect format evolution without guessing. Exit codes are
+unchanged by `--json`.
+
 `migrate` previews, by default, every legacy relation value that
 `migration-report` already classifies as unambiguously resolved. Preview is
 read-only. `migrate --apply` re-validates the same plan against a scratch copy
@@ -177,7 +218,11 @@ resources) can drop `relations.legacy_paths = resolve-with-warning` and use
 `context` emits a deterministic Markdown packet containing navigation excerpts,
 semantic dependencies, explicit section selections, H2 coverage, omissions,
 stale pins and unresolved boundaries. It never silently truncates to a token
-budget. `impact` reports reverse metadata dependencies and distinguishes
+budget. The packet ends with a `Packet stats` section reporting how many
+documents and explicit sections were included, how many H2 sections were
+omitted, and the line/byte size of the packet body above it, so a client can
+budget a follow-up `--depth` or `--include` expansion without re-measuring
+the output. `impact` reports reverse metadata dependencies and distinguishes
 semantic, related-navigation, freshness and configured historical-snapshot
 relations.
 
@@ -189,7 +234,12 @@ when it is absent, stale or incompatible. Markdown remains the only editable
 truth.
 
 See [the adoption guide](docs/adoption.md) for a complete profile and migration
-sequence.
+sequence, [the Paradigmarium integration guide](docs/paradigmarium-integration.md)
+for downstream consumer guidance, and [the agent contract](docs/agent-contract.md)
+for how an AI client should safely drive this CLI.
+Projects that keep private documentation or local configuration outside git
+should also define a local backup command; see
+[local state safety](docs/local-state-safety.md).
 
 ## Deliberate project-local boundaries
 

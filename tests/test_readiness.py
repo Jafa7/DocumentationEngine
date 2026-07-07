@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import sys
@@ -87,6 +88,52 @@ def test_readiness_projection_state_transitions(tmp_path: Path, capsys) -> None:
     assert report.projection_state == "current"
     assert report.ready is True
     assert report.next_command(str(tmp_path)) == f"docsystem context DOCUMENT_ID {tmp_path}"
+
+
+def test_readiness_json_reports_missing_documentation_root(
+    tmp_path: Path, capsys
+) -> None:
+    (tmp_path / CONFIG_FILENAME).write_text(DEFAULT_CONFIG, encoding="utf-8")
+
+    assert readiness(tmp_path, json_output=True) == 1
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload == {
+        "schema_version": 1,
+        "documentation_root_exists": False,
+        "ready": False,
+        "next_command": f"docsystem init {tmp_path}",
+    }
+    assert captured.err == ""
+
+
+def test_readiness_json_carries_full_detail_without_parsing_stderr(
+    tmp_path: Path, capsys
+) -> None:
+    (tmp_path / CONFIG_FILENAME).write_text(DEFAULT_CONFIG, encoding="utf-8")
+    root = tmp_path / "plan"
+    root.mkdir()
+    (root / "orphan.md").write_text("# Orphan\n", encoding="utf-8")
+
+    assert readiness(tmp_path, json_output=True) == 1
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["schema_version"] == 1
+    assert payload["documentation_root_exists"] is True
+    assert payload["ready"] is False
+    assert len(payload["blocking"]) == 1
+    blocking = payload["blocking"][0]
+    assert blocking["path"] == "orphan.md"
+    assert "Markdown is not mapped to a configured area" in blocking["message"]
+    assert blocking["severity"] == "error"
+    assert payload["resolvable_migrations"] == []
+    assert payload["boundaries"] == []
+    assert payload["stale_pins"] == []
+    assert payload["projection"] == {
+        "state": "absent",
+        "reason": "projection absent",
+    }
+    assert payload["next_command"] == f"docsystem doctor {tmp_path}"
 
 
 def test_cli_readiness_sends_blocking_diagnostics_to_stderr_not_stdout(

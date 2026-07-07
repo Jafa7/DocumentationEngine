@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections import deque
 from pathlib import Path
@@ -22,6 +23,7 @@ from docsystem.config import CONFIG_FILENAME, DEFAULT_CONFIG, load_config
 from docsystem.migration import apply_migration_plan, build_migration_plan, validate_plan
 from docsystem.projection import (
     build_projection,
+    evaluate_changes,
     projection_status,
     write_projection,
 )
@@ -30,6 +32,21 @@ from docsystem.projection import (
 )
 from docsystem.readiness import evaluate_readiness
 from docsystem.sections import extract_navigation, extract_section
+
+# Version of every `--json` root object. Bump only on a breaking change to
+# an existing field; adding new fields is compatible and does not bump it.
+JSON_SCHEMA_VERSION = 1
+
+
+def _print_json(payload: dict[str, object]) -> None:
+    print(
+        json.dumps(
+            {"schema_version": JSON_SCHEMA_VERSION, **payload},
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+        )
+    )
 
 
 def _print_validation_issues(
@@ -117,7 +134,7 @@ def doctor(project_root: Path, *, verbose_adoption: bool = False) -> int:
     return 0
 
 
-def catalog(project_root: Path, *, explain: bool = False) -> int:
+def catalog(project_root: Path, *, explain: bool = False, json_output: bool = False) -> int:
     try:
         config = load_config(project_root)
     except ValueError as error:
@@ -125,9 +142,34 @@ def catalog(project_root: Path, *, explain: bool = False) -> int:
         return 1
     markdown_catalog = build_catalog(config)
     if explain:
+        if json_output:
+            _print_json(
+                {
+                    "memberships": [
+                        {
+                            "state": membership.state,
+                            "path": membership.path.as_posix(),
+                            "role": membership.role,
+                            "reason": membership.reason,
+                        }
+                        for membership in markdown_catalog.memberships
+                    ]
+                }
+            )
+            return 0
         for membership in markdown_catalog.memberships:
             detail = membership.role or membership.reason or "-"
             print(f"{membership.state}\t{detail}\t{membership.path.as_posix()}")
+        return 0
+    if json_output:
+        _print_json(
+            {
+                "documents": [
+                    {"role": document.role, "path": document.path.as_posix()}
+                    for document in markdown_catalog.documents
+                ]
+            }
+        )
         return 0
     for document in markdown_catalog.documents:
         print(f"{document.role}\t{document.path.as_posix()}")
@@ -299,19 +341,22 @@ def context(
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
 
-    print(f"# Context packet: {document_id}")
-    print()
-    print(f"- Dependency depth: {depth}")
-    print(f"- Related traversal: {'included' if include_related else 'omitted'}")
+    out: list[str] = []
+    explicit_count = 0
+    omitted_count = 0
+    out.append(f"# Context packet: {document_id}")
+    out.append("")
+    out.append(f"- Dependency depth: {depth}")
+    out.append(f"- Related traversal: {'included' if include_related else 'omitted'}")
     ordered = [document_id, *sorted(item for item in included if item != document_id)]
     for selected_id in ordered:
         document = by_id[selected_id]
-        print()
-        print(f"## {selected_id} — {document.path.as_posix()}")
-        print()
-        print(f"Relations: {', '.join(sorted(included[selected_id]))}.")
-        print()
-        print(
+        out.append("")
+        out.append(f"## {selected_id} — {document.path.as_posix()}")
+        out.append("")
+        out.append(f"Relations: {', '.join(sorted(included[selected_id]))}.")
+        out.append("")
+        out.append(
             extract_navigation(
                 document.content,
                 document.sections,
@@ -328,10 +373,11 @@ def context(
                 ),
                 None,
             )
-            print()
-            print(f"### Explicit section `{selected_anchor}`")
-            print()
-            print(extract_section(document.content, section).rstrip())
+            explicit_count += 1
+            out.append("")
+            out.append(f"### Explicit section `{selected_anchor}`")
+            out.append("")
+            out.append(extract_section(document.content, section).rstrip())
         omitted = [
             item.anchor
             for item in document.sections
@@ -339,15 +385,16 @@ def context(
             and item.anchor not in config.navigation_extend_through
             and item.anchor not in selected
         ]
-        print()
-        print(
+        omitted_count += len(omitted)
+        out.append("")
+        out.append(
             "_Coverage: navigation"
             + (" + explicit sections" if selected else "")
             + f". Omitted H2: {', '.join(omitted) if omitted else 'none'}._"
         )
-    print()
-    print("## Diagnostics and boundaries")
-    print()
+    out.append("")
+    out.append("## Diagnostics and boundaries")
+    out.append("")
     notes: list[str] = []
     freshness_found = False
     for selected_id in ordered:
@@ -409,8 +456,19 @@ def context(
         if related:
             notes.append("Related omitted: " + ", ".join(related))
     for note in sorted(set(notes)):
-        print(f"- {note}")
-    print("- Expand with --depth, --include-related, or --include ID#anchor.")
+        out.append(f"- {note}")
+    out.append("- Expand with --depth, --include-related, or --include ID#anchor.")
+    body = "\n".join(out) + "\n"
+    line_count = body.count("\n")
+    byte_count = len(body.encode("utf-8"))
+    sys.stdout.write(body)
+    print()
+    print("## Packet stats")
+    print()
+    print(f"- Included documents: {len(ordered)}")
+    print(f"- Explicit sections: {explicit_count}")
+    print(f"- Omitted H2 sections: {omitted_count}")
+    print(f"- Body size: {line_count} lines, {byte_count} UTF-8 bytes")
     return 0
 
 
@@ -486,13 +544,37 @@ def impact(project_root: Path, document_id: str) -> int:
     return 0
 
 
-def migration_report(project_root: Path) -> int:
+def migration_report(project_root: Path, *, json_output: bool = False) -> int:
     try:
         config = load_config(project_root)
         catalog_value = build_catalog(config)
     except ValueError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
+    if json_output:
+        _print_json(
+            {
+                "resolved": [
+                    {
+                        "source_id": item.source_id,
+                        "relation": item.relation,
+                        "value": item.value,
+                        "target_id": item.target_id,
+                    }
+                    for item in catalog_value.relation_migrations
+                ],
+                "boundaries": [
+                    {
+                        "source_id": item.source_id,
+                        "relation": item.relation,
+                        "value": item.value,
+                        "reason": item.reason,
+                    }
+                    for item in catalog_value.relation_boundaries
+                ],
+            }
+        )
+        return 0
     for item in catalog_value.relation_migrations:
         print(
             f"resolved\t{item.source_id}\t{item.relation}\t"
@@ -563,12 +645,23 @@ def migrate(project_root: Path, *, apply: bool = False) -> int:
     return 0
 
 
-def readiness(project_root: Path) -> int:
+def _issue_json(issue: ValidationIssue) -> dict[str, object]:
+    return {
+        "path": issue.path.as_posix(),
+        "message": issue.message,
+        "severity": issue.severity,
+        "target_id": issue.target_id,
+    }
+
+
+def readiness(project_root: Path, *, json_output: bool = False) -> int:
     """Report, read-only, whether an existing project is adoption-ready.
 
     Stable summary data (counts, projection state, the next safe command)
     goes to stdout; ERROR/WARNING diagnostics go to stderr, matching
-    `validate`, `doctor` and `migrate`.
+    `validate`, `doctor` and `migrate`. `--json` prints one deterministic
+    object carrying the same data in full instead of counts, so a consumer
+    never has to parse the stderr diagnostics.
     """
 
     try:
@@ -578,17 +671,63 @@ def readiness(project_root: Path) -> int:
         return 1
     catalog_value = build_catalog(config)
     report = evaluate_readiness(config, catalog_value)
+    next_command = report.next_command(str(project_root))
+
+    if not report.documentation_root_exists:
+        if json_output:
+            _print_json(
+                {
+                    "documentation_root_exists": False,
+                    "ready": False,
+                    "next_command": next_command,
+                }
+            )
+        else:
+            print(f"# Adoption readiness: {project_root}")
+            print()
+            print(
+                f"ERROR: documentation root does not exist: {config.documentation_root}",
+                file=sys.stderr,
+            )
+            print(f"- Next safe command: {next_command}")
+        return 1
+
+    if json_output:
+        _print_json(
+            {
+                "documentation_root_exists": True,
+                "ready": report.ready,
+                "blocking": [_issue_json(issue) for issue in report.blocking],
+                "resolvable_migrations": [
+                    {
+                        "source_id": item.source_id,
+                        "relation": item.relation,
+                        "value": item.value,
+                        "target_id": item.target_id,
+                    }
+                    for item in report.resolvable_migrations
+                ],
+                "boundaries": [
+                    {
+                        "source_id": item.source_id,
+                        "relation": item.relation,
+                        "value": item.value,
+                        "reason": item.reason,
+                    }
+                    for item in report.boundaries
+                ],
+                "stale_pins": [_issue_json(issue) for issue in report.stale_pins],
+                "projection": {
+                    "state": report.projection_state,
+                    "reason": report.projection_reason,
+                },
+                "next_command": next_command,
+            }
+        )
+        return 0 if report.ready else 1
 
     print(f"# Adoption readiness: {project_root}")
     print()
-    if not report.documentation_root_exists:
-        print(
-            f"ERROR: documentation root does not exist: {config.documentation_root}",
-            file=sys.stderr,
-        )
-        print(f"- Next safe command: {report.next_command(str(project_root))}")
-        return 1
-
     print(f"- Blocking structural/configuration errors: {len(report.blocking)}")
     for issue in report.blocking:
         level = "WARNING" if issue.severity == "warning" else "ERROR"
@@ -604,7 +743,7 @@ def readiness(project_root: Path) -> int:
         "Run `docsystem migration-report` or `docsystem validate --verbose-adoption` "
         "for row-level migration and boundary detail."
     )
-    print(f"- Next safe command: {report.next_command(str(project_root))}")
+    print(f"- Next safe command: {next_command}")
     return 0 if report.ready else 1
 
 
@@ -640,7 +779,7 @@ def index_projection(project_root: Path, *, write: bool = False) -> int:
         return 1
 
 
-def changes(project_root: Path) -> int:
+def changes(project_root: Path, *, json_output: bool = False) -> int:
     try:
         config = load_config(project_root)
         catalog_value = build_catalog(config)
@@ -657,6 +796,22 @@ def changes(project_root: Path) -> int:
                 )
             return 1
         current = build_projection(catalog_value)
+        if json_output:
+            report = evaluate_changes(config, current)
+            _print_json(
+                {
+                    "status": report.status,
+                    "changes": [
+                        {
+                            "document_id": change.document_id,
+                            "kind": change.kind,
+                            "sections": list(change.sections),
+                        }
+                        for change in report.changes
+                    ],
+                }
+            )
+            return 0
         for line in projection_changes(config, current):
             print(line)
         return 0
@@ -761,6 +916,12 @@ def build_parser() -> argparse.ArgumentParser:
                 action="store_true",
                 help="Classify every Markdown source under the documentation root.",
             )
+            command_parser.add_argument(
+                "--json",
+                action="store_true",
+                dest="json_output",
+                help="Print a deterministic JSON array instead of tab-separated text.",
+            )
         if command in {"doctor", "validate"}:
             command_parser.add_argument(
                 "--verbose-adoption",
@@ -803,6 +964,12 @@ def build_parser() -> argparse.ArgumentParser:
         "migration-report", help="Report legacy relation adoption mappings."
     )
     report_parser.add_argument("project", nargs="?", type=Path, default=Path.cwd())
+    report_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print a deterministic JSON object instead of tab-separated text.",
+    )
 
     migrate_parser = subparsers.add_parser(
         "migrate",
@@ -820,6 +987,12 @@ def build_parser() -> argparse.ArgumentParser:
         "readiness", help="Report adoption readiness without writing source."
     )
     readiness_parser.add_argument("project", nargs="?", type=Path, default=Path.cwd())
+    readiness_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print a deterministic JSON object instead of a text summary.",
+    )
 
     index_parser = subparsers.add_parser("index", help="Check or write the projection.")
     index_parser.add_argument("project", nargs="?", type=Path, default=Path.cwd())
@@ -827,6 +1000,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     changes_parser = subparsers.add_parser("changes", help="Show changes since projection.")
     changes_parser.add_argument("project", nargs="?", type=Path, default=Path.cwd())
+    changes_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print a deterministic JSON object instead of tab-separated text.",
+    )
     return parser
 
 
@@ -843,7 +1022,7 @@ def main() -> int:
     if args.command == "dependencies":
         return dependencies(args.project, args.document_id, reverse=args.reverse)
     if args.command == "catalog":
-        return catalog(args.project, explain=args.explain)
+        return catalog(args.project, explain=args.explain, json_output=args.json_output)
     if args.command == "context":
         return context(
             args.project,
@@ -856,15 +1035,15 @@ def main() -> int:
     if args.command == "impact":
         return impact(args.project, args.document_id)
     if args.command == "migration-report":
-        return migration_report(args.project)
+        return migration_report(args.project, json_output=args.json_output)
     if args.command == "migrate":
         return migrate(args.project, apply=args.apply)
     if args.command == "readiness":
-        return readiness(args.project)
+        return readiness(args.project, json_output=args.json_output)
     if args.command == "index":
         return index_projection(args.project, write=args.write)
     if args.command == "changes":
-        return changes(args.project)
+        return changes(args.project, json_output=args.json_output)
     if args.command == "doctor":
         return doctor(
             args.project, verbose_adoption=args.verbose_adoption

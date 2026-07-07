@@ -1,3 +1,4 @@
+import json
 import os
 import stat
 import subprocess
@@ -273,6 +274,43 @@ def test_migrate_apply_changes_only_resolved_scalars_and_is_idempotent(
     report = capsys.readouterr().out
     assert "resolved" not in report
     assert "boundary\tDOC-002\trelated\thttps://example.com/spec\texternal URL" in report
+
+
+def test_migration_report_json_is_deterministic_and_machine_readable(
+    tmp_path: Path, capsys
+) -> None:
+    existing_project(tmp_path)
+
+    assert migration_report(tmp_path, json_output=True) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "schema_version": 1,
+        "resolved": [
+            {
+                "source_id": "DOC-002",
+                "relation": "depends_on",
+                "value": "../README.md",
+                "target_id": "DOC-001",
+            }
+        ],
+        "boundaries": [
+            {
+                "source_id": "DOC-002",
+                "relation": "related",
+                "value": "diagram.png",
+                "reason": "resource/outside catalog",
+            },
+            {
+                "source_id": "DOC-002",
+                "relation": "related",
+                "value": "https://example.com/spec",
+                "reason": "external URL",
+            },
+        ],
+    }
+
+    args = build_parser().parse_args(["migration-report", str(tmp_path), "--json"])
+    assert args.json_output is True
 
 
 def test_full_migration_lets_strict_mode_drop_resolve_with_warning(

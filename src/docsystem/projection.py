@@ -6,6 +6,7 @@ import hashlib
 import json
 import shutil
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,28 @@ from docsystem.catalog import MarkdownCatalog, build_dependency_graph
 from docsystem.config import ProjectConfig
 
 SCHEMA_VERSION = 1
+
+
+@dataclass(frozen=True)
+class DocumentChange:
+    """One document-level change between a projection and current Markdown."""
+
+    document_id: str
+    kind: str
+    sections: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ChangesReport:
+    """A deterministic snapshot of changes since the selected projection.
+
+    `status` is `"absent"` when no projection has ever been written,
+    `"unavailable"` when the selected generation cannot be read, or
+    `"compared"` when `changes` reflects a real comparison (possibly empty).
+    """
+
+    status: str
+    changes: tuple[DocumentChange, ...] = field(default_factory=tuple)
 
 
 def _sha(text: str) -> str:
@@ -232,10 +255,12 @@ def write_projection(config: ProjectConfig, projection: dict[str, Any]) -> str:
     return generation
 
 
-def changes(config: ProjectConfig, current: dict[str, Any]) -> tuple[str, ...]:
+def evaluate_changes(config: ProjectConfig, current: dict[str, Any]) -> ChangesReport:
+    """Compare `current` against the selected projection generation, if any."""
+
     pointer = cache_root(config) / "current.json"
     if not pointer.is_file():
-        return ("projection absent; every document is new",)
+        return ChangesReport(status="absent")
     try:
         selected = _read(pointer)
         manifest = _read(
@@ -245,25 +270,42 @@ def changes(config: ProjectConfig, current: dict[str, Any]) -> tuple[str, ...]:
             / "manifest.json"
         )
     except (OSError, KeyError, ValueError, json.JSONDecodeError):
-        return ("projection unavailable; changes cannot be compared",)
+        return ChangesReport(status="unavailable")
     previous = manifest.get("documents", {})
-    lines: list[str] = []
     current_documents = current["documents"]
+    document_changes: list[DocumentChange] = []
     for document_id in sorted(set(previous) | set(current_documents)):
         if document_id not in previous:
-            lines.append(f"added\t{document_id}")
+            document_changes.append(DocumentChange(document_id, "added"))
         elif document_id not in current_documents:
-            lines.append(f"removed\t{document_id}")
+            document_changes.append(DocumentChange(document_id, "removed"))
         elif (
             previous[document_id].get("source_sha256")
             != current_documents[document_id].get("source_sha256")
         ):
-            lines.append(f"changed\t{document_id}")
             old_sections = previous[document_id].get("sections", {})
             new_sections = current_documents[document_id].get("sections", {})
-            for anchor in sorted(set(old_sections) | set(new_sections)):
-                old_hash = old_sections.get(anchor, {}).get("sha256")
-                new_hash = new_sections.get(anchor, {}).get("sha256")
-                if old_hash != new_hash:
-                    lines.append(f"section\t{document_id}#{anchor}")
+            changed_sections = tuple(
+                sorted(
+                    anchor
+                    for anchor in set(old_sections) | set(new_sections)
+                    if old_sections.get(anchor, {}).get("sha256")
+                    != new_sections.get(anchor, {}).get("sha256")
+                )
+            )
+            document_changes.append(DocumentChange(document_id, "changed", changed_sections))
+    return ChangesReport(status="compared", changes=tuple(document_changes))
+
+
+def changes(config: ProjectConfig, current: dict[str, Any]) -> tuple[str, ...]:
+    report = evaluate_changes(config, current)
+    if report.status == "absent":
+        return ("projection absent; every document is new",)
+    if report.status == "unavailable":
+        return ("projection unavailable; changes cannot be compared",)
+    lines: list[str] = []
+    for change in report.changes:
+        lines.append(f"{change.kind}\t{change.document_id}")
+        for anchor in change.sections:
+            lines.append(f"section\t{change.document_id}#{anchor}")
     return tuple(lines) or ("no changes",)

@@ -58,6 +58,12 @@ docsystem index .
 docsystem changes .
 ```
 
+`catalog --explain`, `readiness`, `migration-report` and `changes` also
+accept `--json` for a deterministic, machine-readable form of the same
+report; see [the Paradigmarium integration guide](paradigmarium-integration.md)
+and [`examples/paradigmarium-profile/`](../examples/paradigmarium-profile/)
+for a runnable profile and a wrapper-oriented walkthrough.
+
 Every command above is read-only. `readiness` is the single compact entry
 point: it distinguishes blocking structural/configuration errors, resolvable
 legacy relation migrations, explicit unresolved/resource boundaries, stale
@@ -113,6 +119,15 @@ serving the same Markdown semantics. An absent, stale, corrupt or incompatible
 projection produces a stderr warning and falls back to direct source reads.
 `changes` compares the current Markdown-derived state with the selected
 generation.
+
+## Local-only state and backups
+
+An adopting project may intentionally keep its documentation root,
+`.docsystem.toml` and `.docsystem/` cache out of git. That is supported, but
+it means git cannot recover those files after an accidental recursive copy,
+delete or migration mistake. Define a local backup command before letting an
+agent perform broad or mutating work on ignored documentation. The reusable
+contract is described in [local state safety](local-state-safety.md).
 
 Project-specific registry synchronization, `finish` orchestration, private
 history/backup, and provider adapters remain outside this adoption profile.

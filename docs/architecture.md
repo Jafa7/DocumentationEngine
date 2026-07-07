@@ -87,6 +87,14 @@ directories are never rewritten. Readers validate schema, generation identity,
 source hashes and required shards; invalid or stale projections fall back to
 direct Markdown with a diagnostic.
 
+Projection writes assume a single writer. Two concurrent `index --write`
+runs do not corrupt a generation (staging plus rename is atomic per
+generation), but retention cleanup may delete an older generation that a
+concurrent reader has already selected; that reader then falls back to
+direct Markdown with a visible diagnostic rather than serving mixed state.
+Coordinating multiple writers is a caller/orchestrator responsibility, not
+core engine behavior.
+
 ## Markdown catalog and navigation
 
 The catalog classifies every Markdown file below the documentation root.
@@ -145,6 +153,15 @@ writes succeed, so a failure never leaves a partially migrated multi-file
 change. `docsystem readiness` is a read-only report over the same catalog
 data — blocking errors, resolvable migrations, boundaries, stale pins and
 projection state — with no source-mutating side effects.
+
+`readiness`, `migration-report`, `catalog --explain` and `changes` accept
+`--json`: one deterministic JSON value (sorted keys, stable field names) that
+carries the same data as the text form plus the diagnostics that otherwise go
+only to stderr, so a machine or AI-agent client never has to parse
+human-oriented prose to act on the result. Every `--json` root is an object
+carrying `"schema_version": 1`, bumped only on a breaking change to an
+existing field; new fields may be added without a bump. Adding `--json` to a
+command never changes its exit code or its default text output.
 
 ATX headings outside fenced code blocks form deterministic addressable
 sections. A section includes nested headings until the next heading at the same
