@@ -1,0 +1,31 @@
+version = 1
+
+[documentation]
+root = "plan"
+language = "en"
+
+[areas]
+workspace = "."
+architecture = "architecture"
+decisions = "decisions"
+reviews = "reviews"
+experiments = "experiments"
+
+[identifiers]
+document = "PDOC"
+decision = "PDEC"
+roadmap = "PRM"
+
+[catalog]
+exclude = ["templates/*-template.md"]
+
+[navigation]
+extend_through = ["summary", "contents"]
+
+[relations]
+legacy_paths = "strict"
+snapshot_types = ["review", "experiment"]
+
+[projection]
+format = "sharded-json"
+keep_generations = 2
