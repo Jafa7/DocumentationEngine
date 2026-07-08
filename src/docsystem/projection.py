@@ -456,7 +456,9 @@ def write_projection(config: ProjectConfig, projection: dict[str, Any]) -> str:
         (
             path
             for path in generations.iterdir()
-            if path.is_dir() and path != generation_dir
+            if path.is_dir()
+            and path != generation_dir
+            and not path.name.startswith(".staging-")
         ),
         key=lambda path: (path.stat().st_mtime_ns, path.name),
         reverse=True,

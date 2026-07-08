@@ -725,3 +725,40 @@ def test_projection_retains_current_generation_with_configured_limit(
     retained = {path.name for path in generation_root.iterdir()}
     assert len(retained) == 2
     assert generations[-1] in retained
+
+
+def test_projection_retention_ignores_leftover_staging_directories(
+    tmp_path: Path,
+) -> None:
+    root = vertical_project(tmp_path)
+    config = load_config(tmp_path)
+    target = root / "target.md"
+
+    generations: list[str] = []
+    for revision in range(2):
+        target.write_text(
+            target.read_text(encoding="utf-8")
+            + f"\nGeneration marker {revision}.\n",
+            encoding="utf-8",
+        )
+        projection = build_projection(build_catalog(config), config)
+        generations.append(write_projection(config, projection))
+
+    generation_root = tmp_path / ".docsystem" / "cache" / "generations"
+    staging = generation_root / ".staging-leftover"
+    staging.mkdir()
+
+    target.write_text(
+        target.read_text(encoding="utf-8") + "\nGeneration marker 2.\n",
+        encoding="utf-8",
+    )
+    projection = build_projection(build_catalog(config), config)
+    generations.append(write_projection(config, projection))
+
+    retained_real = {
+        path.name
+        for path in generation_root.iterdir()
+        if path.is_dir() and not path.name.startswith(".staging-")
+    }
+    assert retained_real == {generations[-2], generations[-1]}
+    assert staging.is_dir()
