@@ -58,8 +58,8 @@ docsystem index .
 docsystem changes .
 ```
 
-`catalog --explain`, `readiness`, `migration-report` and `changes` also
-accept `--json` for a deterministic, machine-readable form of the same
+`catalog --explain`, `readiness`, `migration-report`, `changes` and `context`
+also accept `--json` for a deterministic, machine-readable form of the same
 report; see [the Paradigmarium integration guide](paradigmarium-integration.md)
 and [`examples/paradigmarium-profile/`](../examples/paradigmarium-profile/)
 for a runnable profile and a wrapper-oriented walkthrough.
@@ -114,11 +114,16 @@ into counts so operational diagnostics remain small. Both accept
 `--verbose-adoption` when the full warning context is needed. Stale pins and
 other non-adoption warnings are always printed individually.
 
-After an index is written, `read`, `context` and `impact` validate it before
-serving the same Markdown semantics. An absent, stale, corrupt or incompatible
-projection produces a stderr warning and falls back to direct source reads.
-`changes` compares the current Markdown-derived state with the selected
-generation.
+After an index is written, `read`, `context` and `impact` serve from it: the
+projection is verified against the current sources (every included file is
+re-hashed against the generation manifest), against the active configuration
+fingerprint (so a semantic config change such as `relations.legacy_paths` or
+`navigation.extend_through` invalidates it), and against a generation hash
+reconstructed from the shards (so semantic shard tampering is caught). When
+current, shards replace Markdown parsing while producing byte-identical output.
+An absent, stale, corrupt or incompatible projection produces a stderr warning
+and falls back to direct source reads. `changes` compares the current
+Markdown-derived state with the selected generation.
 
 ## Local-only state and backups
 

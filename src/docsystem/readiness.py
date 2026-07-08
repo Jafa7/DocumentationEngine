@@ -117,7 +117,7 @@ def evaluate_readiness(
     boundaries = tuple(
         item for item in catalog.relation_boundaries if item.reason != "self reference"
     )
-    current_projection = build_projection(catalog)
+    current_projection = build_projection(catalog, config)
     valid, reason = projection_status(config, current_projection)
     projection_present = reason != "projection absent"
     return ReadinessReport(

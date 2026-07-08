@@ -1,8 +1,10 @@
+import hashlib
 import json
 import os
 import subprocess
 import sys
-from pathlib import Path
+from dataclasses import replace
+from pathlib import Path, PurePosixPath
 
 from docsystem.catalog import build_catalog, build_dependency_graph
 from docsystem.cli import (
@@ -13,10 +15,11 @@ from docsystem.cli import (
     impact,
     index_projection,
     migration_report,
+    read_document,
     validate,
 )
 from docsystem.config import CONFIG_FILENAME, DEFAULT_CONFIG, load_config
-from docsystem.projection import build_projection, write_projection
+from docsystem.projection import build_projection, config_fingerprint, write_projection
 
 
 def vertical_project(tmp_path: Path) -> Path:
@@ -303,6 +306,292 @@ def test_projection_preserves_output_and_detects_stale_changes(
     assert "projection stale; using direct Markdown" in captured.err
 
 
+def test_config_fingerprint_covers_projection_relevant_fields(
+    tmp_path: Path,
+) -> None:
+    vertical_project(tmp_path)
+    base = load_config(tmp_path)
+    baseline = config_fingerprint(base)
+
+    # Deterministic: the same configuration always fingerprints identically.
+    assert config_fingerprint(load_config(tmp_path)) == baseline
+
+    # Every field that affects catalog membership, metadata parsing, section or
+    # navigation policy, dependency-graph semantics, or projection layout must
+    # move the fingerprint.
+    variants = {
+        "documentation_root": replace(
+            base, documentation_root=base.project_root / "other"
+        ),
+        "areas": replace(
+            base, areas={**base.areas, "extra": PurePosixPath("extra")}
+        ),
+        "identifiers": replace(
+            base, identifiers={**base.identifiers, "note": "NOTE"}
+        ),
+        "catalog_exclusions": replace(base, catalog_exclusions=("drafts/**.md",)),
+        "navigation_extend_through": replace(
+            base, navigation_extend_through=("summary",)
+        ),
+        "legacy_relation_mode": replace(base, legacy_relation_mode="strict"),
+        "snapshot_document_types": replace(
+            base, snapshot_document_types=("review",)
+        ),
+        "projection_format": replace(base, projection_format="other-json"),
+    }
+    for field, variant in variants.items():
+        assert config_fingerprint(variant) != baseline, field
+
+    # keep_generations is a retention knob only; it must not invalidate an
+    # otherwise identical projection.
+    assert (
+        config_fingerprint(replace(base, keep_generations=base.keep_generations + 1))
+        == baseline
+    )
+
+
+def test_config_semantics_invalidate_projection_for_legacy_paths(
+    tmp_path: Path, capsys
+) -> None:
+    vertical_project(tmp_path)
+    # Build a projection while legacy path relations resolve with a warning.
+    assert index_projection(tmp_path, write=True) == 0
+    capsys.readouterr()
+
+    # Tighten relations.legacy_paths to strict without touching any Markdown.
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            'legacy_paths = "resolve-with-warning"', 'legacy_paths = "strict"'
+        ),
+        encoding="utf-8",
+    )
+
+    # The stale projection must not be served: the config fingerprint no longer
+    # matches, so the read falls back to direct Markdown and fails closed on the
+    # now-invalid legacy path relations instead of emitting resolved edges.
+    assert context(tmp_path, "DOC-002", depth=1) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert (
+        "projection stale: configuration changed; using direct Markdown"
+        in captured.err
+    )
+    assert "must use a configured stable ID" in captured.err
+
+
+def test_config_semantics_invalidate_projection_for_navigation(
+    tmp_path: Path, capsys
+) -> None:
+    vertical_project(tmp_path)
+    # Build a projection under the initial navigation policy.
+    assert index_projection(tmp_path, write=True) == 0
+    capsys.readouterr()
+
+    # Extend navigation through an anchor that resolves to the document H1,
+    # which the navigation policy rejects, without changing any Markdown.
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            'extend_through = ["summary", "contents"]',
+            'extend_through = ["summary", "contents", "target"]',
+        ),
+        encoding="utf-8",
+    )
+
+    assert read_document(tmp_path, "DOC-002", navigation=True) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert (
+        "projection stale: configuration changed; using direct Markdown"
+        in captured.err
+    )
+    assert (
+        "navigation.extend_through anchor 'target' resolves to H1" in captured.err
+    )
+
+
+def test_semantic_shard_tampering_falls_back_and_preserves_dependency(
+    tmp_path: Path, capsys
+) -> None:
+    vertical_project(tmp_path)
+    config = load_config(tmp_path)
+    generation = write_projection(config, build_projection(build_catalog(config), config))
+    generation_dir = (
+        tmp_path / ".docsystem" / "cache" / "generations" / generation
+    )
+
+    # Drop DOC-002's dependencies from the shard while leaving the shard
+    # identity and the Markdown source hashes untouched.
+    shard_path = next(generation_dir.glob("documents/**/DOC-002.json"))
+    shard = json.loads(shard_path.read_text(encoding="utf-8"))
+    assert shard["dependencies"], "DOC-002 must have a dependency to drop"
+    shard["dependencies"] = []
+    shard_path.write_text(
+        json.dumps(shard, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    # The reconstructed generation hash no longer matches, so the read falls
+    # back to direct Markdown, warns, and still reports the dropped dependency.
+    assert context(tmp_path, "DOC-002", depth=1) == 0
+    captured = capsys.readouterr()
+    assert "projection corrupt; using direct Markdown" in captured.err
+    assert "## DOC-001 — README.md" in captured.out
+    assert "DOC-002: depends_on README.md -> DOC-001" in captured.out
+
+
+def test_manifest_source_hash_tampering_falls_back_to_markdown(
+    tmp_path: Path, capsys
+) -> None:
+    root = vertical_project(tmp_path)
+    config = load_config(tmp_path)
+    generation = write_projection(config, build_projection(build_catalog(config), config))
+    manifest_path = (
+        tmp_path
+        / ".docsystem"
+        / "cache"
+        / "generations"
+        / generation
+        / "manifest.json"
+    )
+
+    # Edit a source and rewrite only the manifest hash to match, leaving the
+    # shard (and its generation-bound source hash) untouched. The manifest is
+    # generated data, so its freshness fields must not be trusted on their own:
+    # the loader binds them to the verified shard and falls back instead of
+    # serving stale shard structure against edited Markdown.
+    target = root / "target.md"
+    edited = target.read_text(encoding="utf-8").replace(
+        "Detailed target content.", "Tampered target content."
+    )
+    target.write_text(edited, encoding="utf-8")
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["documents"]["DOC-002"]["source_sha256"] = hashlib.sha256(
+        edited.encode()
+    ).hexdigest()
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    assert context(tmp_path, "DOC-002", depth=1) == 0
+    captured = capsys.readouterr()
+    assert "projection manifest mismatch; using direct Markdown" in captured.err
+    assert "## DOC-001 — README.md" in captured.out
+
+
+def test_context_json_is_deterministic_and_machine_readable(
+    tmp_path: Path, capsys
+) -> None:
+    vertical_project(tmp_path)
+
+    assert (
+        context(
+            tmp_path,
+            "DOC-002",
+            depth=1,
+            includes=["DOC-003#findings"],
+            json_output=True,
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["schema_version"] == 1
+    assert payload["target"] == "DOC-002"
+    assert payload["depth"] == 1
+    assert payload["include_related"] is False
+    assert [item["id"] for item in payload["documents"]] == [
+        "DOC-002",
+        "DOC-001",
+        "DOC-003",
+    ]
+    target_document = payload["documents"][0]
+    assert target_document["relations"] == ["target"]
+    assert target_document["omitted_h2"] == ["details"]
+    assert "# Target" in target_document["navigation"]
+    review = payload["documents"][2]
+    assert review["explicit_sections"] == [
+        {"anchor": "findings", "content": "## Findings\nFinding details."}
+    ]
+    assert payload["freshness"] == [
+        {
+            "source_id": "DOC-003",
+            "target_id": "DOC-002",
+            "pinned_revision": 1,
+            "current_revision": 2,
+            "classification": "historical snapshot",
+        }
+    ]
+    assert {item["value"] for item in payload["migrations"]} == {
+        "README.md",
+        "review.md",
+    }
+    assert {item["value"] for item in payload["boundaries"]} == {
+        "asset.png",
+        "https://example.com/source",
+    }
+    assert payload["related_omitted"] == ["review.md"]
+    assert payload["stats"] == {
+        "included_documents": 3,
+        "explicit_sections": 1,
+        "omitted_h2_sections": 1,
+    }
+
+    assert index_projection(tmp_path, write=True) == 0
+    capsys.readouterr()
+    assert (
+        context(
+            tmp_path,
+            "DOC-002",
+            depth=1,
+            includes=["DOC-003#findings"],
+            json_output=True,
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out) == payload
+
+    args = build_parser().parse_args(["context", "DOC-002", str(tmp_path), "--json"])
+    assert args.json_output is True
+
+
+def test_projection_serves_reads_identically_without_rebuilding_catalog(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    vertical_project(tmp_path)
+
+    def run_all() -> dict[str, str]:
+        outputs: dict[str, str] = {}
+        assert read_document(tmp_path, "DOC-002") == 0
+        outputs["read"] = capsys.readouterr().out
+        assert read_document(tmp_path, "DOC-002", list_sections=True) == 0
+        outputs["list"] = capsys.readouterr().out
+        assert read_document(tmp_path, "DOC-002", navigation=True) == 0
+        outputs["navigation"] = capsys.readouterr().out
+        assert read_document(tmp_path, "DOC-002", anchor="details") == 0
+        outputs["anchor"] = capsys.readouterr().out
+        assert impact(tmp_path, "DOC-002") == 0
+        outputs["impact"] = capsys.readouterr().out
+        assert (
+            context(tmp_path, "DOC-002", depth=1, includes=["DOC-003#findings"]) == 0
+        )
+        outputs["context"] = capsys.readouterr().out
+        return outputs
+
+    direct = run_all()
+    assert index_projection(tmp_path, write=True) == 0
+    capsys.readouterr()
+
+    def explode(config: object) -> None:
+        raise AssertionError("projection-served reads must not rebuild the catalog")
+
+    monkeypatch.setattr("docsystem.cli.build_catalog", explode)
+    projected = run_all()
+    assert projected == direct
+
+
 def test_changes_json_is_deterministic_and_machine_readable(
     tmp_path: Path, capsys
 ) -> None:
@@ -345,7 +634,7 @@ def test_projection_generation_is_immutable_and_corruption_falls_back(
 ) -> None:
     vertical_project(tmp_path)
     config = load_config(tmp_path)
-    projection = build_projection(build_catalog(config))
+    projection = build_projection(build_catalog(config), config)
     generation = write_projection(config, projection)
     manifest = (
         tmp_path
@@ -429,7 +718,7 @@ def test_projection_retains_current_generation_with_configured_limit(
             + f"\nGeneration marker {revision}.\n",
             encoding="utf-8",
         )
-        projection = build_projection(build_catalog(config))
+        projection = build_projection(build_catalog(config), config)
         generations.append(write_projection(config, projection))
 
     generation_root = tmp_path / ".docsystem" / "cache" / "generations"

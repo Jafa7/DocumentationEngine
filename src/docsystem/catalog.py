@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path, PurePosixPath
 from urllib.parse import unquote, urlsplit
 
@@ -108,11 +109,25 @@ class DependencyGraph:
 
     edges: tuple[DependencyEdge, ...]
 
+    @cached_property
+    def _outgoing_by_source(self) -> dict[str, tuple[DependencyEdge, ...]]:
+        grouped: dict[str, list[DependencyEdge]] = {}
+        for edge in self.edges:
+            grouped.setdefault(edge.source_id, []).append(edge)
+        return {source: tuple(edges) for source, edges in grouped.items()}
+
+    @cached_property
+    def _incoming_by_target(self) -> dict[str, tuple[DependencyEdge, ...]]:
+        grouped: dict[str, list[DependencyEdge]] = {}
+        for edge in self.edges:
+            grouped.setdefault(edge.target_id, []).append(edge)
+        return {target: tuple(edges) for target, edges in grouped.items()}
+
     def outgoing(self, document_id: str) -> tuple[DependencyEdge, ...]:
-        return tuple(edge for edge in self.edges if edge.source_id == document_id)
+        return self._outgoing_by_source.get(document_id, ())
 
     def incoming(self, document_id: str) -> tuple[DependencyEdge, ...]:
-        return tuple(edge for edge in self.edges if edge.target_id == document_id)
+        return self._incoming_by_target.get(document_id, ())
 
 
 def _area_for(path: PurePosixPath, config: ProjectConfig) -> str | None:
@@ -182,6 +197,30 @@ def _excluded_paths(
             relative = PurePosixPath(path.relative_to(root).as_posix())
             excluded.setdefault(relative, pattern)
     return excluded
+
+
+def included_source_paths(config: ProjectConfig) -> tuple[PurePosixPath, ...]:
+    """List included Markdown source paths without parsing any content.
+
+    Applies the same exclusion and area-mapping rules as `build_catalog`, so
+    the result is exactly the catalog's document set; it exists so projection
+    freshness checks can enumerate sources without paying for Markdown,
+    metadata or link parsing.
+    """
+
+    root = config.documentation_root
+    if not root.is_dir():
+        return ()
+    excluded = _excluded_paths(root, config.catalog_exclusions)
+    included: list[PurePosixPath] = []
+    for path in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
+        if not path.is_file() or path.suffix.lower() != ".md":
+            continue
+        relative = PurePosixPath(path.relative_to(root).as_posix())
+        if relative in excluded or _area_for(relative, config) is None:
+            continue
+        included.append(relative)
+    return tuple(included)
 
 
 def build_catalog(config: ProjectConfig) -> MarkdownCatalog:

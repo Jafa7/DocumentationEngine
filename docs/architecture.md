@@ -76,16 +76,36 @@ The target projection is sharded and generation-based:
     └── reverse/<namespace>/<bucket>/<ID>.json
 ```
 
-A stable ID maps to a document shard without a global routing table. Consumers
-load only the target, required dependencies and reverse records needed for the
-operation.
+A stable ID maps to a document shard without a global routing table.
 
-Each generation name is a hash of its canonical derived content. A new
-generation is assembled in a staging directory and renamed into place before
-the small `current.json` pointer is atomically replaced. Existing generation
-directories are never rewritten. Readers validate schema, generation identity,
-source hashes and required shards; invalid or stale projections fall back to
-direct Markdown with a diagnostic.
+Read commands (`read`, `context`, `impact`) serve from the projection when it
+is verified current. Verification enumerates the catalog's source paths
+without parsing them, re-reads every included source and compares its sha256
+with the generation manifest, and validates every document and reverse shard
+up front. It also rejects the generation when the active configuration
+fingerprint no longer matches the one recorded at build time — a normalized
+digest of the documentation root identity, areas, identifiers, catalog
+exclusions, `navigation.extend_through`, `relations.legacy_paths`,
+`relations.snapshot_types`, the projection format and the schema version — so a
+read-time policy change forces a rebuild instead of serving differently-shaped
+output. Finally it reconstructs the canonical projection payload from the
+loaded shards and compares its hash with the selected generation, so semantic
+shard tampering (a dropped dependency, an altered revision) that leaves the
+Markdown source hashes untouched is detected before any output is produced.
+None of this parses Markdown on the fast path — what it removes is Markdown,
+metadata and link parsing plus dependency-graph reconstruction, not source I/O;
+a stat-based freshness cache that avoids re-hashing unchanged sources is
+deliberate future work. Both serving paths reduce to one shared view shape, so
+output is byte-identical regardless of which path produced it.
+
+Each generation name is a hash of its canonical derived content together with
+the configuration fingerprint that shaped it, so a semantic configuration
+change yields a distinct generation. A new generation is assembled in a staging
+directory and renamed into place before the small `current.json` pointer is
+atomically replaced. Existing generation directories are never rewritten.
+Readers validate schema, generation identity, the configuration fingerprint,
+source hashes, required shards and the reconstructed generation hash; invalid,
+stale or corrupt projections fall back to direct Markdown with a diagnostic.
 
 Projection writes assume a single writer. Two concurrent `index --write`
 runs do not corrupt a generation (staging plus rename is atomic per
@@ -154,14 +174,16 @@ change. `docsystem readiness` is a read-only report over the same catalog
 data — blocking errors, resolvable migrations, boundaries, stale pins and
 projection state — with no source-mutating side effects.
 
-`readiness`, `migration-report`, `catalog --explain` and `changes` accept
-`--json`: one deterministic JSON value (sorted keys, stable field names) that
-carries the same data as the text form plus the diagnostics that otherwise go
-only to stderr, so a machine or AI-agent client never has to parse
-human-oriented prose to act on the result. Every `--json` root is an object
-carrying `"schema_version": 1`, bumped only on a breaking change to an
+`readiness`, `migration-report`, `catalog --explain`, `changes` and `context`
+accept `--json`: one deterministic JSON value (sorted keys, stable field
+names) that carries the same data as the text form plus the diagnostics that
+otherwise go only to stderr, so a machine or AI-agent client never has to
+parse human-oriented prose to act on the result. Every `--json` root is an
+object carrying `"schema_version": 1`, bumped only on a breaking change to an
 existing field; new fields may be added without a bump. Adding `--json` to a
-command never changes its exit code or its default text output.
+command never changes its exit code or its default text output. The MCP
+adapter (`docsystem.mcp_server`) is a thin subprocess wrapper over exactly
+this CLI contract, exposing only read-only commands as tools.
 
 ATX headings outside fenced code blocks form deterministic addressable
 sections. A section includes nested headings until the next heading at the same
@@ -187,4 +209,5 @@ fall back to the default, while a configured non-H2 match is invalid.
 5. Mature migration workflow (`migrate`, `readiness`) for legacy path
    relations; lifecycle orchestration beyond this remains project-local.
 6. Thin Codex integration and generated agent instructions.
-7. MCP adapter and additional client integrations.
+7. MCP adapter (an initial read-only stdio adapter ships as
+   `docsystem.mcp_server`) and additional client integrations.

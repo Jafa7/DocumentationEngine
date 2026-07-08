@@ -67,16 +67,18 @@ operates on an unintended project at worst.
 
 ## Prefer `--json` over parsing text
 
-`readiness`, `migration-report`, `catalog --explain` and `changes` accept
-`--json` and print one deterministic JSON value instead of tab-separated or
-prose text. An agent should use `--json` wherever it needs to branch on the
-result programmatically, rather than parsing the default human-readable
-output, which is free to add explanatory text over time. Every `--json`
-root is an object carrying `"schema_version": 1`; an agent should check it
-before assuming field semantics, since it is bumped only on breaking
-changes while new fields may appear without a bump. See
+`readiness`, `migration-report`, `catalog --explain`, `changes` and
+`context` accept `--json` and print one deterministic JSON value instead of
+tab-separated or prose text. An agent should use `--json` wherever it needs
+to branch on the result programmatically, rather than parsing the default
+human-readable output, which is free to add explanatory text over time.
+Every `--json` root is an object carrying `"schema_version": 1`; an agent
+should check it before assuming field semantics, since it is bumped only on
+breaking changes while new fields may appear without a bump. See
 [`docs/paradigmarium-integration.md`](paradigmarium-integration.md) for the
-schema each command's `--json` output follows.
+schema each command's `--json` output follows. MCP clients get the same
+read-only commands as typed tools via
+[the MCP adapter](mcp-adapter.md); it never exposes a mutating command.
 
 ## Exit codes and diagnostics
 

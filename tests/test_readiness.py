@@ -102,6 +102,14 @@ def test_readiness_json_reports_missing_documentation_root(
         "schema_version": 1,
         "documentation_root_exists": False,
         "ready": False,
+        "blocking": [],
+        "resolvable_migrations": [],
+        "boundaries": [],
+        "stale_pins": [],
+        "projection": {
+            "state": "absent",
+            "reason": "documentation root does not exist",
+        },
         "next_command": f"docsystem init {tmp_path}",
     }
     assert captured.err == ""

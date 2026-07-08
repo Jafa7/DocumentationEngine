@@ -35,6 +35,7 @@ adoption-oriented, read-only commands:
 - `docsystem migration-report PROJECT --json`
 - `docsystem catalog PROJECT --explain --json`
 - `docsystem changes PROJECT --json`
+- `docsystem context DOCUMENT_ID PROJECT --json`
 
 Each prints one deterministic JSON object to stdout (sorted keys, stable
 field names) carrying the same diagnostics that the text form prints as
@@ -52,7 +53,14 @@ payloads live under a named key rather than as a bare array root:
 `catalog --explain --json` returns `{"schema_version": 1, "memberships":
 [...]}`, `migration-report --json` returns `resolved` and `boundaries`
 arrays, and `changes --json` returns a `status` string plus a `changes`
-array.
+array. `context --json` returns the packet structured — `documents` (each
+with `navigation`, `explicit_sections` and `omitted_h2`), `freshness`,
+`migrations`, `boundaries`, `related_omitted` and `stats` — instead of the
+Markdown packet text.
+
+A wrapper that speaks MCP can skip the CLI entirely and use
+[the MCP adapter](mcp-adapter.md), which exposes these same read-only
+commands as typed tools over the identical JSON contract.
 
 `docsystem readiness PROJECT --json` is the entry point for an adoption
 sequence: its `next_command` field names the single safe next command for

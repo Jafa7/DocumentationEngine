@@ -85,6 +85,7 @@ python -m docsystem read DOC-001 . --anchor purpose
 python -m docsystem dependencies DOC-001 .
 python -m docsystem dependencies DOC-001 . --reverse
 python -m docsystem context DOC-001 . --depth 1
+python -m docsystem context DOC-001 . --depth 1 --json
 python -m docsystem impact DOC-001 .
 python -m docsystem migration-report .
 python -m docsystem migration-report . --json
@@ -192,14 +193,19 @@ pins and projection state (absent/stale/current), and prints the single safe
 next command. It never writes to Markdown, configuration or the projection
 cache.
 
-`readiness`, `migration-report`, `catalog --explain` and `changes` accept
-`--json` and print one deterministic JSON value (sorted keys, stable field
-names) instead of text, carrying the same information the text form prints
-plus what it sends to stderr, so a machine client never has to parse human
-prose. Every `--json` root is an object carrying `"schema_version": 1`;
+`readiness`, `migration-report`, `catalog --explain`, `changes` and `context`
+accept `--json` and print one deterministic JSON value (sorted keys, stable
+field names) instead of text, carrying the same information the text form
+prints plus what it sends to stderr, so a machine client never has to parse
+human prose. Every `--json` root is an object carrying `"schema_version": 1`;
 the version is bumped only on a breaking change to an existing field, so a
 consumer can detect format evolution without guessing. Exit codes are
 unchanged by `--json`.
+
+An MCP adapter exposes the read-only commands as typed tools for any
+MCP-capable client; see [the MCP adapter guide](docs/mcp-adapter.md). It is a
+thin wrapper over this CLI contract and requires the optional `mcp`
+dependency (`pip install "docsystem[mcp]"`).
 
 `migrate` previews, by default, every legacy relation value that
 `migration-report` already classifies as unambiguously resolved. Preview is
@@ -226,12 +232,18 @@ the output. `impact` reports reverse metadata dependencies and distinguishes
 semantic, related-navigation, freshness and configured historical-snapshot
 relations.
 
-`index --write` derives immutable content-hash generations below
-`.docsystem/cache`, then atomically selects the current generation.
+`index --write` derives immutable generations below `.docsystem/cache`,
+hashed over both the derived content and a fingerprint of the projection-
+relevant configuration, then atomically selects the current generation.
 `index` checks freshness and `changes` reports changed documents and sections.
-Read operations verify the projection and visibly fall back to direct Markdown
-when it is absent, stale or incompatible. Markdown remains the only editable
-truth.
+`read`, `context` and `impact` serve from the verified projection when it is
+current: verification re-hashes every included source byte-for-byte, checks the
+configuration fingerprint, and reconstructs the generation hash from the shards,
+so a served read can never disagree with the Markdown truth or the active
+configuration, while Markdown, metadata and link parsing plus graph
+reconstruction are skipped. When the projection is absent, stale, corrupt or
+incompatible, reads visibly fall back to direct Markdown with a stderr
+diagnostic and identical output. Markdown remains the only editable truth.
 
 See [the adoption guide](docs/adoption.md) for a complete profile and migration
 sequence, [the Paradigmarium integration guide](docs/paradigmarium-integration.md)

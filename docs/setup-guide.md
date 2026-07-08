@@ -113,8 +113,12 @@ exclude file so the personal path cannot be committed by accident:
 
 ```bash
 mkdir -p /path/to/project/.agents/local
-printf '\n/.agents/local/\n' >> /path/to/project/.git/info/exclude
+grep -qx '/.agents/local/' /path/to/project/.git/info/exclude 2>/dev/null ||
+  printf '/.agents/local/\n' >> /path/to/project/.git/info/exclude
 ```
+
+The `grep` guard keeps the step idempotent: re-running setup never appends
+duplicate exclude lines.
 
 Write the user's selected backup command/path into that local policy, not into
 tracked public docs. A project may use any command as long as it creates a

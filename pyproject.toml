@@ -11,11 +11,16 @@ dependencies = [
     "PyYAML>=6,<7",
 ]
 
+[project.optional-dependencies]
+mcp = ["mcp>=1.2,<2"]
+
 [project.scripts]
 docsystem = "docsystem.cli:main"
+docsystem-mcp = "docsystem.mcp_server:main"
 
 [dependency-groups]
 dev = [
+    "mcp>=1.2,<2",
     "pytest>=9,<10",
     "ruff>=0.14,<1",
 ]
