@@ -22,10 +22,11 @@ The adapter is deliberately a wrapper, not a second implementation:
   surfaced deterministically under a `diagnostics` array. The key is present
   only when such diagnostics exist, so every other payload stays byte-identical
   to the CLI output;
-- text tools (`read_document`, `impact`) return the CLI's stdout unchanged and
-  do not yet carry successful-exit diagnostics in-band; enveloping their text
-  would break the documented text contract. This is a known limitation tracked
-  as a backlog TODO in `docsystem.mcp_server`;
+- text tools (`read_document`, `impact`) return the CLI's stdout unchanged for
+  compatibility. Structured packet variants (`read_document_packet`,
+  `impact_packet`) return the same stdout under `text` and add `diagnostics`
+  when successful commands emitted non-fatal stderr, such as projection
+  fallback warnings;
 - only read-only commands are exposed. Mutating operations (`init`,
   `migrate --apply`, `index --write`) intentionally have no tools and stay
   with the human or calling system, matching
@@ -45,11 +46,24 @@ The adapter is deliberately a wrapper, not a second implementation:
 | `changes` | object | `docsystem changes PROJECT --json` |
 | `context` | object | `docsystem context ID PROJECT --json ...` |
 | `read_document` | text | `docsystem read ID PROJECT [--anchor/--navigation/--list]` |
+| `read_document_packet` | object | `docsystem read ID PROJECT [--anchor/--navigation/--list]` |
 | `dependencies` | list | `docsystem dependencies ID PROJECT [--reverse]` |
 | `impact` | text (Markdown table) | `docsystem impact ID PROJECT` |
+| `impact_packet` | object | `docsystem impact ID PROJECT` |
 
 Every tool takes the project root explicitly; none relies on the server
 process working directory.
+
+The packet tools use this envelope:
+
+```json
+{
+  "text": "exact CLI stdout",
+  "diagnostics": ["optional successful-exit stderr line"]
+}
+```
+
+`diagnostics` is omitted when the CLI emitted no non-fatal stderr.
 
 ## Install and run
 

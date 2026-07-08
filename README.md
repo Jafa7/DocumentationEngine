@@ -35,6 +35,11 @@ ignored/private documentation or local configuration.
 - Mechanical maintenance is automated; semantic decisions remain reviewable.
 - AI integrations are adapters around a provider-neutral core.
 
+For work that splits into a new chat, module, repository or long-running idea,
+use the [Workstream / Idea Branching](docs/workstream-branching.md) pattern so
+the child context carries its inherited context, boundaries and return
+protocol.
+
 ## Development setup vs. consumer install
 
 Development work in this checkout runs the CLI as a module against `src/`,
@@ -205,7 +210,9 @@ unchanged by `--json`.
 An MCP adapter exposes the read-only commands as typed tools for any
 MCP-capable client; see [the MCP adapter guide](docs/mcp-adapter.md). It is a
 thin wrapper over this CLI contract and requires the optional `mcp`
-dependency (`pip install "docsystem[mcp]"`).
+dependency (`pip install "docsystem[mcp]"`). Text tools keep exact CLI stdout
+for compatibility; packet variants add non-fatal diagnostics such as
+projection fallback warnings.
 
 `migrate` previews, by default, every legacy relation value that
 `migration-report` already classifies as unambiguously resolved. Preview is

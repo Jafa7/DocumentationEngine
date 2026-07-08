@@ -48,6 +48,17 @@ are project-local policy and should live outside reusable public
 documentation. See [`docs/local-state-safety.md`](local-state-safety.md) for
 the portable contract a downstream project should implement.
 
+## Preserve branch context when work splits
+
+When a new chat, module, repository or long-running idea is split from a
+parent project, create or request a workstream mandate document. Do not rely
+on chat memory alone. The mandate should explain why the branch exists, which
+context it inherits, its boundaries and non-goals, and how results return to
+the parent project. An agent entering a child chat or module must read the
+mandate before implementation work. See
+[`docs/workstream-branching.md`](workstream-branching.md) and the reusable
+template in [`examples/workstream-branch-template.md`](../examples/workstream-branch-template.md).
+
 When installing or adopting Documentation Engine for a project that will keep
 important state outside git, the agent must ask the user where backups should
 be stored and then write that choice only to local ignored policy, such as
@@ -78,7 +89,10 @@ breaking changes while new fields may appear without a bump. See
 [`docs/paradigmarium-integration.md`](paradigmarium-integration.md) for the
 schema each command's `--json` output follows. MCP clients get the same
 read-only commands as typed tools via
-[the MCP adapter](mcp-adapter.md); it never exposes a mutating command.
+[the MCP adapter](mcp-adapter.md); it never exposes a mutating command. For
+text commands whose exact stdout matters, MCP clients should prefer the
+structured packet variants when they also need non-fatal diagnostics such as
+projection fallback warnings.
 
 ## Exit codes and diagnostics
 

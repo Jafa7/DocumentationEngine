@@ -136,3 +136,7 @@ contract is described in [local state safety](local-state-safety.md).
 
 Project-specific registry synchronization, `finish` orchestration, private
 history/backup, and provider adapters remain outside this adoption profile.
+When an adopted project splits work into a new chat, module, repository or
+long-running idea, use the [workstream branching pattern](workstream-branching.md)
+to preserve inherited context and define how the result returns to the parent
+project.

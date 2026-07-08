@@ -63,6 +63,13 @@ def test_tools_return_structured_payloads_from_the_cli_contract(
     navigation = mcp_server.read_document(project, "DOC-002", navigation=True)
     assert navigation.endswith("# Target\n\nSummary line.\n")
     assert "## Details" not in navigation
+    navigation_packet = mcp_server.read_document_packet(
+        project, "DOC-002", navigation=True
+    )
+    assert navigation_packet == {
+        "text": navigation,
+        "diagnostics": ["WARNING: projection absent; using direct Markdown"],
+    }
 
     rows = mcp_server.dependencies(project, "DOC-002")
     assert rows == [
@@ -82,6 +89,10 @@ def test_tools_return_structured_payloads_from_the_cli_contract(
     table = mcp_server.impact(project, "DOC-001")
     assert "# Impact analysis: DOC-001" in table
     assert "| `DOC-002` | depends_on |" in table
+    assert mcp_server.impact_packet(project, "DOC-001") == {
+        "text": table,
+        "diagnostics": ["WARNING: projection absent; using direct Markdown"],
+    }
 
 
 def test_readiness_carries_not_ready_payload_instead_of_raising(
@@ -127,6 +138,35 @@ def test_context_surfaces_projection_fallback_diagnostics(tmp_path: Path) -> Non
     stale = mcp_server.context(str(project), "DOC-002")
     assert stale["target"] == "DOC-002"
     assert stale["diagnostics"] == [
+        "WARNING: projection stale; using direct Markdown"
+    ]
+
+
+def test_text_packet_tools_surface_projection_fallback_diagnostics(
+    tmp_path: Path,
+) -> None:
+    project = adapter_project(tmp_path)
+    config = load_config(project)
+    write_projection(config, build_projection(build_catalog(config), config))
+
+    target = project / "plan" / "target.md"
+    target.write_text(
+        target.read_text(encoding="utf-8").replace(
+            "Detailed content.", "Changed content."
+        ),
+        encoding="utf-8",
+    )
+
+    read_packet = mcp_server.read_document_packet(str(project), "DOC-002")
+    assert read_packet["text"].startswith("---\nid: DOC-002\n")
+    assert "Changed content." in read_packet["text"]
+    assert read_packet["diagnostics"] == [
+        "WARNING: projection stale; using direct Markdown"
+    ]
+
+    impact_packet = mcp_server.impact_packet(str(project), "DOC-001")
+    assert "# Impact analysis: DOC-001" in impact_packet["text"]
+    assert impact_packet["diagnostics"] == [
         "WARNING: projection stale; using direct Markdown"
     ]
 

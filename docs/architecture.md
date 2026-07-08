@@ -183,7 +183,9 @@ object carrying `"schema_version": 1`, bumped only on a breaking change to an
 existing field; new fields may be added without a bump. Adding `--json` to a
 command never changes its exit code or its default text output. The MCP
 adapter (`docsystem.mcp_server`) is a thin subprocess wrapper over exactly
-this CLI contract, exposing only read-only commands as tools.
+this CLI contract, exposing only read-only commands as tools. Text-preserving
+MCP tools keep stdout byte-for-byte compatible, and their packet variants add
+the same non-fatal diagnostics without forcing clients to parse stderr.
 
 ATX headings outside fenced code blocks form deterministic addressable
 sections. A section includes nested headings until the next heading at the same

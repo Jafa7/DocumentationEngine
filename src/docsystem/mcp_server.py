@@ -10,10 +10,10 @@ matching `docs/agent-contract.md`.
 Structured (object) tools surface any successful-exit CLI stderr -- most
 importantly the `projection stale/corrupt; using direct Markdown` fallback
 warning -- under a `diagnostics` key, so a client never loses that signal.
-Text tools (`read_document`, `impact`) return the CLI stdout unchanged and do
-not yet carry such diagnostics in-band; wrapping their text in an envelope
-would break the documented text contract. TODO(backlog): give text tools an
-opt-in structured envelope so their successful-exit warnings are visible too.
+Text tools (`read_document`, `impact`) keep returning the CLI stdout unchanged
+for compatibility. Their packet variants (`read_document_packet`,
+`impact_packet`) expose the same stdout together with successful-exit
+diagnostics in a structured envelope.
 
 The `mcp` package is an optional dependency: install `docsystem[mcp]` to run
 the server (`docsystem-mcp` or `python -m docsystem.mcp_server`). The tool
@@ -42,6 +42,7 @@ def _invoke(
     result = subprocess.run(
         [sys.executable, "-m", "docsystem", *arguments],
         capture_output=True,
+        encoding="utf-8",
         text=True,
     )
     if result.returncode != 0 and not (allow_failure_payload and result.stdout.strip()):
@@ -53,6 +54,17 @@ def _invoke(
 def _run_cli(arguments: list[str], *, allow_failure_payload: bool = False) -> str:
     stdout, _ = _invoke(arguments, allow_failure_payload=allow_failure_payload)
     return stdout
+
+
+def _text_packet(arguments: list[str]) -> dict:
+    """Run a text CLI command and preserve successful-exit diagnostics."""
+
+    stdout, stderr = _invoke(arguments)
+    payload = {"text": stdout}
+    diagnostics = _diagnostics(stderr)
+    if diagnostics:
+        payload["diagnostics"] = diagnostics
+    return payload
 
 
 def _diagnostics(stderr: str) -> list[str]:
@@ -175,6 +187,30 @@ def read_document(
     return _run_cli(arguments)
 
 
+def read_document_packet(
+    project: str,
+    document_id: str,
+    anchor: str | None = None,
+    navigation: bool = False,
+    list_sections: bool = False,
+) -> dict:
+    """Read a document and return text plus successful-exit diagnostics.
+
+    This is the structured counterpart to `read_document`: it preserves the
+    exact CLI stdout under `text` and adds `diagnostics` when the CLI emitted
+    non-fatal stderr, such as projection fallback warnings.
+    """
+
+    arguments = ["read", document_id, project]
+    if anchor is not None:
+        arguments.extend(["--anchor", anchor])
+    elif navigation:
+        arguments.append("--navigation")
+    elif list_sections:
+        arguments.append("--list")
+    return _text_packet(arguments)
+
+
 def dependencies(
     project: str, document_id: str, reverse: bool = False
 ) -> list[dict]:
@@ -210,6 +246,12 @@ def impact(project: str, document_id: str) -> str:
     return _run_cli(["impact", document_id, project])
 
 
+def impact_packet(project: str, document_id: str) -> dict:
+    """Report reverse metadata impact with text plus non-fatal diagnostics."""
+
+    return _text_packet(["impact", document_id, project])
+
+
 _TOOLS = (
     readiness,
     catalog,
@@ -217,8 +259,10 @@ _TOOLS = (
     changes,
     context,
     read_document,
+    read_document_packet,
     dependencies,
     impact,
+    impact_packet,
 )
 
 
