@@ -58,6 +58,7 @@ The packet tools use this envelope:
 
 ```json
 {
+  "schema_version": 1,
   "text": "exact CLI stdout",
   "diagnostics": ["optional successful-exit stderr line"]
 }

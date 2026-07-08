@@ -67,6 +67,7 @@ def test_tools_return_structured_payloads_from_the_cli_contract(
         project, "DOC-002", navigation=True
     )
     assert navigation_packet == {
+        "schema_version": 1,
         "text": navigation,
         "diagnostics": ["WARNING: projection absent; using direct Markdown"],
     }
@@ -90,6 +91,7 @@ def test_tools_return_structured_payloads_from_the_cli_contract(
     assert "# Impact analysis: DOC-001" in table
     assert "| `DOC-002` | depends_on |" in table
     assert mcp_server.impact_packet(project, "DOC-001") == {
+        "schema_version": 1,
         "text": table,
         "diagnostics": ["WARNING: projection absent; using direct Markdown"],
     }
@@ -158,6 +160,7 @@ def test_text_packet_tools_surface_projection_fallback_diagnostics(
     )
 
     read_packet = mcp_server.read_document_packet(str(project), "DOC-002")
+    assert read_packet["schema_version"] == 1
     assert read_packet["text"].startswith("---\nid: DOC-002\n")
     assert "Changed content." in read_packet["text"]
     assert read_packet["diagnostics"] == [
@@ -165,6 +168,7 @@ def test_text_packet_tools_surface_projection_fallback_diagnostics(
     ]
 
     impact_packet = mcp_server.impact_packet(str(project), "DOC-001")
+    assert impact_packet["schema_version"] == 1
     assert "# Impact analysis: DOC-001" in impact_packet["text"]
     assert impact_packet["diagnostics"] == [
         "WARNING: projection stale; using direct Markdown"

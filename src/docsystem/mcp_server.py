@@ -60,7 +60,7 @@ def _text_packet(arguments: list[str]) -> dict:
     """Run a text CLI command and preserve successful-exit diagnostics."""
 
     stdout, stderr = _invoke(arguments)
-    payload = {"text": stdout}
+    payload = {"schema_version": 1, "text": stdout}
     diagnostics = _diagnostics(stderr)
     if diagnostics:
         payload["diagnostics"] = diagnostics
