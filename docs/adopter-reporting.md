@@ -53,8 +53,25 @@ Markdown/config example before filing.
 
 ## Start with compact diagnostics
 
-Run only the commands needed to characterize the problem. Prefer JSON where a
-machine-readable form exists, and include exit codes:
+Run only the commands needed to characterize the problem. The preferred first
+step is the read-only draft command:
+
+```bash
+docsystem report draft /path/to/project \
+  --project-name "Example Project" \
+  --type adoption-finding \
+  --source codex \
+  --component projection \
+  --output /tmp/docsystem-report.md
+```
+
+The command gathers compact local diagnostics, writes or prints a GitHub issue
+body draft, and leaves expected behavior, actual behavior and requested action
+for the reporter to complete. It does not create the GitHub issue and does not
+mutate Markdown, configuration or generated projection state.
+
+For targeted evidence, prefer JSON where a machine-readable form exists, and
+include exit codes:
 
 ```bash
 docsystem readiness /path/to/project --json
@@ -121,9 +138,9 @@ state, wakeup event, receipt or local audit model. A report may come from a
 human, Codex, Claude, VS Code or another environment; GitHub author identity is
 transport, while `project:<slug>` and `source:<host>` describe the origin.
 
-The first milestone is templates and documentation only. A future read-only
-helper may draft reports once two or three real adopter reports show which
-fields are stable, for example:
+The report draft command intentionally stays small and deterministic. It is not
+an AI summarizer, does not inspect private document bodies beyond compact
+diagnostic counts, and does not create GitHub issues on its own:
 
 ```bash
 docsystem report draft PROJECT \
@@ -134,4 +151,5 @@ docsystem report draft PROJECT \
   --output /tmp/report.md
 ```
 
-Until then, issue templates are the canonical reporting interface.
+Issue templates remain the canonical reporting interface; the CLI only drafts a
+privacy-safe body for those templates.

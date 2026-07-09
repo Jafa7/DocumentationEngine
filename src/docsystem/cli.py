@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from docsystem import __version__
 from docsystem.catalog import (
     MarkdownCatalog,
     RelationBoundary,
@@ -43,6 +45,34 @@ from docsystem.sections import MarkdownSection, extract_navigation, extract_sect
 # an existing field; adding new fields is compatible and does not bump it.
 JSON_SCHEMA_VERSION = 1
 
+REPORT_TYPES = {
+    "runtime-report": "Runtime Report",
+    "adoption-finding": "Adoption Finding",
+    "core-bug": "Core Bug",
+    "docs-pattern-request": "Docs Pattern Request",
+}
+REPORT_SOURCES = ("codex", "claude", "vscode", "other")
+REPORT_COMPONENTS = (
+    "catalog",
+    "metadata",
+    "sections",
+    "relations",
+    "graph",
+    "navigation",
+    "anchors",
+    "projection",
+    "context",
+    "mcp",
+    "cli",
+    "adoption",
+    "profiles",
+    "readiness",
+    "reporting",
+    "setup",
+    "local-state",
+    "privacy",
+)
+
 
 def _print_json(payload: dict[str, object]) -> None:
     print(
@@ -53,6 +83,24 @@ def _print_json(payload: dict[str, object]) -> None:
             indent=2,
         )
     )
+
+
+def _write_text_or_stdout(text: str, output: Path | None) -> int:
+    if output is None:
+        sys.stdout.write(text)
+        return 0
+    try:
+        output.write_text(text, encoding="utf-8")
+    except OSError as error:
+        print(f"ERROR: failed to write report draft: {error}", file=sys.stderr)
+        return 1
+    print(f"Report draft written: {output}")
+    return 0
+
+
+def _label_slug(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
+    return slug or "unknown"
 
 
 def _migration_json(item: RelationMigration) -> dict[str, object]:
@@ -308,6 +356,66 @@ _Views = dict[str, _DocumentView]
 _Incoming = dict[str, tuple[_EdgeView, ...]]
 
 
+def _freshness_rows(
+    config,
+    views: _Views,
+    ordered: list[str],
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for selected_id in ordered:
+        view = views[selected_id]
+        for edge in view.outgoing:
+            if edge.expected_revision is None:
+                continue
+            dependency = views.get(edge.peer_id)
+            if dependency is None or dependency.revision == edge.expected_revision:
+                continue
+            rows.append(
+                {
+                    "source_id": selected_id,
+                    "target_id": edge.peer_id,
+                    "pinned_revision": edge.expected_revision,
+                    "current_revision": dependency.revision,
+                    "classification": (
+                        "historical snapshot"
+                        if view.document_type in config.snapshot_document_types
+                        else "stale"
+                    ),
+                }
+            )
+    return rows
+
+
+def _context_selection(
+    views: _Views,
+    document_id: str,
+    *,
+    depth: int,
+    include_related: bool,
+) -> dict[str, set[str]]:
+    included: dict[str, set[str]] = {document_id: {"target"}}
+    queue = deque([(document_id, 0)])
+    expanded: set[str] = set()
+    allowed = {"derived_from", "depends_on", "validated_against"}
+    if include_related:
+        allowed.update({"related", "supersedes"})
+    while queue:
+        source_id, current_depth = queue.popleft()
+        if source_id in expanded or current_depth >= depth:
+            continue
+        expanded.add(source_id)
+        for edge in views[source_id].outgoing:
+            if edge.relation not in allowed:
+                continue
+            included.setdefault(edge.peer_id, set()).add(edge.relation)
+            queue.append((edge.peer_id, current_depth + 1))
+    return included
+
+
+def _ordered_selection(included: dict[str, set[str]], document_id: str) -> list[str]:
+    return [document_id, *sorted(item for item in included if item != document_id)]
+
+
 def _views_from_catalog(catalog_value: MarkdownCatalog) -> tuple[_Views, _Incoming]:
     graph = build_dependency_graph(catalog_value)
     migrations: dict[str, list[tuple[str, str, str]]] = {}
@@ -497,27 +605,7 @@ def _emit_context_json(
                 "omitted_h2": omitted,
             }
         )
-    freshness: list[dict[str, object]] = []
-    for selected_id in ordered:
-        view = views[selected_id]
-        for edge in view.outgoing:
-            if edge.expected_revision is None:
-                continue
-            dependency = views.get(edge.peer_id)
-            if dependency is not None and dependency.revision != edge.expected_revision:
-                freshness.append(
-                    {
-                        "source_id": selected_id,
-                        "target_id": edge.peer_id,
-                        "pinned_revision": edge.expected_revision,
-                        "current_revision": dependency.revision,
-                        "classification": (
-                            "historical snapshot"
-                            if view.document_type in config.snapshot_document_types
-                            else "stale"
-                        ),
-                    }
-                )
+    freshness = _freshness_rows(config, views, ordered)
     _print_json(
         {
             "target": document_id,
@@ -575,22 +663,12 @@ def context(
             find_document(catalog_value, document_id)
         elif document_id not in views:
             raise ValueError(f"document ID not found: {document_id}")
-        included: dict[str, set[str]] = {document_id: {"target"}}
-        queue = deque([(document_id, 0)])
-        expanded: set[str] = set()
-        allowed = {"derived_from", "depends_on", "validated_against"}
-        if include_related:
-            allowed.update({"related", "supersedes"})
-        while queue:
-            source_id, current_depth = queue.popleft()
-            if source_id in expanded or current_depth >= depth:
-                continue
-            expanded.add(source_id)
-            for edge in views[source_id].outgoing:
-                if edge.relation not in allowed:
-                    continue
-                included.setdefault(edge.peer_id, set()).add(edge.relation)
-                queue.append((edge.peer_id, current_depth + 1))
+        included = _context_selection(
+            views,
+            document_id,
+            depth=depth,
+            include_related=include_related,
+        )
         forced: dict[str, list[str]] = {}
         for raw in includes or []:
             selected_id, selected_anchor = _selection(raw)
@@ -651,7 +729,7 @@ def context(
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
 
-    ordered = [document_id, *sorted(item for item in included if item != document_id)]
+    ordered = _ordered_selection(included, document_id)
     if json_output:
         return _emit_context_json(
             config,
@@ -718,24 +796,18 @@ def context(
     out.append("")
     notes: list[str] = []
     freshness_found = False
-    for selected_id in ordered:
-        view = views[selected_id]
-        for edge in view.outgoing:
-            if edge.expected_revision is None:
-                continue
-            dependency = views.get(edge.peer_id)
-            if dependency is not None and dependency.revision != edge.expected_revision:
-                mode = (
-                    "historical snapshot"
-                    if view.document_type in config.snapshot_document_types
-                    else "STALE"
-                )
-                notes.append(
-                    f"{selected_id}: {edge.peer_id}@"
-                    f"{edge.expected_revision}, current "
-                    f"{dependency.revision} — {mode}"
-                )
-                freshness_found = True
+    for row in _freshness_rows(config, views, ordered):
+        mode = (
+            "historical snapshot"
+            if row["classification"] == "historical snapshot"
+            else "STALE"
+        )
+        notes.append(
+            f"{row['source_id']}: {row['target_id']}@"
+            f"{row['pinned_revision']}, current "
+            f"{row['current_revision']} — {mode}"
+        )
+        freshness_found = True
     if not freshness_found:
         notes.append("No stale revision pins among included documents.")
     for selected_id in ordered:
@@ -1082,6 +1154,395 @@ def changes(project_root: Path, *, json_output: bool = False) -> int:
         return 1
 
 
+def _validation_summary(issues: tuple[ValidationIssue, ...]) -> dict[str, int]:
+    summary = {
+        "errors": 0,
+        "warnings": 0,
+        "adoption_resolved": 0,
+        "adoption_boundaries": 0,
+        "stale_pins": 0,
+    }
+    for issue in issues:
+        if issue.severity == "warning":
+            summary["warnings"] += 1
+        else:
+            summary["errors"] += 1
+        if issue.category == "adoption-resolved":
+            summary["adoption_resolved"] += 1
+        elif issue.category == "adoption-boundary":
+            summary["adoption_boundaries"] += 1
+        elif issue.target_id is not None:
+            summary["stale_pins"] += 1
+    return summary
+
+
+def _sanitize_local_error(error: Exception, project_root: Path) -> str:
+    message = str(error)
+    try:
+        resolved = project_root.resolve().as_posix()
+    except OSError:
+        return message
+    return message.replace(resolved, project_root.as_posix())
+
+
+def _readiness_diagnostics(
+    config,
+    catalog_value: MarkdownCatalog,
+    project_root: Path,
+) -> list[str]:
+    report = evaluate_readiness(config, catalog_value)
+    diagnostics = [
+        f"documentation_root_exists={report.documentation_root_exists}",
+        f"ready={report.ready}",
+        f"blocking_errors={len(report.blocking)}",
+        f"resolvable_migrations={len(report.resolvable_migrations)}",
+        f"boundaries={len(report.boundaries)}",
+        f"stale_pins={len(report.stale_pins)}",
+        f"projection={report.projection_state} ({report.projection_reason})",
+        f"next_command={report.next_command(str(project_root))}",
+    ]
+    return diagnostics
+
+
+def _report_body(
+    *,
+    project_root: Path,
+    project_name: str,
+    report_type: str,
+    source: str,
+    component: str | None,
+) -> str:
+    labels = [
+        report_type,
+        "triage",
+        f"project:{_label_slug(project_name)}",
+        f"source:{source}",
+    ]
+    if component:
+        labels.append(f"component:{component}")
+
+    diagnostics: list[str] = []
+    config_excerpt = "not available"
+    affected: list[str] = []
+    runtime_changes = "none; report draft is read-only"
+    try:
+        config = load_config(project_root)
+        catalog_value = build_catalog(config)
+        issues = validate_catalog(catalog_value, config)
+        summary = _validation_summary(issues)
+        diagnostics.extend(_readiness_diagnostics(config, catalog_value, project_root))
+        diagnostics.append(
+            "validation="
+            f"{summary['errors']} error(s), {summary['warnings']} warning(s)"
+        )
+        diagnostics.append(
+            "adoption="
+            f"{summary['adoption_resolved']} resolved mapping(s), "
+            f"{summary['adoption_boundaries']} boundary row(s)"
+        )
+        diagnostics.append(f"stale_pins={summary['stale_pins']}")
+        views, _ = _views_from_catalog(catalog_value)
+        ordered_ids = sorted(views)
+        freshness = _freshness_rows(config, views, ordered_ids)
+        historical_count = sum(
+            1
+            for item in freshness
+            if item["classification"] == "historical snapshot"
+        )
+        current_stale_count = sum(
+            1 for item in freshness if item["classification"] == "stale"
+        )
+        diagnostics.append(
+            "freshness_classification="
+            f"{current_stale_count} stale, {historical_count} historical snapshot"
+        )
+        current = build_projection(catalog_value, config)
+        changes_report = evaluate_changes(config, current)
+        diagnostics.append(
+            f"changes={changes_report.status}, {len(changes_report.changes)} change(s)"
+        )
+        documentation_root = config.documentation_root.relative_to(
+            config.project_root
+        ).as_posix()
+        config_excerpt = "\n".join(
+            (
+                f'documentation.root = "{documentation_root}"',
+                f'documentation.language = "{config.language}"',
+                "areas = "
+                + json.dumps(
+                    {role: path.as_posix() for role, path in config.areas.items()},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                "identifiers = "
+                + json.dumps(config.identifiers, ensure_ascii=False, sort_keys=True),
+                "catalog.exclude = "
+                + json.dumps(
+                    list(config.catalog_exclusions),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                "navigation.extend_through = "
+                + json.dumps(
+                    list(config.navigation_extend_through),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                f'relations.legacy_paths = "{config.legacy_relation_mode}"',
+                "relations.snapshot_types = "
+                + json.dumps(
+                    list(config.snapshot_document_types),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                f'projection.format = "{config.projection_format}"',
+            )
+        )
+        affected.extend(
+            sorted(
+                {
+                    issue.path.as_posix()
+                    for issue in issues
+                    if issue.severity != "warning" or issue.target_id is not None
+                }
+            )
+        )
+    except (OSError, ValueError) as error:
+        diagnostics.append(
+            f"configuration_error={_sanitize_local_error(error, project_root)}"
+        )
+
+    title = REPORT_TYPES[report_type]
+    component_text = component or "not selected"
+    affected_text = "\n".join(f"- `{item}`" for item in affected) or "- none captured"
+    diagnostics_text = "\n".join(f"- {item}" for item in diagnostics) or "- none captured"
+    labels_text = ", ".join(f"`{label}`" for label in labels)
+    command = (
+        f"docsystem report draft {project_root} --project-name "
+        f"{project_name!r} --type {report_type} --source {source}"
+        + (f" --component {component}" if component else "")
+    )
+    return f"""# {title}: {project_name}
+
+## Labels
+
+{labels_text}
+
+## Project
+
+- Project/adopter name: {project_name}
+- Source host or agent: {source}
+- DocumentationEngine version: {__version__}
+- DocumentationEngine commit: <!-- fill if different from installed version -->
+- Component: {component_text}
+
+## Commands run and exit codes
+
+```bash
+{command}
+exit: 0
+```
+
+## Compact diagnostics
+
+{diagnostics_text}
+
+## Sanitized config/profile excerpt
+
+```text
+{config_excerpt}
+```
+
+## Affected IDs, anchors, or paths
+
+{affected_text}
+
+## Expected behavior
+
+<!-- Fill in the expected behavior. -->
+
+## Actual behavior
+
+<!-- Fill in the observed behavior or compatibility gap. -->
+
+## Runtime or local-state changes made
+
+{runtime_changes}
+
+## Requested DocumentationEngine action
+
+<!-- Fill in the requested fix, clarification, migration support, or pattern. -->
+
+## Privacy and sanitization checklist
+
+- [ ] Private document bodies are omitted or sanitized.
+- [ ] Private scratch, review, roadmap, or planning content is omitted.
+- [ ] Config/profile excerpts are sanitized and contain no secrets.
+- [ ] Local artifact paths, if any, are pointers only.
+- [ ] A minimal public/synthetic fixture is included when this is a core bug.
+"""
+
+
+def report_draft(
+    project_root: Path,
+    *,
+    project_name: str,
+    report_type: str,
+    source: str,
+    component: str | None = None,
+    output: Path | None = None,
+) -> int:
+    if component is not None and component not in REPORT_COMPONENTS:
+        print(f"ERROR: unsupported report component: {component}", file=sys.stderr)
+        return 1
+    text = _report_body(
+        project_root=project_root,
+        project_name=project_name,
+        report_type=report_type,
+        source=source,
+        component=component,
+    )
+    return _write_text_or_stdout(text, output)
+
+
+def finish(
+    project_root: Path,
+    document_id: str,
+    *,
+    depth: int = 1,
+    include_related: bool = False,
+    json_output: bool = False,
+) -> int:
+    try:
+        config = load_config(project_root)
+        views, _, catalog_value = _load_views(config)
+        if catalog_value is not None:
+            find_document(catalog_value, document_id)
+        elif document_id not in views:
+            raise ValueError(f"document ID not found: {document_id}")
+        included = _context_selection(
+            views,
+            document_id,
+            depth=depth,
+            include_related=include_related,
+        )
+        ordered = _ordered_selection(included, document_id)
+        target = views[document_id]
+        omitted_by_document = {
+            selected_id: [
+                section.anchor
+                for section in views[selected_id].sections
+                if section.level == 2
+                and section.anchor not in config.navigation_extend_through
+            ]
+            for selected_id in ordered
+        }
+        freshness = _freshness_rows(config, views, ordered)
+    except ValueError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+
+    migrations = [
+        {
+            "source_id": selected_id,
+            "relation": relation,
+            "value": value,
+            "target_id": target_id,
+        }
+        for selected_id in ordered
+        for relation, value, target_id in views[selected_id].migrations
+    ]
+    boundaries = [
+        {
+            "source_id": selected_id,
+            "relation": relation,
+            "value": value,
+            "reason": reason,
+        }
+        for selected_id in ordered
+        for relation, value, reason in views[selected_id].boundaries
+    ]
+    if json_output:
+        _print_json(
+            {
+                "target": document_id,
+                "path": target.path.as_posix(),
+                "depth": depth,
+                "include_related": include_related,
+                "included_documents": [
+                    {
+                        "id": selected_id,
+                        "path": views[selected_id].path.as_posix(),
+                        "relations": sorted(included[selected_id]),
+                        "omitted_h2": omitted_by_document[selected_id],
+                    }
+                    for selected_id in ordered
+                ],
+                "freshness": freshness,
+                "migrations": migrations,
+                "boundaries": boundaries,
+            }
+        )
+        return 0
+
+    print(f"# Finish handoff: {document_id}")
+    print()
+    print(f"- Path: `{target.path.as_posix()}`")
+    print(f"- Type/status: {target.document_type} / {target.status}")
+    print(f"- Revision: {target.revision}")
+    print(f"- Dependency depth summarized: {depth}")
+    print(f"- Related traversal: {'included' if include_related else 'omitted'}")
+    print()
+    print("## Included context")
+    print()
+    for selected_id in ordered:
+        relation_text = ", ".join(sorted(included[selected_id]))
+        omitted = omitted_by_document[selected_id]
+        print(
+            f"- `{selected_id}` — `{views[selected_id].path.as_posix()}` "
+            f"({relation_text}); omitted H2: "
+            f"{', '.join(omitted) if omitted else 'none'}"
+        )
+    print()
+    print("## Freshness and snapshot pins")
+    print()
+    if freshness:
+        for row in freshness:
+            print(
+                f"- `{row['source_id']}` pins `{row['target_id']}@"
+                f"{row['pinned_revision']}`; current revision is "
+                f"{row['current_revision']} — {row['classification']}"
+            )
+    else:
+        print("- No stale or historical snapshot pins among included documents.")
+    print()
+    print("## Migration and boundary notes")
+    print()
+    if migrations:
+        for item in migrations:
+            print(
+                f"- `{item['source_id']}` {item['relation']} "
+                f"`{item['value']}` -> `{item['target_id']}`"
+            )
+    else:
+        print("- No resolved legacy relation mappings among included documents.")
+    if boundaries:
+        for item in boundaries:
+            print(
+                f"- `{item['source_id']}` unresolved/resource "
+                f"{item['relation']} `{item['value']}` ({item['reason']})"
+            )
+    else:
+        print("- No unresolved/resource boundaries among included documents.")
+    print()
+    print("## Return protocol")
+    print()
+    print("- Re-run `docsystem validate PROJECT` before handing work back.")
+    print("- Re-run `docsystem changes PROJECT` after writing a projection.")
+    print("- File adopter reports with `docsystem report draft` when reusable gaps remain.")
+    return 0
+
+
 def dependencies(project_root: Path, document_id: str, *, reverse: bool = False) -> int:
     try:
         config = load_config(project_root)
@@ -1274,6 +1735,48 @@ def build_parser() -> argparse.ArgumentParser:
         dest="json_output",
         help="Print a deterministic JSON object instead of tab-separated text.",
     )
+
+    finish_parser = subparsers.add_parser(
+        "finish",
+        help="Build a compact handoff packet for returning work to a parent context.",
+    )
+    finish_parser.add_argument("document_id")
+    finish_parser.add_argument("project", nargs="?", type=Path, default=Path.cwd())
+    finish_parser.add_argument("--depth", type=int, choices=range(0, 6), default=1)
+    finish_parser.add_argument("--include-related", action="store_true")
+    finish_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print a deterministic JSON object instead of the Markdown packet.",
+    )
+
+    report_parser = subparsers.add_parser(
+        "report",
+        help="Create privacy-safe adopter report drafts.",
+    )
+    report_subparsers = report_parser.add_subparsers(
+        dest="report_command", required=True
+    )
+    draft_parser = report_subparsers.add_parser(
+        "draft",
+        help="Draft a GitHub issue body from compact local diagnostics.",
+    )
+    draft_parser.add_argument("project", nargs="?", type=Path, default=Path.cwd())
+    draft_parser.add_argument("--project-name", required=True)
+    draft_parser.add_argument(
+        "--type",
+        required=True,
+        choices=tuple(REPORT_TYPES),
+        dest="report_type",
+    )
+    draft_parser.add_argument(
+        "--source",
+        required=True,
+        choices=REPORT_SOURCES,
+    )
+    draft_parser.add_argument("--component")
+    draft_parser.add_argument("--output", type=Path)
     return parser
 
 
@@ -1313,6 +1816,25 @@ def main() -> int:
         return index_projection(args.project, write=args.write)
     if args.command == "changes":
         return changes(args.project, json_output=args.json_output)
+    if args.command == "finish":
+        return finish(
+            args.project,
+            args.document_id,
+            depth=args.depth,
+            include_related=args.include_related,
+            json_output=args.json_output,
+        )
+    if args.command == "report":
+        if args.report_command == "draft":
+            return report_draft(
+                args.project,
+                project_name=args.project_name,
+                report_type=args.report_type,
+                source=args.source,
+                component=args.component,
+                output=args.output,
+            )
+        raise AssertionError(f"unknown report command: {args.report_command}")
     if args.command == "doctor":
         return doctor(
             args.project, verbose_adoption=args.verbose_adoption

@@ -101,6 +101,9 @@ python -m docsystem migration-report .
 python -m docsystem migration-report . --json
 python -m docsystem readiness .
 python -m docsystem readiness . --json
+python -m docsystem finish DOC-001 .
+python -m docsystem finish DOC-001 . --json
+python -m docsystem report draft . --project-name "My Project" --type adoption-finding --source codex
 python -m docsystem migrate .
 python -m docsystem migrate . --apply
 python -m docsystem index . --write
@@ -202,6 +205,14 @@ relation migrations, explicit unresolved/resource boundaries, stale freshness
 pins and projection state (absent/stale/current), and prints the single safe
 next command. It never writes to Markdown, configuration or the projection
 cache.
+
+`finish` produces a compact handoff packet for returning a workstream or
+document-focused task to its parent context. It summarizes included context,
+omitted H2 sections, migration boundaries and stale versus historical snapshot
+pins. `report draft` produces a privacy-safe GitHub issue body for adopter
+runtime reports, adoption findings, core bugs or documentation pattern
+requests; it is read-only and leaves expected/actual/requested-action fields
+for the reporter to fill in.
 
 `readiness`, `migration-report`, `catalog --explain`, `changes` and `context`
 accept `--json` and print one deterministic JSON value (sorted keys, stable

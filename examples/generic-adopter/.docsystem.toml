@@ -1,0 +1,25 @@
+version = 1
+
+[documentation]
+root = "plan"
+language = "en"
+
+[areas]
+workspace = "."
+
+[identifiers]
+document = "DOC"
+
+[catalog]
+exclude = ["templates/*-template.md"]
+
+[navigation]
+extend_through = ["summary", "contents"]
+
+[relations]
+legacy_paths = "resolve-with-warning"
+snapshot_types = ["review"]
+
+[projection]
+format = "sharded-json"
+keep_generations = 2

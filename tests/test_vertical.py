@@ -12,10 +12,12 @@ from docsystem.cli import (
     changes,
     context,
     doctor,
+    finish,
     impact,
     index_projection,
     migration_report,
     read_document,
+    report_draft,
     validate,
 )
 from docsystem.config import CONFIG_FILENAME, DEFAULT_CONFIG, load_config
@@ -627,6 +629,139 @@ def test_changes_json_is_deterministic_and_machine_readable(
 
     args = build_parser().parse_args(["changes", str(tmp_path), "--json"])
     assert args.json_output is True
+
+
+def test_report_draft_is_privacy_safe_and_read_only(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    vertical_project(project)
+    monkeypatch.chdir(tmp_path)
+
+    assert (
+        report_draft(
+            Path("project"),
+            project_name="Example Project",
+            report_type="adoption-finding",
+            source="codex",
+            component="projection",
+        )
+        == 0
+    )
+    output = capsys.readouterr().out
+    assert "# Adoption Finding: Example Project" in output
+    assert "`adoption-finding`, `triage`, `project:example-project`" in output
+    assert "`source:codex`, `component:projection`" in output
+    assert "ready=True" in output
+    assert "resolvable_migrations=2" in output
+    assert "boundaries=2" in output
+    assert "freshness_classification=0 stale, 1 historical snapshot" in output
+    assert "next_command=docsystem migrate project" in output
+    assert tmp_path.resolve().as_posix() not in output
+    assert "Private document bodies are omitted or sanitized" in output
+    assert "Runtime or local-state changes made" in output
+    assert "none; report draft is read-only" in output
+
+
+def test_report_draft_writes_output_and_handles_config_errors(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    output_path = Path("report.md")
+
+    assert (
+        report_draft(
+            Path("missing-project"),
+            project_name="Broken Project",
+            report_type="runtime-report",
+            source="claude",
+            output=output_path,
+        )
+        == 0
+    )
+    captured = capsys.readouterr()
+    assert "Report draft written" in captured.out
+    report = output_path.read_text(encoding="utf-8")
+    assert "# Runtime Report: Broken Project" in report
+    assert (
+        "configuration_error=configuration not found: "
+        "missing-project/.docsystem.toml"
+    ) in report
+    assert tmp_path.resolve().as_posix() not in report
+    assert "project:broken-project" in report
+
+
+def test_finish_summarizes_return_context_and_snapshot_classification(
+    tmp_path: Path, capsys
+) -> None:
+    vertical_project(tmp_path)
+
+    assert finish(tmp_path, "DOC-002", depth=1) == 0
+    output = capsys.readouterr().out
+    assert "# Finish handoff: DOC-002" in output
+    assert "`DOC-001` — `README.md`" in output
+    assert "`DOC-003` — `review.md`" not in output
+    assert "Related traversal: omitted" in output
+    assert "No stale or historical snapshot pins" in output
+    assert "DOC-002` depends_on `README.md` -> `DOC-001`" in output
+    assert "unresolved/resource derived_from `asset.png`" in output
+
+    assert finish(tmp_path, "DOC-002", depth=1, include_related=True) == 0
+    related_output = capsys.readouterr().out
+    assert "`DOC-003` — `review.md`" in related_output
+    assert (
+        "`DOC-003` pins `DOC-002@1`; current revision is 2 — historical snapshot"
+        in related_output
+    )
+
+
+def test_finish_json_is_deterministic_and_parser_exposes_new_commands(
+    tmp_path: Path, capsys
+) -> None:
+    vertical_project(tmp_path)
+
+    assert finish(tmp_path, "DOC-002", depth=1, include_related=True, json_output=True) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["schema_version"] == 1
+    assert payload["target"] == "DOC-002"
+    assert [item["id"] for item in payload["included_documents"]] == [
+        "DOC-002",
+        "DOC-001",
+        "DOC-003",
+    ]
+    assert payload["freshness"] == [
+        {
+            "source_id": "DOC-003",
+            "target_id": "DOC-002",
+            "pinned_revision": 1,
+            "current_revision": 2,
+            "classification": "historical snapshot",
+        }
+    ]
+
+    finish_args = build_parser().parse_args(["finish", "DOC-002", str(tmp_path), "--json"])
+    assert finish_args.command == "finish"
+    assert finish_args.json_output is True
+
+    report_args = build_parser().parse_args(
+        [
+            "report",
+            "draft",
+            str(tmp_path),
+            "--project-name",
+            "Example",
+            "--type",
+            "core-bug",
+            "--source",
+            "vscode",
+            "--component",
+            "cli",
+        ]
+    )
+    assert report_args.command == "report"
+    assert report_args.report_command == "draft"
+    assert report_args.report_type == "core-bug"
 
 
 def test_projection_generation_is_immutable_and_corruption_falls_back(

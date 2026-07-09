@@ -94,9 +94,9 @@ shard tampering (a dropped dependency, an altered revision) that leaves the
 Markdown source hashes untouched is detected before any output is produced.
 None of this parses Markdown on the fast path — what it removes is Markdown,
 metadata and link parsing plus dependency-graph reconstruction, not source I/O;
-a stat-based freshness cache that avoids re-hashing unchanged sources is
-deliberate future work. Both serving paths reduce to one shared view shape, so
-output is byte-identical regardless of which path produced it.
+a stat-based freshness cache that avoids re-hashing unchanged sources remains a
+possible performance polish. Both serving paths reduce to one shared view
+shape, so output is byte-identical regardless of which path produced it.
 
 Each generation name is a hash of its canonical derived content together with
 the configuration fingerprint that shaped it, so a semantic configuration
@@ -209,7 +209,7 @@ fall back to the default, while a configured non-H2 match is invalid.
 3. Stable metadata, addressable sections and dependency graphs.
 4. Working context, impact, adoption and sharded-projection vertical slice.
 5. Mature migration workflow (`migrate`, `readiness`) for legacy path
-   relations; lifecycle orchestration beyond this remains project-local.
+   relations, plus `finish` handoff and privacy-safe adopter report drafts.
 6. Thin Codex integration and generated agent instructions.
 7. MCP adapter (an initial read-only stdio adapter ships as
    `docsystem.mcp_server`) and additional client integrations.

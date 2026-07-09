@@ -21,9 +21,10 @@ Three operations write anything:
 
 Every other command — `doctor`, `show-config`, `catalog`, `validate`, `read`,
 `dependencies`, `context`, `impact`, `migration-report`, `migrate` without
-`--apply`, `readiness`, and `index`/`changes` without `--write` — is
-read-only. An agent may call any read-only command freely to inspect project
-state before deciding whether a mutating command is warranted.
+`--apply`, `readiness`, `finish`, `report draft`, and `index`/`changes`
+without `--write` — is read-only. An agent may call any read-only command
+freely to inspect project state before deciding whether a mutating command is
+warranted.
 
 `docsystem migrate` without `--apply` is always a preview: it computes and
 prints the same plan `--apply` would write, but touches nothing. An agent
@@ -149,3 +150,8 @@ Use `runtime-report` for adopter-side setup or execution problems,
 synthetic fixture, and `docs-pattern-request` for reusable documentation
 patterns. Do not paste private document bodies, private scratch/review/roadmap
 content, full generated projections, MCP context payloads or unbounded logs.
+
+`docsystem report draft PROJECT --project-name NAME --type TYPE --source HOST`
+is the preferred first step when available. It is read-only: it gathers compact
+diagnostic counts and emits a GitHub issue body draft, but it does not create
+the issue or mutate the adopter project.
