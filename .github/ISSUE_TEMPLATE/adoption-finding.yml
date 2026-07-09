@@ -1,0 +1,127 @@
+name: Adoption finding
+description: Report adopter compatibility, migration profile, or workflow gaps.
+title: "[Adoption Finding]: "
+labels: ["adoption-finding", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template when DocumentationEngine behaves deterministically but does not yet fit an adopter project's real documentation workflow.
+        Use `core-bug` instead for defects reproducible with a minimal public or synthetic fixture.
+  - type: input
+    id: project
+    attributes:
+      label: Project or adopter name
+      placeholder: "example-project"
+    validations:
+      required: true
+  - type: dropdown
+    id: source
+    attributes:
+      label: Source host or agent
+      options:
+        - codex
+        - claude
+        - vscode
+        - other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: DocumentationEngine version or commit
+      placeholder: "0bf364673c55d76d216a3dfe982b0af746f1ab69"
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - catalog
+        - profiles
+        - relations
+        - graph
+        - navigation
+        - anchors
+        - projection
+        - context
+        - adoption
+        - readiness
+        - reporting
+        - privacy
+        - other
+    validations:
+      required: false
+  - type: textarea
+    id: commands
+    attributes:
+      label: Commands run and exit codes
+      description: Include the adoption or shadow-run commands that exposed the gap.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Compact diagnostics or counts
+      description: Include counts such as included/excluded/unmapped, resolved migrations, boundaries, stale pins, omitted sections, direct-vs-indexed equality, or byte sizes.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Sanitized profile/config excerpt
+      description: Include relevant areas, identifier prefixes, catalog exclusions, relation policy, navigation settings, snapshot types, or projection settings.
+      render: toml
+    validations:
+      required: true
+  - type: textarea
+    id: affected
+    attributes:
+      label: Affected IDs, anchors, or paths
+      description: Use stable IDs, anchors, or sanitized paths when safe. Do not paste private document bodies.
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected adopter workflow behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior or compatibility gap
+    validations:
+      required: true
+  - type: textarea
+    id: local_changes
+    attributes:
+      label: Runtime or local-state changes made
+      description: State "none" if the run was read-only or only wrote disposable generated projection state.
+      placeholder: "none"
+    validations:
+      required: true
+  - type: textarea
+    id: requested_action
+    attributes:
+      label: Requested DocumentationEngine action
+      placeholder: "Add profile option, clarify migration guidance, improve context diagnostics..."
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy and sanitization checklist
+      options:
+        - label: I omitted or sanitized private document bodies.
+          required: true
+        - label: I omitted private scratch, review, roadmap, or planning content.
+          required: true
+        - label: I sanitized config/profile excerpts and removed secrets or private paths where necessary.
+          required: true
+        - label: Any local artifact paths are pointers only; maintainers are not expected to access private files.
+          required: true

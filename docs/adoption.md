@@ -141,3 +141,9 @@ When an adopted project splits work into a new chat, module, repository or
 long-running idea, use the [workstream branching pattern](workstream-branching.md)
 to preserve inherited context and define how the result returns to the parent
 project.
+
+If adoption exposes a DocumentationEngine runtime problem, compatibility gap,
+core defect or reusable documentation pattern, file it through the
+[adopter reporting](adopter-reporting.md) policy. Reports should use compact
+diagnostics, sanitized profile/config excerpts and stable IDs or anchors rather
+than private document bodies.

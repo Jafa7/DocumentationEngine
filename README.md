@@ -40,6 +40,11 @@ use the [Workstream / Idea Branching](docs/workstream-branching.md) pattern so
 the child context carries its inherited context, boundaries and return
 protocol.
 
+For problems found while adopting Documentation Engine in another project, use
+the [adopter reporting](docs/adopter-reporting.md) policy and issue templates.
+Reports start with compact diagnostics and sanitized evidence, not private
+document bodies or unbounded logs.
+
 ## Development setup vs. consumer install
 
 Development work in this checkout runs the CLI as a module against `src/`,

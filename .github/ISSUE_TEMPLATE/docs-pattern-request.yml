@@ -1,0 +1,91 @@
+name: Documentation pattern request
+description: Request a reusable documentation pattern, template, workflow, or privacy-safe reporting convention.
+title: "[Docs Pattern Request]: "
+labels: ["docs-pattern-request", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for reusable documentation patterns discovered during adopter work.
+        Use `runtime-report`, `adoption-finding`, or `core-bug` for defects.
+  - type: input
+    id: project
+    attributes:
+      label: Project or adopter name
+      placeholder: "example-project"
+    validations:
+      required: true
+  - type: dropdown
+    id: source
+    attributes:
+      label: Source host or agent
+      options:
+        - codex
+        - claude
+        - vscode
+        - other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: DocumentationEngine version or commit
+      placeholder: "0bf364673c55d76d216a3dfe982b0af746f1ab69"
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - adoption
+        - reporting
+        - navigation
+        - context
+        - templates
+        - privacy
+        - other
+    validations:
+      required: false
+  - type: textarea
+    id: scenario
+    attributes:
+      label: Reusable scenario
+      description: Describe the pattern need without private project details.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Compact evidence or examples
+      description: Include sanitized counts, commands, or minimal examples that show why this should be reusable.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: proposed_pattern
+    attributes:
+      label: Proposed pattern or template shape
+      description: If known, describe sections, metadata fields, workflow gates, or examples.
+    validations:
+      required: false
+  - type: textarea
+    id: requested_action
+    attributes:
+      label: Requested DocumentationEngine action
+      placeholder: "Add guide, add template, clarify adoption docs..."
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy and sanitization checklist
+      options:
+        - label: I omitted or sanitized private document bodies.
+          required: true
+        - label: I omitted private scratch, review, roadmap, or planning content.
+          required: true
+        - label: I sanitized config/profile excerpts and removed secrets or private paths where necessary.
+          required: true
+        - label: Any local artifact paths are pointers only; maintainers are not expected to access private files.
+          required: true

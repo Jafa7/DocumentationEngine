@@ -1,0 +1,126 @@
+name: Core bug
+description: Report deterministic DocumentationEngine defects reproducible outside a private adopter corpus.
+title: "[Core Bug]: "
+labels: ["core-bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for deterministic defects in the parser, metadata model, graph, projection, context, MCP adapter, or CLI.
+        Prefer a minimal public or synthetic fixture over private adopter content.
+  - type: input
+    id: project
+    attributes:
+      label: Project or adopter name
+      description: Use the adopter name if discovered during adoption, or "synthetic fixture".
+      placeholder: "synthetic fixture"
+    validations:
+      required: true
+  - type: dropdown
+    id: source
+    attributes:
+      label: Source host or agent
+      options:
+        - codex
+        - claude
+        - vscode
+        - other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: DocumentationEngine version or commit
+      placeholder: "0bf364673c55d76d216a3dfe982b0af746f1ab69"
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - catalog
+        - metadata
+        - sections
+        - relations
+        - graph
+        - projection
+        - context
+        - mcp
+        - cli
+        - other
+    validations:
+      required: false
+  - type: textarea
+    id: fixture
+    attributes:
+      label: Minimal public or synthetic reproduction fixture
+      description: Paste only the smallest sanitized fixture or explain why it cannot be minimized yet.
+      render: markdown
+    validations:
+      required: true
+  - type: textarea
+    id: commands
+    attributes:
+      label: Commands run and exit codes
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Compact diagnostics
+      description: Include exact errors, warnings, JSON fields, or counts needed to reproduce the defect.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Sanitized config/profile excerpt
+      description: Include the smallest config needed for the bug. Use "not applicable" if none.
+      render: toml
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: local_changes
+    attributes:
+      label: Runtime or local-state changes made
+      description: State "none" if no generated state, cache, config, or local files were changed after the failure.
+      placeholder: "none"
+    validations:
+      required: true
+  - type: textarea
+    id: requested_action
+    attributes:
+      label: Requested DocumentationEngine action
+      placeholder: "Fix parser diagnostic, make projection fallback fail closed, add regression..."
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy and sanitization checklist
+      options:
+        - label: I omitted or sanitized private document bodies.
+          required: true
+        - label: I omitted private scratch, review, roadmap, or planning content.
+          required: true
+        - label: I sanitized config/profile excerpts and removed secrets or private paths where necessary.
+          required: true
+        - label: Any local artifact paths are pointers only; maintainers are not expected to access private files.
+          required: true
+        - label: I provided a minimal public/synthetic fixture or explained why not.
+          required: true

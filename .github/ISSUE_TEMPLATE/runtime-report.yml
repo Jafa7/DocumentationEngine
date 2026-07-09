@@ -1,0 +1,119 @@
+name: Runtime report
+description: Report adopter-side setup, local state, or docsystem execution problems.
+title: "[Runtime Report]: "
+labels: ["runtime-report", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for local setup and execution issues in an adopter project.
+        Do not paste private document bodies, large logs, or full generated projections.
+  - type: input
+    id: project
+    attributes:
+      label: Project or adopter name
+      description: Use a short public-safe project name or slug.
+      placeholder: "example-project"
+    validations:
+      required: true
+  - type: dropdown
+    id: source
+    attributes:
+      label: Source host or agent
+      options:
+        - codex
+        - claude
+        - vscode
+        - other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: DocumentationEngine version or commit
+      placeholder: "0bf364673c55d76d216a3dfe982b0af746f1ab69"
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - setup
+        - readiness
+        - local-state
+        - cli
+        - projection
+        - mcp
+        - other
+    validations:
+      required: false
+  - type: textarea
+    id: commands
+    attributes:
+      label: Commands run and exit codes
+      description: Include exact commands and exit codes. Redact private paths if needed.
+      render: shell
+      placeholder: |
+        docsystem readiness /path/to/project --json
+        exit: 1
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Compact diagnostics or counts
+      description: Prefer compact output from readiness, doctor, validate, index, changes, context, read, or impact. Summaries are better than unbounded logs.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Sanitized config or profile excerpt
+      description: Include only relevant areas, identifiers, catalog policy, relation policy, navigation settings, projection settings, or MCP setup.
+      render: toml
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should have happened?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: local_changes
+    attributes:
+      label: Runtime or local-state changes made
+      description: State "none" if no generated state, cache, config, or local files were changed after the failure.
+      placeholder: "none"
+    validations:
+      required: true
+  - type: textarea
+    id: requested_action
+    attributes:
+      label: Requested DocumentationEngine action
+      placeholder: "Clarify setup guide, fix CLI runtime behavior, improve diagnostic..."
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy and sanitization checklist
+      options:
+        - label: I omitted or sanitized private document bodies.
+          required: true
+        - label: I omitted private scratch, review, roadmap, or planning content.
+          required: true
+        - label: I sanitized config/profile excerpts and removed secrets or private paths where necessary.
+          required: true
+        - label: Any local artifact paths are pointers only; maintainers are not expected to access private files.
+          required: true

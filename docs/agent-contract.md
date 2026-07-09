@@ -134,3 +134,18 @@ rather than assuming omitted material is irrelevant. The packet's final
 `Packet stats` section reports included/omitted counts and the body size in
 lines and UTF-8 bytes; an agent should use it to decide whether an expanded
 follow-up request fits its budget instead of re-measuring the output.
+
+## Report product issues without leaking adopter context
+
+When an agent finds a DocumentationEngine problem while working inside another
+project, it should use the shared
+[adopter reporting policy](adopter-reporting.md). Start with compact command
+diagnostics and counts, include exact commands and exit codes, and sanitize
+profile/config excerpts before filing a GitHub issue.
+
+Use `runtime-report` for adopter-side setup or execution problems,
+`adoption-finding` for real-project compatibility and workflow gaps,
+`core-bug` only for deterministic defects reproducible with a minimal public or
+synthetic fixture, and `docs-pattern-request` for reusable documentation
+patterns. Do not paste private document bodies, private scratch/review/roadmap
+content, full generated projections, MCP context payloads or unbounded logs.

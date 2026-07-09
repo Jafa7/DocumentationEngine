@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Adopter reporting guide
+    url: https://github.com/Jafa7/DocumentationEngine/blob/main/docs/adopter-reporting.md
+    about: Read the privacy-safe reporting policy before filing adopter reports.
