@@ -7,6 +7,42 @@ grows.
 The project is in an early extraction stage. Its first integration fixture is
 Paradigmarium.
 
+## Measured context reduction
+
+The graph below shows the product's core benefit: an AI client receives the
+complete task-relevant documentation context without reading an entire growing
+corpus. It compares a naive full-tree read with DocumentationEngine context
+packets for three predefined tasks over a real 6.41 MB legacy Markdown corpus
+containing 292 documents. Lower is better.
+
+![Documentation context read for one task](docs/assets/context-reduction.svg)
+
+The reduction is selective retrieval, not lossy compression. DocumentationEngine
+does not paraphrase, summarize or arbitrarily truncate the selected context:
+navigation excerpts and requested sections remain verbatim Markdown, required
+scenario coverage is checked, and every omitted H2 remains visible. A client
+can request any omitted section or the complete document explicitly.
+
+| Scenario | Required documents | Required sections | Packet | Corpus read | Reduction |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Architecture analysis | 4 | 6 | 120.7 KB | 1.88% | 98.12% |
+| Roadmap phase | 4 | 7 | 123.6 KB | 1.93% | 98.07% |
+| Research continuation | 4 | 9 | 60.2 KB | 0.94% | 99.06% |
+
+Each task passed a quality guard: every predefined required document and
+section was present, every selected document carried an explicit coverage
+line. The smaller packet comes from excluding unrelated documents and
+unrequested sections, not from rewriting or degrading the selected material.
+The baseline is deliberately specific: reading every Markdown byte, not every
+possible manual or competing retrieval strategy. UTF-8 bytes are a
+deterministic provider-neutral proxy for context volume, not tokenizer-specific
+token counts or a claim about total engineering productivity.
+
+See [the measurement methodology](docs/context-efficiency.md) for the corpus,
+shadow-overlay, formulas, quality checks and limitations. The chart is a
+static measured snapshot; it does not publish an unqualified forecast for
+larger corpora.
+
 ## Connecting Documentation Engine to your project
 
 **If you are an AI agent** asked to set this up: follow
@@ -328,42 +364,13 @@ Projects that keep private documentation or local configuration outside git
 should also define a local backup command; see
 [local state safety](docs/local-state-safety.md).
 
-## Measured context reduction
-
-The graph below compares a naive full-tree read with DocumentationEngine
-context packets for three predefined tasks over a real 6.41 MB legacy
-Markdown corpus containing 292 documents. Lower is better.
-
-![Documentation context read for one task](docs/assets/context-reduction.svg)
-
-The reduction is selective retrieval, not lossy compression. DocumentationEngine
-does not paraphrase, summarize or arbitrarily truncate the selected context:
-navigation excerpts and requested sections remain verbatim Markdown, required
-scenario coverage is checked, and every omitted H2 remains visible. A client
-can request any omitted section or the complete document explicitly.
-
-| Scenario | Required documents | Required sections | Packet | Corpus read | Reduction |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Architecture analysis | 4 | 6 | 120.7 KB | 1.88% | 98.12% |
-| Roadmap phase | 4 | 7 | 123.6 KB | 1.93% | 98.07% |
-| Research continuation | 4 | 9 | 60.2 KB | 0.94% | 99.06% |
-
-Each task passed a quality guard: every predefined required document and
-section was present, every selected document carried an explicit coverage
-line. The smaller packet comes from excluding unrelated documents and
-unrequested sections, not from rewriting or degrading the selected material.
-The baseline is deliberately specific: reading every Markdown byte, not every
-possible manual or competing retrieval strategy. UTF-8 bytes are a
-deterministic provider-neutral proxy for context volume, not tokenizer-specific
-token counts or a claim about total engineering productivity.
-
-See [the measurement methodology](docs/context-efficiency.md) for the corpus,
-shadow-overlay, formulas, quality checks and limitations. The chart is a
-static measured snapshot; it does not publish an unqualified forecast for
-larger corpora.
-
 ## Deliberate project-local boundaries
 
 Registry synchronization, finish orchestration, private history/backup and
 provider-specific adapters are not generalized by this vertical slice. They
 remain project-local until reusable contracts are proven.
+
+## License
+
+Documentation Engine is available under the [MIT License](LICENSE).
+Copyright (c) 2026 Oleg Synelnykov (Jafa7).

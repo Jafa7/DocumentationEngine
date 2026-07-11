@@ -6,10 +6,22 @@ build-backend = "hatchling.build"
 name = "docsystem"
 version = "0.1.0"
 description = "Provider-neutral structured Markdown documentation engine."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Oleg Synelnykov (Jafa7)" },
+]
 requires-python = ">=3.12"
 dependencies = [
     "PyYAML>=6,<7",
 ]
+
+[project.urls]
+Repository = "https://github.com/Jafa7/DocumentationEngine"
+Documentation = "https://github.com/Jafa7/DocumentationEngine/tree/main/docs"
+Issues = "https://github.com/Jafa7/DocumentationEngine/issues"
+Changelog = "https://github.com/Jafa7/DocumentationEngine/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.2,<2"]
