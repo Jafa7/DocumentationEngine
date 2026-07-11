@@ -22,6 +22,26 @@ The adapter is deliberately a wrapper, not a second implementation:
   surfaced deterministically under a `diagnostics` array. The key is present
   only when such diagnostics exist, so every other payload stays byte-identical
   to the CLI output;
+- the `context` tool takes an `outline: bool = False` parameter that maps to
+  `--outline`: it returns a map-first packet of per-section `lines`/`bytes`
+  sizes with no document content, for an agent that wants to budget tokens
+  before fetching. `outline` cannot combine with `anchor` or `include` (the
+  CLI rejects that combination, so the tool call raises like any other
+  non-zero exit);
+- the `context` tool also takes `assume_known: list[str] | None = None`
+  (each value `ID@REV`, mapping to a repeated `--assume-known`) and `since:
+  str | None = None` (mapping to `--since GENERATION`). `assume_known`
+  declares documents the client already holds so their content is omitted
+  while the declared revision still matches (a mismatch keeps full content and
+  is reported under `assume_known_mismatches`); `since` requests a delta
+  against a retained projection generation so unchanged documents are omitted
+  and changed ones carry their changed sections plus explicit removed-section,
+  metadata-change and outside-section signals. Explicit `anchor`/`include`
+  selections still win for an otherwise unchanged document. The retained
+  generation is fully integrity-verified before it can authorize an omission.
+  The CLI rejects combining `since` with `assume_known`, or either with
+  `outline`, so those
+  tool calls raise like any other non-zero exit;
 - text tools (`read_document`, `impact`) return the CLI's stdout unchanged for
   compatibility. Structured packet variants (`read_document_packet`,
   `impact_packet`) return the same stdout under `text` and add `diagnostics`
@@ -50,6 +70,7 @@ The adapter is deliberately a wrapper, not a second implementation:
 | `dependencies` | list | `docsystem dependencies ID PROJECT [--reverse]` |
 | `impact` | text (Markdown table) | `docsystem impact ID PROJECT` |
 | `impact_packet` | object | `docsystem impact ID PROJECT` |
+| `agent_instructions` | object | `docsystem agent-instructions PROJECT --json` |
 
 Every tool takes the project root explicitly; none relies on the server
 process working directory.
@@ -65,6 +86,11 @@ The packet tools use this envelope:
 ```
 
 `diagnostics` is omitted when the CLI emitted no non-fatal stderr.
+
+`agent_instructions` returns the same `{"schema_version": 1, "text": ...}`
+envelope, but it comes directly from `docsystem agent-instructions PROJECT
+--json`: the CLI itself emits that shape, so the adapter only decodes it and
+adds `diagnostics` like any other `--json` tool.
 
 ## Install and run
 

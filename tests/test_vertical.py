@@ -513,6 +513,23 @@ def test_context_json_is_deterministic_and_machine_readable(
     assert target_document["relations"] == ["target"]
     assert target_document["omitted_h2"] == ["details"]
     assert "# Target" in target_document["navigation"]
+    # Additive typed fields leave the existing navigation value unchanged.
+    assert target_document["revision"] == 2
+    assert target_document["navigation"] == (
+        "---\nid: DOC-002\nrevision: 2\ndepends_on: [README.md]\n"
+        "related: [review.md]\nderived_from: "
+        "[https://example.com/source, asset.png]\n"
+        "validated_against: [DOC-001@1]\n---\n"
+        "# Target\n## Summary\nShort target summary.\n"
+        "## Contents\n- [Details](#details)"
+    )
+    assert target_document["sections"] == [
+        {"anchor": "target", "title": "Target", "level": 1, "lines": 7, "bytes": 111},
+        {"anchor": "summary", "title": "Summary", "level": 2, "lines": 2, "bytes": 32},
+        {"anchor": "contents", "title": "Contents", "level": 2, "lines": 2, "bytes": 33},
+        {"anchor": "details", "title": "Details", "level": 2, "lines": 2, "bytes": 35},
+    ]
+    assert payload["outline"] is False
     review = payload["documents"][2]
     assert review["explicit_sections"] == [
         {"anchor": "findings", "content": "## Findings\nFinding details."}
@@ -580,6 +597,38 @@ def test_projection_serves_reads_identically_without_rebuilding_catalog(
             context(tmp_path, "DOC-002", depth=1, includes=["DOC-003#findings"]) == 0
         )
         outputs["context"] = capsys.readouterr().out
+        assert (
+            context(
+                tmp_path,
+                "DOC-002",
+                depth=1,
+                includes=["DOC-003#findings"],
+                json_output=True,
+            )
+            == 0
+        )
+        outputs["context_json"] = capsys.readouterr().out
+        assert context(tmp_path, "DOC-002", depth=1, outline=True) == 0
+        outputs["context_outline"] = capsys.readouterr().out
+        assert (
+            context(tmp_path, "DOC-002", depth=1, outline=True, json_output=True) == 0
+        )
+        outputs["context_outline_json"] = capsys.readouterr().out
+        assert (
+            context(tmp_path, "DOC-002", depth=1, assume_known=["DOC-002@2"]) == 0
+        )
+        outputs["context_assume"] = capsys.readouterr().out
+        assert (
+            context(
+                tmp_path,
+                "DOC-002",
+                depth=1,
+                assume_known=["DOC-002@2"],
+                json_output=True,
+            )
+            == 0
+        )
+        outputs["context_assume_json"] = capsys.readouterr().out
         return outputs
 
     direct = run_all()
@@ -592,6 +641,136 @@ def test_projection_serves_reads_identically_without_rebuilding_catalog(
     monkeypatch.setattr("docsystem.cli.build_catalog", explode)
     projected = run_all()
     assert projected == direct
+
+    # The "sections" size map must not be sensitive to which path served it:
+    # its byte counts come from the shared view shape, not from re-parsing.
+    payload = json.loads(direct["context_json"])
+    assert payload["documents"][0]["sections"], "sections must not be empty"
+    assert payload["outline"] is False
+    outline_payload = json.loads(direct["context_outline_json"])
+    assert outline_payload["outline"] is True
+    assert "navigation" not in outline_payload["documents"][0]
+
+    # The declared-cache packet is identical from both paths and really omits
+    # the current-revision target's content.
+    assume_payload = json.loads(direct["context_assume_json"])
+    assert assume_payload["documents"][0]["content_omitted"] == {
+        "reason": "assumed-known",
+        "declared_revision": 2,
+    }
+    assert "navigation" not in assume_payload["documents"][0]
+    assert assume_payload["stats"]["assumed_known_omitted"] == 1
+
+
+def test_since_delta_packet_serves_identically_from_both_paths(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    root = vertical_project(tmp_path)
+    assert index_projection(tmp_path, write=True) == 0
+    capsys.readouterr()
+    pointer = tmp_path / ".docsystem" / "cache" / "current.json"
+    generation = json.loads(pointer.read_text(encoding="utf-8"))["generation"]
+    short = generation[:12]
+
+    # Edit exactly one section of the target document.
+    target = root / "target.md"
+    target.write_text(
+        target.read_text(encoding="utf-8").replace(
+            "Detailed target content.", "Edited target content."
+        ),
+        encoding="utf-8",
+    )
+
+    # Direct path: the current generation is now stale, so the packet is served
+    # from direct Markdown while --since compares against the retained manifest.
+    assert context(tmp_path, "DOC-002", depth=1, since=generation) == 0
+    direct_text = capsys.readouterr().out
+    assert (
+        context(tmp_path, "DOC-002", depth=1, since=generation, json_output=True) == 0
+    )
+    direct_json = capsys.readouterr().out
+
+    # Rebuild so a fresh CURRENT generation serves the fast path while --since
+    # still points at the OLDER retained generation.
+    assert index_projection(tmp_path, write=True) == 0
+    capsys.readouterr()
+
+    def explode(config: object) -> None:
+        raise AssertionError("projection-served reads must not rebuild the catalog")
+
+    monkeypatch.setattr("docsystem.cli.build_catalog", explode)
+    assert context(tmp_path, "DOC-002", depth=1, since=generation) == 0
+    projected_text = capsys.readouterr().out
+    assert (
+        context(tmp_path, "DOC-002", depth=1, since=generation, json_output=True) == 0
+    )
+    projected_json = capsys.readouterr().out
+
+    assert projected_text == direct_text
+    assert projected_json == direct_json
+
+    # The delta really contains only the changed section, and the untouched
+    # dependency is omitted with the unchanged-since coverage marker.
+    assert "### Changed section `details`" in projected_text
+    assert "Edited target content." in projected_text
+    assert (
+        f"_Coverage: content omitted — unchanged since {short}." in projected_text
+    )
+    assert f"- Delta vs generation {short}: 1 changed, 1 unchanged omitted" in projected_text
+
+    payload = json.loads(projected_json)
+    changed = next(item for item in payload["documents"] if item["id"] == "DOC-002")
+    # "target" (the H1) is the complete truth signal: its slice spans the
+    # whole document, so the edit inside "details" changes its hash too, even
+    # though only "details" is served as a content block.
+    assert changed["changed_sections"] == ["target", "details"]
+    assert {section["anchor"] for section in changed["explicit_sections"]} == {"details"}
+    unchanged = next(item for item in payload["documents"] if item["id"] == "DOC-001")
+    assert unchanged["content_omitted"] == {
+        "reason": "unchanged-since",
+        "generation": short,
+    }
+
+
+def test_since_delta_change_inside_extend_through_is_not_duplicated(
+    tmp_path: Path, capsys
+) -> None:
+    root = vertical_project(tmp_path)
+    assert index_projection(tmp_path, write=True) == 0
+    capsys.readouterr()
+    pointer = tmp_path / ".docsystem" / "cache" / "current.json"
+    generation = json.loads(pointer.read_text(encoding="utf-8"))["generation"]
+
+    # "summary" is inside navigation.extend_through, so it is always served
+    # by the navigation prefix, not as its own content block.
+    target = root / "target.md"
+    target.write_text(
+        target.read_text(encoding="utf-8").replace(
+            "Short target summary.", "Updated target summary."
+        ),
+        encoding="utf-8",
+    )
+    assert index_projection(tmp_path, write=True) == 0
+    capsys.readouterr()
+
+    assert context(tmp_path, "DOC-002", depth=1, since=generation) == 0
+    text = capsys.readouterr().out
+    assert "Updated target summary." in text
+    assert text.count("Updated target summary.") == 1
+    assert "### Changed section `summary`" not in text
+    assert "### Changed section `target`" not in text
+
+    assert (
+        context(tmp_path, "DOC-002", depth=1, since=generation, json_output=True)
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    changed = next(item for item in payload["documents"] if item["id"] == "DOC-002")
+    # Both the H1 and the extend_through H2 signal via changed_sections, but
+    # neither is duplicated into explicit_sections since navigation already
+    # carries them.
+    assert changed["changed_sections"] == ["target", "summary"]
+    assert changed["explicit_sections"] == []
 
 
 def test_changes_json_is_deterministic_and_machine_readable(

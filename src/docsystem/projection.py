@@ -468,6 +468,91 @@ def write_projection(config: ProjectConfig, projection: dict[str, Any]) -> str:
     return generation
 
 
+def resolve_generation_manifest(
+    config: ProjectConfig, selector: str
+) -> tuple[str, dict[str, Any]] | None:
+    """Resolve and verify a `--since` generation.
+
+    A selector is accepted when it is a full retained generation hash or an
+    unambiguous prefix of at least 12 characters that matches exactly one
+    retained generation. The manifest is then bound to every document and
+    reverse shard, the active configuration fingerprint and the reconstructed
+    generation hash before any recorded source hash can authorize an omission.
+    The returned `documents` mapping contains the verified full document
+    shards rather than the manifest summaries, so delta callers can compare
+    semantic metadata as well as section hashes.
+
+    Anything shorter, ambiguous, unknown, incompatible, corrupt or unreadable
+    returns `None`, so the caller fails closed with a single deterministic
+    error. Retention staging directories are ignored, matching projection
+    write semantics.
+    """
+
+    if not isinstance(selector, str) or len(selector) < 12:
+        return None
+    generations_dir = cache_root(config) / "generations"
+    try:
+        names = [
+            path.name
+            for path in generations_dir.iterdir()
+            if path.is_dir() and not path.name.startswith(".staging-")
+        ]
+    except OSError:
+        return None
+    matches = sorted({name for name in names if name.startswith(selector)})
+    if len(matches) != 1:
+        return None
+    generation = matches[0]
+    try:
+        generation_dir = generations_dir / generation
+        manifest = _read(generation_dir / "manifest.json")
+        if manifest.get("schema_version") != SCHEMA_VERSION:
+            return None
+        if manifest.get("generation") != generation:
+            return None
+        if manifest.get("config_fingerprint") != config_fingerprint(config):
+            return None
+        manifest_documents = manifest.get("documents")
+        if not isinstance(manifest_documents, dict):
+            return None
+
+        documents: dict[str, dict[str, Any]] = {}
+        for document_id, record in manifest_documents.items():
+            if not isinstance(document_id, str) or not isinstance(record, dict):
+                return None
+            shard = _read(generation_dir / _shard("documents", document_id))
+            if (
+                shard.get("schema_version") != SCHEMA_VERSION
+                or shard.get("id") != document_id
+                or shard.get("path") != record.get("path")
+                or shard.get("source_sha256") != record.get("source_sha256")
+                or shard.get("sections") != record.get("sections")
+            ):
+                return None
+            documents[document_id] = shard
+
+        reverse: dict[str, tuple[dict[str, Any], ...]] = {}
+        targets = {
+            dependency["target"]
+            for shard in documents.values()
+            for dependency in shard.get("dependencies", ())
+        }
+        for document_id in sorted(targets):
+            shard = _read(generation_dir / _shard("reverse", document_id))
+            if (
+                shard.get("schema_version") != SCHEMA_VERSION
+                or shard.get("id") != document_id
+                or not isinstance(shard.get("incoming"), list)
+            ):
+                return None
+            reverse[document_id] = tuple(shard["incoming"])
+        if _reconstructed_generation(documents, reverse, config) != generation:
+            return None
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return generation, {**manifest, "documents": documents}
+
+
 def evaluate_changes(config: ProjectConfig, current: dict[str, Any]) -> ChangesReport:
     """Compare `current` against the selected projection generation, if any."""
 

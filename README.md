@@ -96,6 +96,10 @@ python -m docsystem dependencies DOC-001 .
 python -m docsystem dependencies DOC-001 . --reverse
 python -m docsystem context DOC-001 . --depth 1
 python -m docsystem context DOC-001 . --depth 1 --json
+python -m docsystem context DOC-001 . --outline
+python -m docsystem context DOC-001 . --outline --json
+python -m docsystem context DOC-001 . --assume-known DOC-001@3
+python -m docsystem context DOC-001 . --since 0a1b2c3d4e5f
 python -m docsystem impact DOC-001 .
 python -m docsystem migration-report .
 python -m docsystem migration-report . --json
@@ -109,6 +113,8 @@ python -m docsystem migrate . --apply
 python -m docsystem index . --write
 python -m docsystem changes .
 python -m docsystem changes . --json
+python -m docsystem agent-instructions .
+python -m docsystem agent-instructions . --json
 ```
 
 `init` creates a project-local `.docsystem.toml` and the configured
@@ -214,14 +220,27 @@ runtime reports, adoption findings, core bugs or documentation pattern
 requests; it is read-only and leaves expected/actual/requested-action fields
 for the reporter to fill in.
 
-`readiness`, `migration-report`, `catalog --explain`, `changes` and `context`
-accept `--json` and print one deterministic JSON value (sorted keys, stable
-field names) instead of text, carrying the same information the text form
-prints plus what it sends to stderr, so a machine client never has to parse
-human prose. Every `--json` root is an object carrying `"schema_version": 1`;
-the version is bumped only on a breaking change to an existing field, so a
-consumer can detect format evolution without guessing. Exit codes are
-unchanged by `--json`.
+`agent-instructions` prints a deterministic Markdown snippet — naming the
+configured documentation root, language, areas and identifier namespaces plus
+the core agent rules (pass the project root explicitly, start with
+`readiness --json`, prefer `--json`, expand context deliberately, never run a
+mutating command without approval, follow local backup policy) — for pasting
+into an adopting project's `AGENTS.md`/`CLAUDE.md`. It is read-only, reads
+only project configuration and works even when the documentation root itself
+is missing, so the pasted snippet can never drift from
+`docs/setup-guide.md` Step 7 by hand-copying.
+
+`readiness`, `migration-report`, `catalog --explain`, `changes`, `context` and
+`agent-instructions` accept `--json` and print one deterministic JSON value
+(sorted keys, stable field names) instead of text, carrying the same
+information the text form prints plus what it sends to stderr, so a machine
+client never has to parse human prose. Every `--json` root is an object
+carrying `"schema_version": 1`; the version is bumped only on a breaking
+change to an existing field, so a consumer can detect format evolution
+without guessing. Exit codes are unchanged by `--json`. `context --outline`
+(with or without `--json`) prints section size maps instead of content for
+the same selected document set, so an agent can budget tokens with a cheap
+map before fetching.
 
 An MCP adapter exposes the read-only commands as typed tools for any
 MCP-capable client; see [the MCP adapter guide](docs/mcp-adapter.md). It is a
@@ -251,7 +270,40 @@ budget. The packet ends with a `Packet stats` section reporting how many
 documents and explicit sections were included, how many H2 sections were
 omitted, and the line/byte size of the packet body above it, so a client can
 budget a follow-up `--depth` or `--include` expansion without re-measuring
-the output. `impact` reports reverse metadata dependencies and distinguishes
+the output. `context --json` additionally exposes each document's typed
+`revision` and lists `"sections"`: each section's `anchor`, `title`, `level`,
+`lines` and exact UTF-8 `bytes` size, in document order, so a client can retain
+the revision for a later `--assume-known` call and budget without fetching
+content first. The existing `navigation` field keeps its complete Markdown
+prefix, including YAML front matter. `context --outline` prints the same
+document set (`--depth` and `--include-related` still apply) with those
+section size tables instead of navigation excerpts or content — a cheap
+"map first, fetch second" packet.
+`--outline` combines with `--json` for the structured form, but not with
+`--anchor` or `--include`, which select content the outline never returns.
+`context --assume-known ID@REV` (repeatable) lets an agent declare a document
+it already holds: when that document lands in the packet and its current
+revision still equals `REV`, its navigation excerpt is omitted and its coverage
+line becomes `content omitted — declared known at revision REV (current)`,
+while `--include ID#anchor` still forces those explicit sections. A stale
+declaration (revision moved on) keeps full content and records a mismatch note,
+so a declared cache never silently hides a change. `context --since GENERATION`
+requests a delta against a retained projection generation (full hash or an
+unambiguous prefix of at least twelve characters): unchanged documents are
+omitted with an `unchanged since GEN12` coverage line, changed documents keep
+navigation and gain a `### Changed section` block per changed H2 not already
+covered by navigation (a changed H1 or `navigation.extend_through` H2 is
+already served by the navigation excerpt), and a document absent from that
+generation is reported as new and served in full. Removed anchors and semantic
+metadata before/after values are reported separately, and a source change
+outside addressable sections is explicit. A requested `--anchor` or `--include`
+still wins over unchanged-content omission. The retained generation is
+verified against its manifest, document and reverse shards, active
+configuration fingerprint and reconstructed generation hash before it can
+authorize any omission. `--since` cannot combine with `--assume-known`, and
+neither combines with `--outline`; every rejected combination fails closed
+with no packet. `impact` reports reverse
+metadata dependencies and distinguishes
 semantic, related-navigation, freshness and configured historical-snapshot
 relations.
 
@@ -275,6 +327,40 @@ for how an AI client should safely drive this CLI.
 Projects that keep private documentation or local configuration outside git
 should also define a local backup command; see
 [local state safety](docs/local-state-safety.md).
+
+## Measured context reduction
+
+The graph below compares a naive full-tree read with DocumentationEngine
+context packets for three predefined tasks over a real 6.41 MB legacy
+Markdown corpus containing 292 documents. Lower is better.
+
+![Documentation context read for one task](docs/assets/context-reduction.svg)
+
+The reduction is selective retrieval, not lossy compression. DocumentationEngine
+does not paraphrase, summarize or arbitrarily truncate the selected context:
+navigation excerpts and requested sections remain verbatim Markdown, required
+scenario coverage is checked, and every omitted H2 remains visible. A client
+can request any omitted section or the complete document explicitly.
+
+| Scenario | Required documents | Required sections | Packet | Corpus read | Reduction |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Architecture analysis | 4 | 6 | 120.7 KB | 1.88% | 98.12% |
+| Roadmap phase | 4 | 7 | 123.6 KB | 1.93% | 98.07% |
+| Research continuation | 4 | 9 | 60.2 KB | 0.94% | 99.06% |
+
+Each task passed a quality guard: every predefined required document and
+section was present, every selected document carried an explicit coverage
+line. The smaller packet comes from excluding unrelated documents and
+unrequested sections, not from rewriting or degrading the selected material.
+The baseline is deliberately specific: reading every Markdown byte, not every
+possible manual or competing retrieval strategy. UTF-8 bytes are a
+deterministic provider-neutral proxy for context volume, not tokenizer-specific
+token counts or a claim about total engineering productivity.
+
+See [the measurement methodology](docs/context-efficiency.md) for the corpus,
+shadow-overlay, formulas, quality checks and limitations. The chart is a
+static measured snapshot; it does not publish an unqualified forecast for
+larger corpora.
 
 ## Deliberate project-local boundaries
 

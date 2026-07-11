@@ -242,29 +242,15 @@ ensure the backup policy includes it.
 
 Add a thin instruction to the adopted project's agent instructions file
 (`AGENTS.md`, `CLAUDE.md`, `.github/copilot-instructions.md`, or equivalent).
-Keep it project-local and adapt paths/placeholders:
+Keep it project-local and adapt paths/placeholders. Generate the snippet
+instead of hand-copying it, so it reflects this project's actual configured
+areas and identifiers and cannot drift from this guide:
 
-```markdown
-## Documentation with Documentation Engine
-
-Use `docsystem` for structured Markdown documentation. Always pass the project
-root explicitly; do not rely on the current working directory.
-
-Start with read-only commands:
-
-- `docsystem readiness <project-root> --json`
-- `docsystem validate <project-root>`
-- `docsystem doctor <project-root>`
-- `docsystem context DOCUMENT_ID <project-root> --depth 1`
-
-Before mutating ignored/local-only documentation, `.docsystem.toml`,
-`.docsystem/` or runtime state, read `.agents/local/backup-policy.md` and run
-the local backup command. If the policy is missing, stop and ask the user where
-backups should be stored.
-
-Do not commit private planning content or local backup paths unless the user
-explicitly says those files are public/tracked.
+```bash
+docsystem agent-instructions /path/to/project
 ```
+
+Paste its output into the agent instructions file.
 
 **Check:** confirm the instruction file is either tracked intentionally or is a
 local provider-specific file the project already uses.

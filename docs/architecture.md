@@ -115,6 +115,43 @@ direct Markdown with a visible diagnostic rather than serving mixed state.
 Coordinating multiple writers is a caller/orchestrator responsibility, not
 core engine behavior.
 
+Retained generation manifests also drive two token-economy `context` modes
+that omit content only when omission is provably safe, never as a silent
+budget cut. `--assume-known ID@REV` is a client-declared cache: an agent
+states a document it already holds, and the engine omits that document's
+navigation excerpt only while its current revision still equals `REV`; a
+stale declaration serves full content and emits a mismatch note. `--since
+GENERATION` is a delta briefing against a retained generation manifest: for
+each packet document the engine compares the per-section sha256 recorded in
+that manifest against the current view (any level, no filtering) and reports
+every differing or new anchor as `changed_sections` — the complete truth
+signal. Documents whose source hash is unchanged are omitted entirely. For a
+changed document, navigation is served as usual (it already covers everything
+before the first H2, plus any `navigation.extend_through` H2s), and every
+changed H2 that is *not* already inside that navigation prefix is attached as
+a full `### Changed section` block — its H3+ descendants travel with it,
+since a nested change also changes the enclosing H2's own slice hash. A
+changed H1 or a changed H2 already inside `extend_through` is never
+re-emitted as a block (navigation already served it), but it still appears in
+`changed_sections`. A document absent from the referenced generation is
+served in full: navigation plus every non-extend_through H2 block, with a
+`new since GENERATION` note. This makes the packet's `Omitted H2` coverage
+line truthful by construction: it lists only H2s that are neither inside
+navigation nor emitted as a block. Anchors present only in the retained
+generation are reported under `removed_sections`; semantic projection fields
+report typed before/after values under `metadata_changes`; and a changed source
+with no current or removed section anchor is marked as changed outside
+addressable sections. An explicit `--anchor` or `--include` selection is never
+discarded merely because its document is unchanged in the generation. Before
+these comparisons, the retained generation is verified from its manifest,
+document and reverse shards, active configuration fingerprint and reconstructed
+generation hash. Both modes read the same shared view shape on either serving
+path, so a delta served from a fresh projection's fast path is
+byte-identical to the same delta reconstructed from direct Markdown, even when
+the referenced generation is an older retained one rather than the current
+pointer. `--since` and `--assume-known` are mutually exclusive, and neither
+combines with `--outline`.
+
 ## Markdown catalog and navigation
 
 The catalog classifies every Markdown file below the documentation root.
@@ -186,6 +223,21 @@ adapter (`docsystem.mcp_server`) is a thin subprocess wrapper over exactly
 this CLI contract, exposing only read-only commands as tools. Text-preserving
 MCP tools keep stdout byte-for-byte compatible, and their packet variants add
 the same non-fatal diagnostics without forcing clients to parse stderr.
+
+`context --json` additionally exposes each included document's typed
+`revision` and lists its sections as `{anchor, title, level, lines, bytes}` in
+document order, where `bytes` is
+the UTF-8 size of the raw section slice (the same slice the projection
+hashes; a `--include` fetch returns it normalized, so terminal sections may
+differ by a trailing-newline byte) — a size map an agent can use to budget
+before requesting content. The established `navigation` value remains the
+complete Markdown prefix, including YAML front matter. `context --outline`
+(text or `--json`) selects the same document set (`--depth`,
+`--include-related` still apply) but omits navigation and section content
+entirely, printing only that size map, so an agent can inspect a document's
+shape for the cost of one small packet before deciding what to fetch with
+`--include ID#anchor`. `--outline` therefore never combines with `--anchor`
+or `--include`, which select content it does not return.
 
 ATX headings outside fenced code blocks form deterministic addressable
 sections. A section includes nested headings until the next heading at the same

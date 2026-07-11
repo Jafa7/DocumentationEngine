@@ -136,6 +136,60 @@ rather than assuming omitted material is irrelevant. The packet's final
 lines and UTF-8 bytes; an agent should use it to decide whether an expanded
 follow-up request fits its budget instead of re-measuring the output.
 
+An agent should budget outline-first: run `docsystem context ID PROJECT
+--outline` (add `--json` for the structured form) before requesting content.
+Outline mode selects the same document set as a normal call (`--depth` and
+`--include-related` still apply) but replaces navigation and section content
+with a per-section size map — `anchor`, `title`, `level`, `lines` and exact
+UTF-8 `bytes` — for every included document, so an agent can see a
+document's shape and cost before fetching anything. Once the map shows what
+is actually needed, follow up with `--include ID#anchor` or a full (non-
+outline) `context` call; `--outline` itself never combines with `--anchor`
+or `--include`, since it never returns content. `context --json` (without
+`--outline`) also carries this same `sections` size map alongside full
+navigation and explicit sections, so a client already fetching content does
+not need a separate outline call just to learn section sizes.
+
+## Declared cache and delta briefings must stay honest
+
+A recurring agent can shrink packets further, but only in ways the engine can
+prove safe. When an agent still holds a document from an earlier packet, it may
+declare it with `--assume-known ID@REV` (repeatable). The engine omits that
+document's content only while its current revision still equals `REV`; if the
+document has since moved to a newer revision, the packet includes full content
+and a mismatch note instead. An agent must therefore pass the exact revision it
+cached and treat a mismatch note as a signal to refresh, never assume a
+declared document was omitted for being stale. An explicit `--include
+ID#anchor` still wins over a declaration, so an agent can re-request specific
+sections it needs verbatim.
+
+When an agent consumed a projection generation earlier and wants only what
+changed, it should record that generation hash and later run `--since
+GENERATION` (the full hash, or an unambiguous prefix of at least twelve
+characters). Before an omission, the engine verifies the retained manifest
+against its document and reverse shards, active configuration fingerprint and
+reconstructed generation hash. It then omits every document whose source is
+byte-identical to that verified generation. For a changed document, navigation
+is always served — it already covers everything before the first H2 plus any
+`navigation.extend_through` H2s — and every changed H2 outside that prefix is
+attached as a full `### Changed section` block, carrying its H3+ descendants
+with it (a nested change always changes its enclosing H2's own hash, so
+nothing nested is ever served in isolation). A changed H1 or a changed
+`extend_through` H2 is never re-emitted as a block since navigation already
+carries it, but every changed anchor at any level is still listed in
+`changed_sections`, plus a summary of how many documents changed versus were
+omitted. Removed anchors are listed separately, semantic metadata changes carry
+their previous and current values, and a source change outside addressable
+sections is explicitly marked. A document the generation never saw is served
+in full. An explicit `--anchor` or `--include ID#anchor` still wins when the
+selected document is otherwise unchanged. An agent should trust the omissions
+— they are hash-verified against a retained
+manifest, not a heuristic — and refetch a full packet only when it needs
+context the delta deliberately left out. `--since` and
+`--assume-known` cannot be combined, and neither combines with `--outline`;
+every rejected combination fails closed with no packet, so an agent never acts
+on a partially applied request.
+
 ## Report product issues without leaking adopter context
 
 When an agent finds a DocumentationEngine problem while working inside another

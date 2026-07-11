@@ -1,9 +1,12 @@
+import io
+from contextlib import redirect_stdout
 from pathlib import Path
 
 import pytest
 
 from docsystem import mcp_server
 from docsystem.catalog import build_catalog
+from docsystem.cli import agent_instructions as cli_agent_instructions
 from docsystem.config import CONFIG_FILENAME, DEFAULT_CONFIG, load_config
 from docsystem.projection import build_projection, write_projection
 
@@ -59,6 +62,11 @@ def test_tools_return_structured_payloads_from_the_cli_contract(
     assert packet["target"] == "DOC-002"
     assert [item["id"] for item in packet["documents"]] == ["DOC-002", "DOC-001"]
     assert packet["stats"]["included_documents"] == 2
+    assert packet["outline"] is False
+    assert packet["documents"][0]["sections"] == [
+        {"anchor": "target", "title": "Target", "level": 1, "lines": 7, "bytes": 54},
+        {"anchor": "details", "title": "Details", "level": 2, "lines": 3, "bytes": 29},
+    ]
 
     navigation = mcp_server.read_document(project, "DOC-002", navigation=True)
     assert navigation.endswith("# Target\n\nSummary line.\n")
@@ -144,6 +152,37 @@ def test_context_surfaces_projection_fallback_diagnostics(tmp_path: Path) -> Non
     ]
 
 
+def test_context_outline_reports_section_size_maps_without_content(
+    tmp_path: Path,
+) -> None:
+    project = adapter_project(tmp_path)
+
+    outline = mcp_server.context(str(project), "DOC-002", outline=True)
+    assert outline["outline"] is True
+    assert [item["id"] for item in outline["documents"]] == ["DOC-002", "DOC-001"]
+    target_document = outline["documents"][0]
+    assert set(target_document) == {
+        "id",
+        "path",
+        "revision",
+        "relations",
+        "sections",
+    }
+    assert target_document["revision"] == 1
+    assert target_document["sections"] == [
+        {"anchor": "target", "title": "Target", "level": 1, "lines": 7, "bytes": 54},
+        {"anchor": "details", "title": "Details", "level": 2, "lines": 3, "bytes": 29},
+    ]
+    assert outline["stats"] == {
+        "included_documents": 2,
+        "listed_sections": 3,
+        "total_section_bytes": 110,
+    }
+
+    with pytest.raises(RuntimeError, match="cannot combine --outline"):
+        mcp_server.context(str(project), "DOC-002", outline=True, anchor="details")
+
+
 def test_text_packet_tools_surface_projection_fallback_diagnostics(
     tmp_path: Path,
 ) -> None:
@@ -175,7 +214,81 @@ def test_text_packet_tools_surface_projection_fallback_diagnostics(
     ]
 
 
+def test_context_assume_known_omits_declared_document(tmp_path: Path) -> None:
+    project = str(adapter_project(tmp_path))
+
+    packet = mcp_server.context(project, "DOC-002", assume_known=["DOC-002@1"])
+    target_document = packet["documents"][0]
+    assert target_document["id"] == "DOC-002"
+    assert "navigation" not in target_document
+    assert target_document["content_omitted"] == {
+        "reason": "assumed-known",
+        "declared_revision": 1,
+    }
+    assert packet["assume_known_mismatches"] == []
+    assert packet["stats"]["assumed_known_omitted"] == 1
+
+    mismatch = mcp_server.context(project, "DOC-002", assume_known=["DOC-002@9"])
+    mismatch_document = mismatch["documents"][0]
+    assert "navigation" in mismatch_document
+    assert "content_omitted" not in mismatch_document
+    assert mismatch["assume_known_mismatches"] == [
+        {"id": "DOC-002", "declared_revision": 9, "current_revision": 1}
+    ]
+    assert mismatch["stats"]["assumed_known_omitted"] == 0
+
+
+def test_context_since_delta_passes_generation_through(tmp_path: Path) -> None:
+    project = adapter_project(tmp_path)
+    config = load_config(project)
+    generation = write_projection(
+        config, build_projection(build_catalog(config), config)
+    )
+
+    target = project / "plan" / "target.md"
+    target.write_text(
+        target.read_text(encoding="utf-8").replace(
+            "Detailed content.", "Changed content."
+        ),
+        encoding="utf-8",
+    )
+
+    packet = mcp_server.context(str(project), "DOC-002", since=generation)
+    documents = {item["id"]: item for item in packet["documents"]}
+    # "target" (the H1) is the complete truth signal: its slice spans the
+    # whole document, so the edit inside "details" changes its hash too, even
+    # though only "details" is served as a content block.
+    assert documents["DOC-002"]["changed_sections"] == ["target", "details"]
+    assert {
+        section["anchor"] for section in documents["DOC-002"]["explicit_sections"]
+    } == {"details"}
+    assert documents["DOC-001"]["content_omitted"] == {
+        "reason": "unchanged-since",
+        "generation": generation[:12],
+    }
+
+
 def test_build_server_registers_every_read_only_tool() -> None:
     pytest.importorskip("mcp")
     server = mcp_server.build_server()
     assert server.name == "docsystem"
+
+
+def test_agent_instructions_returns_the_cli_json_envelope(tmp_path: Path) -> None:
+    project = adapter_project(tmp_path)
+
+    payload = mcp_server.agent_instructions(str(project))
+    assert payload["schema_version"] == 1
+    assert payload["text"].startswith("## Documentation with Documentation Engine\n")
+    assert "workspace -> ." in payload["text"]
+    assert f"docsystem readiness {project} --json" in payload["text"]
+
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        assert cli_agent_instructions(project) == 0
+    assert payload["text"] == buffer.getvalue()
+
+
+def test_agent_instructions_reports_missing_configuration(tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match="configuration not found"):
+        mcp_server.agent_instructions(str(tmp_path / "missing"))

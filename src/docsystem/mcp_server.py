@@ -142,14 +142,26 @@ def context(
     include_related: bool = False,
     include: list[str] | None = None,
     anchor: str | None = None,
+    outline: bool = False,
+    assume_known: list[str] | None = None,
+    since: str | None = None,
 ) -> dict:
     """Build a deterministic, inspectable context packet for a document.
 
     Read-only. The packet reports exactly what was included and omitted —
     never a silent token-budget truncation. Expand coverage with `depth`,
     `include_related` or explicit `include` selections (`ID` or `ID#anchor`)
-    instead of assuming omitted material is irrelevant. If the CLI serves the
-    packet by falling back from a stale or corrupt projection to direct
+    instead of assuming omitted material is irrelevant. Set `outline` for a
+    map-first packet of per-section `lines`/`bytes` sizes with no document
+    content, to budget tokens before fetching; `outline` cannot combine with
+    `anchor` or `include`. Declare documents already held with
+    `assume_known` (`ID@REV`, repeatable): a document at the declared
+    revision has its content omitted, a mismatch keeps it. Request a delta
+    against a retained projection generation with `since` (full hash or
+    unique >=12-char prefix): unchanged documents are omitted and changed
+    ones carry only their changed sections. `since` cannot combine with
+    `assume_known`, and neither combines with `outline`. If the CLI serves
+    the packet by falling back from a stale or corrupt projection to direct
     Markdown, the fallback warning is surfaced under `diagnostics`.
     """
 
@@ -160,6 +172,12 @@ def context(
         arguments.extend(["--anchor", anchor])
     for item in include or []:
         arguments.extend(["--include", item])
+    if outline:
+        arguments.append("--outline")
+    for item in assume_known or []:
+        arguments.extend(["--assume-known", item])
+    if since is not None:
+        arguments.extend(["--since", since])
     return _json_tool(arguments)
 
 
@@ -252,6 +270,20 @@ def impact_packet(project: str, document_id: str) -> dict:
     return _text_packet(["impact", document_id, project])
 
 
+def agent_instructions(project: str) -> dict:
+    """Return the deterministic agent-rules snippet for AGENTS.md/CLAUDE.md.
+
+    Read-only: derived from the project's `.docsystem.toml` plus the
+    engine's stable agent contract, never from parsing
+    `docs/setup-guide.md`, so the pasted snippet cannot drift from the
+    project's actually configured areas and identifiers. Works even when
+    the documentation root itself is missing, since only configuration is
+    read.
+    """
+
+    return _json_tool(["agent-instructions", project, "--json"])
+
+
 _TOOLS = (
     readiness,
     catalog,
@@ -263,6 +295,7 @@ _TOOLS = (
     dependencies,
     impact,
     impact_packet,
+    agent_instructions,
 )
 
 

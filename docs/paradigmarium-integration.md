@@ -54,9 +54,53 @@ payloads live under a named key rather than as a bare array root:
 [...]}`, `migration-report --json` returns `resolved` and `boundaries`
 arrays, and `changes --json` returns a `status` string plus a `changes`
 array. `context --json` returns the packet structured — `documents` (each
-with `navigation`, `explicit_sections` and `omitted_h2`), `freshness`,
-`migrations`, `boundaries`, `related_omitted` and `stats` — instead of the
-Markdown packet text.
+with typed `revision`, `navigation`, `explicit_sections`, `omitted_h2` and
+`sections`),
+`freshness`, `migrations`, `boundaries`, `related_omitted` and `stats` —
+instead of the Markdown packet text. `navigation` keeps the established
+complete Markdown prefix, including leading YAML front matter, while the typed
+`revision` lets a client retain the exact value needed for a later
+`--assume-known ID@REV` call. `sections` lists every ATX section in document
+order as `{anchor, title,
+level, lines, bytes}`, where `bytes` is the UTF-8 size of the raw section
+slice — the same slice the projection hashes, identical on both serving
+paths; a `--include ID#anchor` fetch returns the normalized form, which may
+differ by a trailing-newline byte for a document's last section. `context --outline` (add `--json` for the structured form)
+returns the same root shape with `"outline": true` and, per document, only
+`id`, `path`, `revision`, `relations` and `sections` — no content — plus a
+`stats` of `included_documents`, `listed_sections` and `total_section_bytes`;
+a wrapper
+budgeting tokens should call `--outline` first and follow up with `--include
+ID#anchor` or a full `context` call once it knows what it needs. `--outline`
+is incompatible with `--anchor`/`--include`, since it never returns content.
+
+`context --json` also supports two content-omitting delta modes. With
+`--assume-known ID@REV` (repeatable), a document that lands in the packet at
+the declared current revision drops its `navigation` key and instead carries
+`"content_omitted": {"reason": "assumed-known", "declared_revision": REV}`
+while still listing `sections` and `omitted_h2`; the root additionally carries
+`"assume_known_mismatches"` (a possibly empty array of `{"id",
+"declared_revision", "current_revision"}` for declarations whose revision no
+longer matches — those documents keep full content) and `stats` gains
+`"assumed_known_omitted"`. These extra keys appear only when
+`--assume-known` was passed, so existing payloads stay byte-stable. With
+`--since GENERATION`, a document unchanged since that generation drops
+`navigation` for `"content_omitted": {"reason": "unchanged-since",
+"generation": GEN12}` (GEN12 = the generation's first twelve characters),
+while a changed document keeps `navigation`, gains `"changed_sections":
+[anchors...]` listing every anchor at any level whose slice hash differs or
+is new, and carries the content of each changed H2 that is not already inside
+`navigation` (i.e. not covered by the lead-in or `navigation.extend_through`)
+in the existing `explicit_sections` array under the same anchor; a changed H1
+or a changed `extend_through` H2 appears in `changed_sections` but is not
+duplicated into `explicit_sections`. It also reports `removed_sections`,
+typed `metadata_changes` with before/after values and
+`source_changed_outside_sections`. Explicit `--anchor`/`--include` selections
+win over unchanged-content omission. The selected retained generation is
+verified against its manifest, shards, active configuration and reconstructed
+hash before comparison. `--since` and
+`--assume-known` are mutually exclusive, and neither combines with
+`--outline`; a rejected combination exits `1` with no stdout.
 
 A wrapper that speaks MCP can skip the CLI entirely and use
 [the MCP adapter](mcp-adapter.md), which exposes these same read-only

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -25,7 +26,7 @@ from docsystem.catalog import (
     validate_membership,
     validate_metadata,
 )
-from docsystem.config import CONFIG_FILENAME, DEFAULT_CONFIG, load_config
+from docsystem.config import CONFIG_FILENAME, DEFAULT_CONFIG, ProjectConfig, load_config
 from docsystem.migration import apply_migration_plan, build_migration_plan, validate_plan
 from docsystem.projection import (
     LoadedProjection,
@@ -33,6 +34,7 @@ from docsystem.projection import (
     evaluate_changes,
     load_verified_projection,
     projection_status,
+    resolve_generation_manifest,
     write_projection,
 )
 from docsystem.projection import (
@@ -547,6 +549,363 @@ def _selection(raw: str) -> tuple[str, str | None]:
     return document_id, anchor if separator else None
 
 
+def _section_size_maps(view: _DocumentView) -> list[dict[str, object]]:
+    """Return per-section `{anchor, title, level, lines, bytes}` in order.
+
+    `bytes` is the exact UTF-8 size of the slice `extract_section` hashes
+    (before its trailing-newline normalization), so the value is identical
+    on both serving paths regardless of trailing whitespace handling.
+    """
+
+    lines = view.content.splitlines()
+    maps: list[dict[str, object]] = []
+    for section in view.sections:
+        slice_text = "\n".join(lines[section.start_line - 1 : section.end_line])
+        maps.append(
+            {
+                "anchor": section.anchor,
+                "title": section.title,
+                "level": section.level,
+                "lines": section.end_line - section.start_line + 1,
+                "bytes": len(slice_text.encode("utf-8")),
+            }
+        )
+    return maps
+
+
+def _source_sha(view: _DocumentView) -> str:
+    """Return the sha256 of a document's full source, matching the manifest."""
+
+    return hashlib.sha256(view.content.encode()).hexdigest()
+
+
+def _section_sha(view: _DocumentView, section: MarkdownSection) -> str:
+    """Return a section's sha256 over the exact slice the manifest hashes."""
+
+    lines = view.content.splitlines()
+    slice_text = "\n".join(lines[section.start_line - 1 : section.end_line])
+    return hashlib.sha256(slice_text.encode()).hexdigest()
+
+
+def _changed_section_anchors(
+    view: _DocumentView, previous_sections: dict[str, object]
+) -> tuple[str, ...]:
+    """Return every anchor whose content changed since a generation, in doc order.
+
+    A section is changed when its per-section sha256 differs from the recorded
+    one or when the section is new — any level, no filtering. This is the
+    complete truth signal reported as `changed_sections`: an H1's slice spans
+    everything beneath it and an H2's slice spans its H3+ descendants, so a
+    change anywhere always bubbles up through every enclosing anchor as well.
+    Which of these anchors are actually re-emitted as `### Changed section`
+    content blocks is decided separately in `_packet_sections`, since the H1
+    and any `navigation.extend_through` H2 are already served by navigation.
+    """
+
+    return tuple(
+        section.anchor
+        for section in view.sections
+        if not isinstance(previous_sections.get(section.anchor), dict)
+        or previous_sections[section.anchor].get("sha256") != _section_sha(view, section)
+    )
+
+
+def _removed_section_anchors(
+    view: _DocumentView, previous_sections: dict[str, object]
+) -> tuple[str, ...]:
+    """Return removed anchors in their previous document order."""
+
+    current = {section.anchor for section in view.sections}
+
+    def previous_line(item: tuple[str, object]) -> tuple[int, str]:
+        anchor, record = item
+        if isinstance(record, dict) and isinstance(record.get("start_line"), int):
+            return int(record["start_line"]), anchor
+        return sys.maxsize, anchor
+
+    return tuple(
+        anchor
+        for anchor, _ in sorted(previous_sections.items(), key=previous_line)
+        if anchor not in current
+    )
+
+
+def _metadata_changes(
+    view: _DocumentView, previous: dict[str, object]
+) -> tuple[tuple[str, object, object], ...]:
+    """Return deterministic semantic projection-field changes."""
+
+    current: dict[str, object] = {
+        "path": view.path.as_posix(),
+        "revision": view.revision,
+        "type": view.document_type,
+        "status": view.status,
+        "dependencies": [
+            {
+                "relation": edge.relation,
+                "target": edge.peer_id,
+                "expected_revision": edge.expected_revision,
+            }
+            for edge in view.outgoing
+        ],
+        "boundaries": [
+            {"relation": relation, "value": value, "reason": reason}
+            for relation, value, reason in view.boundaries
+        ],
+        "migrations": [
+            {"relation": relation, "value": value, "target": target}
+            for relation, value, target in view.migrations
+        ],
+        "related_values": list(view.related_values),
+    }
+    return tuple(
+        (field, previous.get(field), value)
+        for field, value in current.items()
+        if previous.get(field) != value
+    )
+
+
+@dataclass(frozen=True)
+class _DocPlan:
+    """Per-document rendering plan for `--assume-known` / `--since` packets.
+
+    Documents without a plan (neither flag active for them) render exactly as
+    before, so the flagless packet stays byte-identical. `coverage_state`
+    selects the coverage-line wording; `content_omitted` is the JSON marker
+    and is present precisely when navigation is omitted; `changed_sections`
+    is the complete truth signal — every anchor at any level whose slice
+    changed — reported verbatim as the JSON `changed_sections` key; only the
+    subset that `_packet_sections` selects (changed H2s outside
+    `navigation.extend_through`) is actually rendered as content.
+    `removed_sections` and `metadata_changes` make non-current-section
+    changes explicit instead of forcing a client to infer them from an empty
+    changed-section list.
+    """
+
+    omit_navigation: bool = False
+    content_omitted: dict[str, object] | None = None
+    coverage_state: str = "normal"
+    declared_revision: int | None = None
+    generation_short: str | None = None
+    changed_sections: tuple[str, ...] = ()
+    removed_sections: tuple[str, ...] = ()
+    metadata_changes: tuple[tuple[str, object, object], ...] = ()
+    source_changed_outside_sections: bool = False
+    changed_document: bool = False
+
+
+def _build_packet_plans(
+    views: _Views,
+    ordered: list[str],
+    *,
+    assumed: dict[str, int],
+    since_manifest: dict[str, object] | None,
+    generation_short: str | None,
+) -> tuple[dict[str, _DocPlan], list[dict[str, object]], list[str], int]:
+    """Compute per-document plans plus shared diagnostics for the new flags.
+
+    Returns `(plans, mismatches, notes, assumed_known_omitted)`. `mismatches`
+    feeds the JSON `assume_known_mismatches`; `notes` are extra text
+    diagnostics (revision mismatches, `new since` and the delta summary).
+    """
+
+    plans: dict[str, _DocPlan] = {}
+    mismatches: list[dict[str, object]] = []
+    notes: list[str] = []
+    assumed_known_omitted = 0
+    changed_count = 0
+    unchanged_omitted_count = 0
+    for selected_id in ordered:
+        view = views[selected_id]
+        if since_manifest is not None:
+            manifest_documents = since_manifest["documents"]
+            previous = manifest_documents.get(selected_id)
+            if not isinstance(previous, dict):
+                plans[selected_id] = _DocPlan(
+                    generation_short=generation_short,
+                    changed_sections=_changed_section_anchors(view, {}),
+                    changed_document=True,
+                )
+                notes.append(f"{selected_id}: new since {generation_short}")
+                changed_count += 1
+            elif _source_sha(view) == previous.get("source_sha256"):
+                plans[selected_id] = _DocPlan(
+                    omit_navigation=True,
+                    content_omitted={
+                        "reason": "unchanged-since",
+                        "generation": generation_short,
+                    },
+                    coverage_state="unchanged-since",
+                    generation_short=generation_short,
+                )
+                unchanged_omitted_count += 1
+            else:
+                previous_sections = previous.get("sections", {})
+                if not isinstance(previous_sections, dict):
+                    previous_sections = {}
+                changed_sections = _changed_section_anchors(view, previous_sections)
+                removed_sections = _removed_section_anchors(view, previous_sections)
+                metadata_changes = _metadata_changes(view, previous)
+                plans[selected_id] = _DocPlan(
+                    generation_short=generation_short,
+                    changed_sections=changed_sections,
+                    removed_sections=removed_sections,
+                    metadata_changes=metadata_changes,
+                    source_changed_outside_sections=(
+                        not changed_sections and not removed_sections
+                    ),
+                    changed_document=True,
+                )
+                if removed_sections:
+                    notes.append(
+                        f"{selected_id}: removed sections since {generation_short}: "
+                        + ", ".join(removed_sections)
+                    )
+                for field, before, after in metadata_changes:
+                    before_json = json.dumps(
+                        before, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                    )
+                    after_json = json.dumps(
+                        after, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                    )
+                    notes.append(
+                        f"{selected_id}: metadata {field} changed: "
+                        f"{before_json} -> {after_json}"
+                    )
+                if not changed_sections and not removed_sections:
+                    notes.append(
+                        f"{selected_id}: source changed outside addressable sections"
+                    )
+                changed_count += 1
+        elif selected_id in assumed:
+            declared = assumed[selected_id]
+            if view.revision == declared:
+                plans[selected_id] = _DocPlan(
+                    omit_navigation=True,
+                    content_omitted={
+                        "reason": "assumed-known",
+                        "declared_revision": declared,
+                    },
+                    coverage_state="assumed-known",
+                    declared_revision=declared,
+                )
+                assumed_known_omitted += 1
+            else:
+                mismatches.append(
+                    {
+                        "id": selected_id,
+                        "declared_revision": declared,
+                        "current_revision": view.revision,
+                    }
+                )
+                notes.append(
+                    f"{selected_id}: assumed known at revision {declared}, "
+                    f"current {view.revision} — content included"
+                )
+    if since_manifest is not None:
+        notes.append(
+            f"Delta vs generation {generation_short}: {changed_count} changed, "
+            f"{unchanged_omitted_count} unchanged omitted"
+        )
+    return plans, mismatches, notes, assumed_known_omitted
+
+
+def _packet_sections(
+    config,
+    view: _DocumentView,
+    user_selected: list[str],
+    plan: _DocPlan | None,
+) -> tuple[list[str], set[str], list[str]]:
+    """Return `(explicit_anchors, changed_set, omitted)` for one document.
+
+    `explicit_anchors` is the ordered, de-duplicated set of section blocks to
+    render: user `--anchor`/`--include` selections first, then auto-added
+    `--since` changed sections. Auto-added anchors are restricted to changed
+    H2s that are not already inside the navigation prefix
+    (`navigation.extend_through`) — an H1 is always covered by the lead-in
+    navigation serves, and an `extend_through` H2 is already inside it, so
+    re-emitting either would duplicate content navigation already sent.
+    `changed_set` marks the auto-added delta anchors so the text form can
+    title them `### Changed section`. `omitted` is the usual coverage list of
+    H2 anchors that are neither navigation extensions nor shown, computed
+    against what the document actually renders, which makes it truthful by
+    construction: every changed H2 is either emitted here or listed there.
+    """
+
+    user = list(dict.fromkeys(user_selected))
+    changed = plan.changed_sections if plan is not None else ()
+    h2_anchors = {item.anchor for item in view.sections if item.level == 2}
+    changed_blocks = [
+        anchor
+        for anchor in changed
+        if anchor in h2_anchors and anchor not in config.navigation_extend_through
+    ]
+    extra = [anchor for anchor in changed_blocks if anchor not in user]
+    explicit_anchors = user + extra
+    omitted = [
+        item.anchor
+        for item in view.sections
+        if item.level == 2
+        and item.anchor not in config.navigation_extend_through
+        and item.anchor not in explicit_anchors
+    ]
+    return explicit_anchors, set(extra), omitted
+
+
+def _coverage_line(
+    plan: _DocPlan | None, explicit_anchors: list[str], omitted: list[str]
+) -> str:
+    """Build the per-document `_Coverage_` line, honouring omitted content."""
+
+    omitted_text = ", ".join(omitted) if omitted else "none"
+    if plan is not None and plan.coverage_state == "assumed-known":
+        body = (
+            f"content omitted — declared known at revision "
+            f"{plan.declared_revision} (current)"
+        )
+    elif plan is not None and plan.coverage_state == "unchanged-since":
+        body = f"content omitted — unchanged since {plan.generation_short}"
+    else:
+        body = "navigation" + (" + explicit sections" if explicit_anchors else "")
+    return f"_Coverage: {body}. Omitted H2: {omitted_text}._"
+
+
+def _context_migrations_json(
+    views: _Views, ordered: list[str]
+) -> list[dict[str, object]]:
+    return [
+        {
+            "source_id": selected_id,
+            "relation": relation,
+            "value": value,
+            "target_id": target_id,
+        }
+        for selected_id in ordered
+        for relation, value, target_id in views[selected_id].migrations
+    ]
+
+
+def _context_boundaries_json(
+    views: _Views, ordered: list[str]
+) -> list[dict[str, object]]:
+    return [
+        {
+            "source_id": selected_id,
+            "relation": relation,
+            "value": value,
+            "reason": reason,
+        }
+        for selected_id in ordered
+        for relation, value, reason in views[selected_id].boundaries
+    ]
+
+
+def _context_related_omitted_json(
+    views: _Views, document_id: str, *, include_related: bool
+) -> list[str]:
+    return [] if include_related else list(views[document_id].related_values)
+
+
 def _emit_context_json(
     config,
     views: _Views,
@@ -557,22 +916,34 @@ def _emit_context_json(
     *,
     depth: int,
     include_related: bool,
+    plans: dict[str, _DocPlan] | None = None,
+    mismatches: list[dict[str, object]] | None = None,
+    assumed_known_omitted: int = 0,
+    assume_known_used: bool = False,
 ) -> int:
     """Print the context packet as one structured JSON object.
 
     The JSON form carries the same selection, coverage and diagnostics data
     as the Markdown packet, but structured (typed lists instead of prose
-    notes) so a machine client never parses packet text.
+    notes) so a machine client never parses packet text. Declared-cache and
+    delta documents drop `navigation` for a typed `content_omitted` marker;
+    `--since` changed documents additionally carry `changed_sections`. Extra
+    top-level keys and stats appear only when the matching flag is used, so
+    every flagless payload stays byte-identical.
     """
 
+    plans = plans or {}
     documents: list[dict[str, object]] = []
     explicit_count = 0
     omitted_count = 0
     for selected_id in ordered:
         view = views[selected_id]
-        selected = selected_anchors[selected_id]
+        plan = plans.get(selected_id)
+        explicit_anchors, _, omitted = _packet_sections(
+            config, view, selected_anchors[selected_id], plan
+        )
         explicit_sections = []
-        for selected_anchor in dict.fromkeys(selected):
+        for selected_anchor in explicit_anchors:
             section = next(
                 item for item in view.sections if item.anchor == selected_anchor
             )
@@ -583,26 +954,98 @@ def _emit_context_json(
                 }
             )
         explicit_count += len(explicit_sections)
-        omitted = [
-            item.anchor
-            for item in view.sections
-            if item.level == 2
-            and item.anchor not in config.navigation_extend_through
-            and item.anchor not in selected
-        ]
         omitted_count += len(omitted)
+        entry: dict[str, object] = {
+            "id": selected_id,
+            "path": view.path.as_posix(),
+            "revision": view.revision,
+            "relations": sorted(included[selected_id]),
+            "explicit_sections": explicit_sections,
+            "omitted_h2": omitted,
+            "sections": _section_size_maps(view),
+        }
+        if plan is not None and plan.omit_navigation:
+            entry["content_omitted"] = plan.content_omitted
+        else:
+            entry["navigation"] = extract_navigation(
+                view.content,
+                view.sections,
+                config.navigation_extend_through,
+            ).rstrip()
+        if plan is not None and plan.changed_document:
+            entry["changed_sections"] = list(plan.changed_sections)
+            entry["removed_sections"] = list(plan.removed_sections)
+            entry["metadata_changes"] = [
+                {"field": field, "before": before, "after": after}
+                for field, before, after in plan.metadata_changes
+            ]
+            entry["source_changed_outside_sections"] = (
+                plan.source_changed_outside_sections
+            )
+        documents.append(entry)
+    freshness = _freshness_rows(config, views, ordered)
+    stats: dict[str, object] = {
+        "included_documents": len(ordered),
+        "explicit_sections": explicit_count,
+        "omitted_h2_sections": omitted_count,
+    }
+    if assume_known_used:
+        stats["assumed_known_omitted"] = assumed_known_omitted
+    payload: dict[str, object] = {
+        "target": document_id,
+        "depth": depth,
+        "include_related": include_related,
+        "outline": False,
+        "documents": documents,
+        "freshness": freshness,
+        "migrations": _context_migrations_json(views, ordered),
+        "boundaries": _context_boundaries_json(views, ordered),
+        "related_omitted": _context_related_omitted_json(
+            views, document_id, include_related=include_related
+        ),
+        "stats": stats,
+    }
+    if assume_known_used:
+        payload["assume_known_mismatches"] = mismatches or []
+    _print_json(payload)
+    return 0
+
+
+def _emit_context_outline_json(
+    config,
+    views: _Views,
+    included: dict[str, set[str]],
+    ordered: list[str],
+    document_id: str,
+    *,
+    depth: int,
+    include_related: bool,
+) -> int:
+    """Print the map-first outline packet: section sizes, no content.
+
+    Shares the same root shape as the full `context --json` packet
+    (target/depth/include_related/diagnostics), but `documents[]` entries
+    carry only `id`, `path`, `revision`, `relations` and `sections`, and
+    `stats` counts listed sections and their total byte size instead of
+    explicit/omitted H2 counts, so a client can budget a follow-up `--include`
+    fetch while retaining the revision needed by `--assume-known`.
+    """
+
+    documents: list[dict[str, object]] = []
+    listed_sections = 0
+    total_section_bytes = 0
+    for selected_id in ordered:
+        view = views[selected_id]
+        sections = _section_size_maps(view)
+        listed_sections += len(sections)
+        total_section_bytes += sum(int(item["bytes"]) for item in sections)
         documents.append(
             {
                 "id": selected_id,
                 "path": view.path.as_posix(),
+                "revision": view.revision,
                 "relations": sorted(included[selected_id]),
-                "navigation": extract_navigation(
-                    view.content,
-                    view.sections,
-                    config.navigation_extend_through,
-                ).rstrip(),
-                "explicit_sections": explicit_sections,
-                "omitted_h2": omitted,
+                "sections": sections,
             }
         )
     freshness = _freshness_rows(config, views, ordered)
@@ -611,38 +1054,133 @@ def _emit_context_json(
             "target": document_id,
             "depth": depth,
             "include_related": include_related,
+            "outline": True,
             "documents": documents,
             "freshness": freshness,
-            "migrations": [
-                {
-                    "source_id": selected_id,
-                    "relation": relation,
-                    "value": value,
-                    "target_id": target_id,
-                }
-                for selected_id in ordered
-                for relation, value, target_id in views[selected_id].migrations
-            ],
-            "boundaries": [
-                {
-                    "source_id": selected_id,
-                    "relation": relation,
-                    "value": value,
-                    "reason": reason,
-                }
-                for selected_id in ordered
-                for relation, value, reason in views[selected_id].boundaries
-            ],
-            "related_omitted": (
-                [] if include_related else list(views[document_id].related_values)
+            "migrations": _context_migrations_json(views, ordered),
+            "boundaries": _context_boundaries_json(views, ordered),
+            "related_omitted": _context_related_omitted_json(
+                views, document_id, include_related=include_related
             ),
             "stats": {
                 "included_documents": len(ordered),
-                "explicit_sections": explicit_count,
-                "omitted_h2_sections": omitted_count,
+                "listed_sections": listed_sections,
+                "total_section_bytes": total_section_bytes,
             },
         }
     )
+    return 0
+
+
+def _context_diagnostic_notes(
+    config,
+    views: _Views,
+    ordered: list[str],
+    document_id: str,
+    *,
+    include_related: bool,
+    extra_notes: list[str] | None = None,
+) -> list[str]:
+    """Return the sorted "Diagnostics and boundaries" note lines.
+
+    Shared between the full-content packet and `--outline`, which prints
+    exactly the same notes ahead of its own closing action line. `extra_notes`
+    carries declared-cache and delta-packet notes; it is empty for `--outline`
+    (which cannot combine with `--assume-known`/`--since`), keeping that
+    packet byte-identical.
+    """
+
+    notes: list[str] = list(extra_notes or [])
+    freshness_found = False
+    for row in _freshness_rows(config, views, ordered):
+        mode = (
+            "historical snapshot"
+            if row["classification"] == "historical snapshot"
+            else "STALE"
+        )
+        notes.append(
+            f"{row['source_id']}: {row['target_id']}@"
+            f"{row['pinned_revision']}, current "
+            f"{row['current_revision']} — {mode}"
+        )
+        freshness_found = True
+    if not freshness_found:
+        notes.append("No stale revision pins among included documents.")
+    for selected_id in ordered:
+        for relation, value, target_id in views[selected_id].migrations:
+            notes.append(f"{selected_id}: {relation} {value} -> {target_id}")
+    boundary_found = False
+    for selected_id in ordered:
+        for relation, value, reason in views[selected_id].boundaries:
+            notes.append(
+                f"{selected_id}: unresolved/resource {relation} "
+                f"{value} ({reason})"
+            )
+            boundary_found = True
+    if not boundary_found:
+        notes.append(
+            "No unresolved/resource boundaries among included documents."
+        )
+    if not include_related:
+        related = list(views[document_id].related_values)
+        if related:
+            notes.append("Related omitted: " + ", ".join(related))
+    return sorted(set(notes))
+
+
+def _emit_context_outline_text(
+    config,
+    views: _Views,
+    included: dict[str, set[str]],
+    ordered: list[str],
+    document_id: str,
+    *,
+    depth: int,
+    include_related: bool,
+) -> int:
+    """Print the map-first outline: section size tables, no content."""
+
+    out: list[str] = []
+    out.append(f"# Context outline: {document_id}")
+    out.append("")
+    out.append(f"- Dependency depth: {depth}")
+    out.append(f"- Related traversal: {'included' if include_related else 'omitted'}")
+    listed_sections = 0
+    total_bytes = 0
+    for selected_id in ordered:
+        view = views[selected_id]
+        out.append("")
+        out.append(f"## {selected_id} — {view.path.as_posix()}")
+        out.append("")
+        out.append(f"Relations: {', '.join(sorted(included[selected_id]))}.")
+        out.append("")
+        out.append("| Anchor | Level | Lines | Bytes | Title |")
+        out.append("|---|---|---|---|---|")
+        for section_map in _section_size_maps(view):
+            out.append(
+                f"| `{section_map['anchor']}` | H{section_map['level']} | "
+                f"{section_map['lines']} | {section_map['bytes']} | "
+                f"{section_map['title']} |"
+            )
+            listed_sections += 1
+            total_bytes += int(section_map["bytes"])
+    out.append("")
+    out.append("## Diagnostics and boundaries")
+    out.append("")
+    for note in _context_diagnostic_notes(
+        config, views, ordered, document_id, include_related=include_related
+    ):
+        out.append(f"- {note}")
+    out.append(
+        "- Fetch content with --include ID#anchor, or drop --outline for full navigation."
+    )
+    out.append("")
+    out.append("## Packet stats")
+    out.append("")
+    out.append(f"- Included documents: {len(ordered)}")
+    out.append(f"- Listed sections: {listed_sections}")
+    out.append(f"- Total section bytes: {total_bytes}")
+    sys.stdout.write("\n".join(out) + "\n")
     return 0
 
 
@@ -655,9 +1193,61 @@ def context(
     include_related: bool = False,
     includes: list[str] | None = None,
     json_output: bool = False,
+    outline: bool = False,
+    assume_known: list[str] | None = None,
+    since: str | None = None,
 ) -> int:
+    if outline and (anchor is not None or includes):
+        print(
+            "ERROR: cannot combine --outline with --anchor or --include",
+            file=sys.stderr,
+        )
+        return 1
+    if outline and (assume_known or since is not None):
+        print(
+            "ERROR: cannot combine --outline with --assume-known or --since",
+            file=sys.stderr,
+        )
+        return 1
+    if since is not None and assume_known:
+        print(
+            "ERROR: cannot combine --since with --assume-known",
+            file=sys.stderr,
+        )
+        return 1
+    assumed: dict[str, int] = {}
+    for raw in assume_known or []:
+        document, separator, revision = raw.partition("@")
+        if (
+            not separator
+            or not document
+            or not (revision.isascii() and revision.isdigit())
+            or int(revision) <= 0
+        ):
+            print(f"ERROR: invalid --assume-known value: {raw!r}", file=sys.stderr)
+            return 1
+        declared = int(revision)
+        if document in assumed and assumed[document] != declared:
+            print(
+                f"ERROR: conflicting --assume-known declarations for {document}",
+                file=sys.stderr,
+            )
+            return 1
+        assumed[document] = declared
+    since_manifest: dict[str, object] | None = None
+    generation_short: str | None = None
     try:
         config = load_config(project_root)
+        if since is not None:
+            resolved = resolve_generation_manifest(config, since)
+            if resolved is None:
+                print(
+                    f"ERROR: unknown projection generation: {since}",
+                    file=sys.stderr,
+                )
+                return 1
+            generation, since_manifest = resolved
+            generation_short = generation[:12]
         views, _, catalog_value = _load_views(config)
         if catalog_value is not None:
             find_document(catalog_value, document_id)
@@ -679,6 +1269,14 @@ def context(
             included.setdefault(selected_id, set()).add("explicit")
             if selected_anchor:
                 forced.setdefault(selected_id, []).append(selected_anchor)
+        for assumed_id in assumed:
+            # A declared document is validated even when it does not enter the
+            # packet, so a stale declaration fails closed instead of silently
+            # doing nothing. Declaring an ID never forces its inclusion.
+            if catalog_value is not None:
+                find_document(catalog_value, assumed_id)
+            elif assumed_id not in views:
+                raise ValueError(f"document ID not found: {assumed_id}")
         selected_anchors = {
             selected_id: [
                 *([anchor] if selected_id == document_id and anchor else []),
@@ -730,6 +1328,33 @@ def context(
         return 1
 
     ordered = _ordered_selection(included, document_id)
+    if outline:
+        if json_output:
+            return _emit_context_outline_json(
+                config,
+                views,
+                included,
+                ordered,
+                document_id,
+                depth=depth,
+                include_related=include_related,
+            )
+        return _emit_context_outline_text(
+            config,
+            views,
+            included,
+            ordered,
+            document_id,
+            depth=depth,
+            include_related=include_related,
+        )
+    plans, mismatches, extra_notes, assumed_known_omitted = _build_packet_plans(
+        views,
+        ordered,
+        assumed=assumed,
+        since_manifest=since_manifest,
+        generation_short=generation_short,
+    )
     if json_output:
         return _emit_context_json(
             config,
@@ -740,6 +1365,10 @@ def context(
             document_id,
             depth=depth,
             include_related=include_related,
+            plans=plans,
+            mismatches=mismatches,
+            assumed_known_omitted=assumed_known_omitted,
+            assume_known_used=bool(assume_known),
         )
     out: list[str] = []
     explicit_count = 0
@@ -750,20 +1379,24 @@ def context(
     out.append(f"- Related traversal: {'included' if include_related else 'omitted'}")
     for selected_id in ordered:
         view = views[selected_id]
+        plan = plans.get(selected_id)
         out.append("")
         out.append(f"## {selected_id} — {view.path.as_posix()}")
         out.append("")
         out.append(f"Relations: {', '.join(sorted(included[selected_id]))}.")
-        out.append("")
-        out.append(
-            extract_navigation(
-                view.content,
-                view.sections,
-                config.navigation_extend_through,
-            ).rstrip()
+        explicit_anchors, changed_set, omitted = _packet_sections(
+            config, view, selected_anchors[selected_id], plan
         )
-        selected = selected_anchors[selected_id]
-        for selected_anchor in dict.fromkeys(selected):
+        if plan is None or not plan.omit_navigation:
+            out.append("")
+            out.append(
+                extract_navigation(
+                    view.content,
+                    view.sections,
+                    config.navigation_extend_through,
+                ).rstrip()
+            )
+        for selected_anchor in explicit_anchors:
             section = next(
                 (
                     item
@@ -773,63 +1406,29 @@ def context(
                 None,
             )
             explicit_count += 1
+            title = (
+                "Changed section"
+                if selected_anchor in changed_set
+                else "Explicit section"
+            )
             out.append("")
-            out.append(f"### Explicit section `{selected_anchor}`")
+            out.append(f"### {title} `{selected_anchor}`")
             out.append("")
             out.append(extract_section(view.content, section).rstrip())
-        omitted = [
-            item.anchor
-            for item in view.sections
-            if item.level == 2
-            and item.anchor not in config.navigation_extend_through
-            and item.anchor not in selected
-        ]
         omitted_count += len(omitted)
         out.append("")
-        out.append(
-            "_Coverage: navigation"
-            + (" + explicit sections" if selected else "")
-            + f". Omitted H2: {', '.join(omitted) if omitted else 'none'}._"
-        )
+        out.append(_coverage_line(plan, explicit_anchors, omitted))
     out.append("")
     out.append("## Diagnostics and boundaries")
     out.append("")
-    notes: list[str] = []
-    freshness_found = False
-    for row in _freshness_rows(config, views, ordered):
-        mode = (
-            "historical snapshot"
-            if row["classification"] == "historical snapshot"
-            else "STALE"
-        )
-        notes.append(
-            f"{row['source_id']}: {row['target_id']}@"
-            f"{row['pinned_revision']}, current "
-            f"{row['current_revision']} — {mode}"
-        )
-        freshness_found = True
-    if not freshness_found:
-        notes.append("No stale revision pins among included documents.")
-    for selected_id in ordered:
-        for relation, value, target_id in views[selected_id].migrations:
-            notes.append(f"{selected_id}: {relation} {value} -> {target_id}")
-    boundary_found = False
-    for selected_id in ordered:
-        for relation, value, reason in views[selected_id].boundaries:
-            notes.append(
-                f"{selected_id}: unresolved/resource {relation} "
-                f"{value} ({reason})"
-            )
-            boundary_found = True
-    if not boundary_found:
-        notes.append(
-            "No unresolved/resource boundaries among included documents."
-        )
-    if not include_related:
-        related = list(views[document_id].related_values)
-        if related:
-            notes.append("Related omitted: " + ", ".join(related))
-    for note in sorted(set(notes)):
+    for note in _context_diagnostic_notes(
+        config,
+        views,
+        ordered,
+        document_id,
+        include_related=include_related,
+        extra_notes=extra_notes,
+    ):
         out.append(f"- {note}")
     out.append("- Expand with --depth, --include-related, or --include ID#anchor.")
     body = "\n".join(out) + "\n"
@@ -842,6 +1441,8 @@ def context(
     print(f"- Included documents: {len(ordered)}")
     print(f"- Explicit sections: {explicit_count}")
     print(f"- Omitted H2 sections: {omitted_count}")
+    if assume_known:
+        print(f"- Content omitted (assumed known): {assumed_known_omitted}")
     print(f"- Body size: {line_count} lines, {byte_count} UTF-8 bytes")
     return 0
 
@@ -1621,6 +2222,80 @@ def show_config(project_root: Path) -> int:
     return 0
 
 
+def _agent_instructions_text(project_root: Path, config: ProjectConfig) -> str:
+    doc_root = config.documentation_root.relative_to(config.project_root).as_posix()
+    out: list[str] = []
+    out.append("## Documentation with Documentation Engine")
+    out.append("")
+    out.append(
+        "This project uses `docsystem` for structured Markdown documentation "
+        f"rooted at `{doc_root}` (language: {config.language})."
+    )
+    out.append("")
+    out.append("Configured areas and identifier namespaces:")
+    out.append("")
+    for role, path in sorted(config.areas.items()):
+        out.append(f"- {role} -> {path.as_posix()}")
+    for role, prefix in sorted(config.identifiers.items()):
+        out.append(f"- {prefix} ({role})")
+    out.append("")
+    out.append("Agent rules:")
+    out.append("")
+    out.append(
+        "- Always pass the project root explicitly; do not rely on the "
+        "current working directory matching the intended project."
+    )
+    out.append(
+        "- Start read-only with `docsystem readiness "
+        f"{project_root} --json` and follow its `next_command` field."
+    )
+    out.append(
+        "- Prefer `--json` on commands that support it instead of parsing "
+        "human-readable text output."
+    )
+    out.append(
+        "- Expand context with `--depth`, `--include` or `--include-related` "
+        "instead of assuming an omitted document or section is irrelevant."
+    )
+    out.append(
+        "- Never run `docsystem init`, `docsystem migrate --apply` or "
+        "`docsystem index --write` without explicit approval."
+    )
+    out.append(
+        "- Before mutating ignored/local-only documentation state, follow "
+        "this project's local backup policy if one exists."
+    )
+    out.append("")
+    out.append(
+        "See `docs/agent-contract.md` in the Documentation Engine repository "
+        "for the full agent contract."
+    )
+    return "\n".join(out) + "\n"
+
+
+def agent_instructions(project_root: Path, *, json_output: bool = False) -> int:
+    """Print a deterministic agent-rules snippet for AGENTS.md/CLAUDE.md.
+
+    Read-only: the snippet is derived from the project's `.docsystem.toml`
+    plus the engine's stable agent contract, never from parsing
+    `docs/setup-guide.md`, so a pasted snippet cannot silently drift from the
+    project's actually configured areas and identifiers. Works even when the
+    documentation root itself is missing, since only configuration is read.
+    """
+    try:
+        config = load_config(project_root)
+    except ValueError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+
+    text = _agent_instructions_text(project_root, config)
+    if json_output:
+        _print_json({"text": text})
+        return 0
+    sys.stdout.write(text)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1683,6 +2358,35 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         dest="json_output",
         help="Print a deterministic JSON object instead of the Markdown packet.",
+    )
+    context_parser.add_argument(
+        "--outline",
+        action="store_true",
+        help=(
+            "Print section size maps instead of content; combine with --json "
+            "for the structured form. Cannot combine with --anchor or --include."
+        ),
+    )
+    context_parser.add_argument(
+        "--assume-known",
+        action="append",
+        default=[],
+        dest="assume_known",
+        metavar="ID@REV",
+        help=(
+            "Declare a document already held at revision REV (repeatable). When "
+            "it enters the packet at that exact revision its content is omitted; "
+            "a revision mismatch includes content with a diagnostics note."
+        ),
+    )
+    context_parser.add_argument(
+        "--since",
+        metavar="GENERATION",
+        help=(
+            "Emit a delta packet against a retained projection generation "
+            "(full hash or unique >=12-char prefix): unchanged documents are "
+            "omitted, changed documents add their changed sections."
+        ),
     )
 
     impact_parser = subparsers.add_parser("impact", help="Show reverse metadata impact.")
@@ -1777,6 +2481,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     draft_parser.add_argument("--component")
     draft_parser.add_argument("--output", type=Path)
+
+    agent_instructions_parser = subparsers.add_parser(
+        "agent-instructions",
+        help="Print a deterministic agent-rules snippet for AGENTS.md/CLAUDE.md.",
+    )
+    agent_instructions_parser.add_argument(
+        "project", nargs="?", type=Path, default=Path.cwd()
+    )
+    agent_instructions_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print a deterministic JSON object instead of the Markdown snippet.",
+    )
     return parser
 
 
@@ -1803,6 +2521,9 @@ def main() -> int:
             include_related=args.include_related,
             includes=args.include,
             json_output=args.json_output,
+            outline=args.outline,
+            assume_known=args.assume_known,
+            since=args.since,
         )
     if args.command == "impact":
         return impact(args.project, args.document_id)
@@ -1824,6 +2545,8 @@ def main() -> int:
             include_related=args.include_related,
             json_output=args.json_output,
         )
+    if args.command == "agent-instructions":
+        return agent_instructions(args.project, json_output=args.json_output)
     if args.command == "report":
         if args.report_command == "draft":
             return report_draft(
