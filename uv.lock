@@ -205,8 +205,7 @@ wheels = [
 ]
 
 [[package]]
-name = "docsystem"
-version = "0.1.0"
+name = "documentation-engine"
 source = { editable = "." }
 dependencies = [
     { name = "pyyaml" },

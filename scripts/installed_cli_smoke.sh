@@ -31,6 +31,20 @@ if [[ -z "${wheel_path}" ]]; then
   exit 1
 fi
 
+echo "==> Verifying built distribution identity and version"
+expected_version="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' "${repo_root}/src/docsystem/__init__.py")"
+if [[ -z "${expected_version}" ]]; then
+  echo "error: could not read __version__ from src/docsystem/__init__.py" >&2
+  exit 1
+fi
+expected_wheel_name="documentation_engine-${expected_version}-py3-none-any.whl"
+actual_wheel_name="$(basename "${wheel_path}")"
+if [[ "${actual_wheel_name}" != "${expected_wheel_name}" ]]; then
+  echo "error: built wheel '${actual_wheel_name}' does not match expected '${expected_wheel_name}'" >&2
+  exit 1
+fi
+echo "    wheel: ${actual_wheel_name}"
+
 echo "==> Creating isolated venv at ${venv_dir}"
 uv venv "${venv_dir}" --python 3.12
 
@@ -38,11 +52,51 @@ echo "==> Installing built wheel (not editable source)"
 uv pip install --python "${venv_dir}/bin/python" "${wheel_path}"
 
 docsystem_bin="${venv_dir}/bin/docsystem"
+docsystem_mcp_bin="${venv_dir}/bin/docsystem-mcp"
 venv_python="${venv_dir}/bin/python"
 if [[ ! -x "${docsystem_bin}" ]]; then
   echo "error: installed console script not found at ${docsystem_bin}" >&2
   exit 1
 fi
+if [[ ! -x "${docsystem_mcp_bin}" ]]; then
+  echo "error: installed console script not found at ${docsystem_mcp_bin}" >&2
+  exit 1
+fi
+
+echo "==> Verifying installed distribution metadata"
+env -u PYTHONPATH -u PYTHONHOME "${venv_python}" - "${expected_version}" <<'PY'
+import sys
+from importlib.metadata import metadata
+
+expected_version = sys.argv[1]
+meta = metadata("documentation-engine")
+
+if meta["Name"] != "documentation-engine":
+    sys.exit(f"error: distribution name is {meta['Name']!r}, expected 'documentation-engine'")
+if meta["Version"] != expected_version:
+    sys.exit(f"error: distribution version is {meta['Version']!r}, expected {expected_version!r}")
+license_field = meta.get("License-Expression") or meta.get("License") or ""
+if "MIT" not in license_field:
+    sys.exit(f"error: distribution license is {license_field!r}, expected it to contain 'MIT'")
+author_field = meta.get("Author") or ""
+if "Oleg Synelnykov (Jafa7)" not in author_field:
+    sys.exit(f"error: distribution author is {author_field!r}, expected 'Oleg Synelnykov (Jafa7)'")
+print(f"    metadata: name={meta['Name']} version={meta['Version']} license={license_field} author={author_field}")
+PY
+
+echo "==> Verifying the runtime MCP-extra guidance shipped in the wheel"
+mcp_error_output="$(env -u PYTHONPATH -u PYTHONHOME "${docsystem_mcp_bin}" 2>&1)" && {
+  echo "error: ${docsystem_mcp_bin} unexpectedly succeeded without the optional 'mcp' dependency installed" >&2
+  exit 1
+}
+case "${mcp_error_output}" in
+  *"documentation-engine[mcp]"*) ;;
+  *)
+    echo "error: docsystem-mcp error message does not reference 'documentation-engine[mcp]': ${mcp_error_output}" >&2
+    exit 1
+    ;;
+esac
+echo "    docsystem-mcp correctly refuses to start and references 'documentation-engine[mcp]'"
 
 venv_real="$(cd "${venv_dir}" && pwd -P)"
 repo_real="$(cd "${repo_root}" && pwd -P)"

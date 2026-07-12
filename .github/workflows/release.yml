@@ -1,0 +1,362 @@
+name: Release
+
+# Publishing is isolated in its own workflow so that Trusted Publishing OIDC is
+# never exposed to the general CI surface. The only trigger is a version tag:
+# there is deliberately no `workflow_dispatch`, because a manual run against an
+# arbitrary branch could burn a final version number on an index before the
+# candidate commit is immutable. A published version can never be reused, so
+# recovery is always "yank and release a new version".
+on:
+  push:
+    tags: ["v*"]
+
+# Deny by default; each job grants only what it needs. Build jobs get
+# `contents: read`, publishing jobs get `id-token: write`, and no job gets
+# both. GitHub Release and tag creation stay outside this workflow, so
+# `contents: write` is never requested.
+permissions: {}
+
+env:
+  TMPDIR: /tmp
+  TMP: /tmp
+  TEMP: /tmp
+  DIST_NAME: documentation-engine
+  ARTIFACT_NAME: dist
+
+jobs:
+  build:
+    name: Gate and build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.gate.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+
+      # Proportional release gate: the same checks that guard main, run once
+      # against the tagged commit. The installed-CLI smoke already builds and
+      # exercises a wheel from an isolated venv, so no separate packaging suite
+      # is repeated here.
+      - name: Run release gate
+        run: |
+          uv run pytest
+          uv run ruff check .
+          uv lock --check
+          ./scripts/installed_cli_smoke.sh
+
+      - name: Build wheel and sdist once in a clean directory
+        run: |
+          rm -rf dist
+          uv build --out-dir dist
+
+      # The tag is the release's only identity. If it disagrees with the
+      # dynamic package version by even one character, stop before anything is
+      # uploaded: an index would otherwise accept a distribution whose version
+      # nobody can trace back to a tag.
+      - name: Verify tag version equals the built package version
+        id: gate
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          tag_version="${TAG_NAME#v}"
+          pkg_version="$(uv run python -c 'import docsystem; print(docsystem.__version__)')"
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "::error::tag ${TAG_NAME} declares version '${tag_version}' but the package version is '${pkg_version}'"
+            exit 1
+          fi
+          wheel="dist/documentation_engine-${pkg_version}-py3-none-any.whl"
+          sdist="dist/documentation_engine-${pkg_version}.tar.gz"
+          test -f "$wheel"
+          test -f "$sdist"
+          built="$(find dist -maxdepth 1 -type f | wc -l)"
+          if [ "$built" -ne 2 ]; then
+            echo "::error::expected exactly the wheel and the sdist in dist/, found ${built} files"
+            find dist -maxdepth 1 -type f
+            exit 1
+          fi
+          echo "version=${pkg_version}" >> "$GITHUB_OUTPUT"
+          sha256sum "$wheel" "$sdist"
+
+      # Uploaded once, downloaded by every later job. Artifacts are immutable
+      # once uploaded, so TestPyPI and PyPI are guaranteed to receive the exact
+      # same bytes that this job gated and hashed.
+      - name: Upload the built distributions
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  testpypi:
+    name: Publish to TestPyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download the built distributions
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: dist/
+
+      # `skip-existing` keeps a re-run of a failed release idempotent. It also
+      # means a *successful* step proves nothing on its own: the version may
+      # already exist on TestPyPI from a different build. The smoke job below
+      # is what turns this into evidence, by comparing digests.
+      - name: Publish to TestPyPI with Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
+
+  testpypi-smoke:
+    name: TestPyPI integrity and install smoke
+    needs: [build, testpypi]
+    runs-on: ubuntu-latest
+    # No repository access and no OIDC: this job installs from an index exactly
+    # like a consumer does, and must not be able to reach anything else.
+    permissions: {}
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      SMOKE_VENV: /tmp/release-smoke
+      CANDIDATE_DIR: /tmp/release-candidate
+      REMOTE_FILES: /tmp/testpypi-release-files.json
+    steps:
+      - name: Download the built distributions
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: dist/
+
+      # The interpreter is pinned here rather than inherited from the runner
+      # image: `ubuntu-latest` moves, and its system `python3` would silently
+      # change what this smoke actually proves.
+      - name: Install uv and Python 3.12
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+
+      - name: Create the consumer environment on Python 3.12
+        run: |
+          rm -rf "$SMOKE_VENV"
+          uv venv "$SMOKE_VENV" --python 3.12 --seed
+          "$SMOKE_VENV/bin/python" -c 'import sys; assert sys.version_info[:2] == (3, 12), sys.version'
+
+      # Bounded wait plus digest comparison. This is the check that makes
+      # `skip-existing` safe: for this exact version, the set of files TestPyPI
+      # serves must equal the set this run built, name for name and digest for
+      # digest. A pre-existing artifact under the same version — or any extra
+      # remote file — fails here instead of passing silently.
+      - name: Verify TestPyPI serves exactly the files we built
+        run: |
+          "$SMOKE_VENV/bin/python" - <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          dist_name = os.environ["DIST_NAME"]
+          version = os.environ["VERSION"]
+          url = f"https://test.pypi.org/pypi/{dist_name}/{version}/json"
+
+          local = {
+              path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+              for path in sorted(pathlib.Path("dist").iterdir())
+              if path.is_file()
+          }
+          if not local:
+              sys.exit("error: no built distributions were downloaded")
+          print(f"built {len(local)} file(s) for {dist_name} {version}:")
+          for name, digest in local.items():
+              print(f"  {name} sha256={digest}")
+
+          attempts = 30
+          delay = 10
+          remote = None
+          published = None
+          for attempt in range(1, attempts + 1):
+              try:
+                  with urllib.request.urlopen(url, timeout=30) as response:
+                      remote = json.load(response)
+              except urllib.error.HTTPError as error:
+                  if error.code != 404:
+                      raise
+                  print(f"attempt {attempt}/{attempts}: {version} not on TestPyPI yet")
+              except urllib.error.URLError as error:
+                  print(f"attempt {attempt}/{attempts}: TestPyPI unreachable: {error}")
+              else:
+                  published = {
+                      entry["filename"]: entry["digests"]["sha256"]
+                      for entry in remote["urls"]
+                  }
+                  extra = sorted(set(published) - set(local))
+                  mismatched = sorted(
+                      name
+                      for name in set(local) & set(published)
+                      if published[name] != local[name]
+                  )
+                  if extra or mismatched:
+                      for name in extra:
+                          print(f"::error::{name}: is an extra file that this run did not build")
+                      for name in mismatched:
+                          print(
+                              f"::error::{name}: TestPyPI serves sha256={published[name]} "
+                              f"but we built sha256={local[name]}"
+                          )
+                      sys.exit(
+                          "error: TestPyPI serves conflicting files for this release version"
+                      )
+                  if published == local:
+                      break
+                  missing = sorted(set(local) - set(published))
+                  print(
+                      f"attempt {attempt}/{attempts}: waiting for remaining TestPyPI "
+                      f"files: {missing}"
+                  )
+              if attempt == attempts:
+                  sys.exit(
+                      f"error: {dist_name} {version} was not completely available on "
+                      f"TestPyPI within {attempts * delay}s"
+                  )
+              time.sleep(delay)
+
+          if published != local:
+              for name in sorted(set(local) - set(published)):
+                  print(f"::error::{name}: was built by this run but is not published under version {version}")
+              for name in sorted(set(published) - set(local)):
+                  print(f"::error::{name}: is an extra file that this run did not build")
+              for name in sorted(set(local) & set(published)):
+                  if published[name] != local[name]:
+                      print(
+                          f"::error::{name}: TestPyPI serves sha256={published[name]} "
+                          f"but we built sha256={local[name]}"
+                      )
+              sys.exit("error: TestPyPI release files are not exactly the files this run built")
+
+          pathlib.Path(os.environ["REMOTE_FILES"]).write_text(
+              json.dumps(published, indent=2, sort_keys=True), encoding="utf-8"
+          )
+          print(f"TestPyPI serves exactly the {len(local)} file(s) built by this run for {dist_name} {version}")
+          PY
+
+      # The candidate is fetched from TestPyPI *alone*. Mixing TestPyPI and
+      # PyPI in one resolver invocation gives pip no strict priority between
+      # them, so the winning candidate source becomes ambiguous — that is
+      # dependency confusion, on the one command that decides what we ship.
+      - name: Download the candidate wheel from TestPyPI only
+        run: |
+          rm -rf "$CANDIDATE_DIR"
+          mkdir -p "$CANDIDATE_DIR"
+          "$SMOKE_VENV/bin/python" -m pip download \
+            --index-url https://test.pypi.org/simple/ \
+            --no-cache-dir \
+            --no-deps \
+            --only-binary=:all: \
+            --dest "$CANDIDATE_DIR" \
+            "${DIST_NAME}==${VERSION}"
+
+      # The downloaded file is only trustworthy if it is bit-for-bit the wheel
+      # this run built and the one TestPyPI reported a digest for above.
+      - name: Verify the downloaded wheel is the wheel this run built
+        run: |
+          "$SMOKE_VENV/bin/python" - <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import sys
+
+          candidate_dir = pathlib.Path(os.environ["CANDIDATE_DIR"])
+          downloaded = sorted(path for path in candidate_dir.iterdir() if path.is_file())
+          if len(downloaded) != 1:
+              sys.exit(f"error: expected exactly one downloaded file, got {[p.name for p in downloaded]}")
+
+          candidate = downloaded[0]
+          if candidate.suffix != ".whl":
+              sys.exit(f"error: TestPyPI served {candidate.name}, which is not a wheel")
+
+          built = pathlib.Path("dist") / candidate.name
+          if not built.is_file():
+              sys.exit(f"error: TestPyPI served {candidate.name}, which this run did not build")
+
+          candidate_digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
+          built_digest = hashlib.sha256(built.read_bytes()).hexdigest()
+          if candidate_digest != built_digest:
+              sys.exit(
+                  f"error: downloaded {candidate.name} is sha256={candidate_digest} "
+                  f"but this run built sha256={built_digest}"
+              )
+
+          published = json.loads(pathlib.Path(os.environ["REMOTE_FILES"]).read_text(encoding="utf-8"))
+          if published[candidate.name] != candidate_digest:
+              sys.exit(
+                  f"error: downloaded {candidate.name} is sha256={candidate_digest} "
+                  f"but TestPyPI reported sha256={published[candidate.name]}"
+              )
+
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
+              env_file.write(f"CANDIDATE_WHEEL={candidate}\n")
+          print(f"candidate {candidate.name} sha256={candidate_digest} matches this run's build and TestPyPI")
+          PY
+
+      # Consumer-path install of the verified wheel file. The candidate itself
+      # is never resolved by name here, so its only possible source is the file
+      # verified above; PyPI is the single index, and it resolves dependencies
+      # (PyYAML) only, which TestPyPI does not reliably mirror.
+      - name: Install the verified wheel and run the installed CLI
+        run: |
+          "$SMOKE_VENV/bin/python" -m pip install \
+            --index-url https://pypi.org/simple/ \
+            "$CANDIDATE_WHEEL"
+          "$SMOKE_VENV/bin/python" - <<'PY'
+          import os
+          from importlib.metadata import version
+
+          expected = os.environ["VERSION"]
+          installed = version(os.environ["DIST_NAME"])
+          if installed != expected:
+              raise SystemExit(f"error: installed {installed}, expected {expected}")
+          print(f"installed distribution reports version {installed}")
+          PY
+          mkdir -p /tmp/release-smoke-project
+          cd /tmp/release-smoke-project
+          "$SMOKE_VENV/bin/docsystem" --help
+          "$SMOKE_VENV/bin/docsystem" init .
+          "$SMOKE_VENV/bin/docsystem" doctor .
+
+  pypi:
+    name: Publish to PyPI
+    # Production only ever sees an artifact that TestPyPI already served back
+    # to us byte-for-byte and that installed and ran from an index.
+    needs: [build, testpypi-smoke]
+    runs-on: ubuntu-latest
+    # Manual approval lives on this environment's required reviewers, which are
+    # configured in repository settings. A PyPI upload cannot be undone.
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download the built distributions
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: dist/
+
+      # No `skip-existing` here: on PyPI, a version that already exists is a
+      # release accident, not something to pass over quietly. Trusted
+      # Publishing attestations stay at their default (enabled).
+      - name: Publish to PyPI with Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@release/v1

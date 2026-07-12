@@ -1,11 +1,27 @@
 # Documentation Engine
 
+[![CI](https://github.com/Jafa7/DocumentationEngine/actions/workflows/ci.yml/badge.svg)](https://github.com/Jafa7/DocumentationEngine/actions/workflows/ci.yml)
+
 Documentation Engine is a provider-neutral toolkit for maintaining structured
 Markdown knowledge that remains usable by humans and AI clients as a project
 grows.
 
 The project is in an early extraction stage. Its first integration fixture is
 Paradigmarium.
+
+## Install
+
+```bash
+pip install documentation-engine
+pip install "documentation-engine[mcp]"
+```
+
+The distribution is `documentation-engine`; the import package, `docsystem`
+and `docsystem-mcp` console scripts, and `.docsystem.toml`/`.docsystem/`
+project files keep their existing names. Contributors and anyone tracking
+unreleased development should instead use a source/editable checkout — see
+[Development setup vs. consumer install](#development-setup-vs-consumer-install)
+below.
 
 ## Measured context reduction
 
@@ -92,6 +108,9 @@ import of this repository's sources.
 
 `uv.lock` pins the resolved dependency graph for this checkout.
 `uv lock --check` verifies the lockfile matches `pyproject.toml`.
+
+Publishing the distribution is tag-triggered and documented separately in
+[the release guide](docs/releasing.md).
 
 `scripts/installed_cli_smoke.sh` is the reproducible check for the consumer
 path: it builds a wheel from the current checkout, installs it into an
@@ -281,7 +300,7 @@ map before fetching.
 An MCP adapter exposes the read-only commands as typed tools for any
 MCP-capable client; see [the MCP adapter guide](docs/mcp-adapter.md). It is a
 thin wrapper over this CLI contract and requires the optional `mcp`
-dependency (`pip install "docsystem[mcp]"`). Text tools keep exact CLI stdout
+dependency (`pip install "documentation-engine[mcp]"`). Text tools keep exact CLI stdout
 for compatibility; packet variants add non-fatal diagnostics such as
 projection fallback warnings.
 
@@ -369,6 +388,11 @@ should also define a local backup command; see
 Registry synchronization, finish orchestration, private history/backup and
 provider-specific adapters are not generalized by this vertical slice. They
 remain project-local until reusable contracts are proven.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contributor setup and required
+checks, and [SECURITY.md](SECURITY.md) to report a vulnerability.
 
 ## License
 

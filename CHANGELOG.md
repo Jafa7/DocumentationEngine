@@ -2,6 +2,30 @@
 
 All notable changes to Documentation Engine are documented in this file.
 
+## [0.1.1] - 2026-07-12
+
+### Highlights
+
+- Canonical PyPI distribution identity: the distribution to be published is
+  named `documentation-engine`. The import package (`docsystem`), console
+  commands (`docsystem`, `docsystem-mcp`) and project files
+  (`.docsystem.toml`, `.docsystem/`) are unchanged.
+- Single source of truth for the package version: `pyproject.toml` now
+  derives `version` dynamically from `src/docsystem/__init__.py` instead of
+  duplicating it.
+- Release automation prepared: a tag-triggered Trusted Publishing workflow
+  builds the distributions once, verifies that the tag matches the package
+  version, publishes to TestPyPI, checks the published SHA-256 digests against
+  the built artifact, installs the result, and only then offers the same bytes
+  to PyPI behind a manual approval gate. See
+  [the release guide](docs/releasing.md).
+- CI runs on Node 24-capable action majors, declares least-privilege
+  permissions, and checks the sdist as well as the wheel.
+
+This entry documents packaging identity and release automation. Documentation
+Engine has not been published to any package index yet; `pip install
+documentation-engine` starts working only after the first successful release.
+
 ## [0.1.0] - 2026-07-11
 
 ### Highlights
@@ -19,4 +43,5 @@ All notable changes to Documentation Engine are documented in this file.
 - Measured context-reduction methodology and a reproducible consumer-install
   smoke test.
 
+[0.1.1]: https://github.com/Jafa7/DocumentationEngine/compare/v0.1.0...main
 [0.1.0]: https://github.com/Jafa7/DocumentationEngine/releases/tag/v0.1.0

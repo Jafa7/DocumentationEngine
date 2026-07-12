@@ -1,5 +1,15 @@
 # Existing-project adoption
 
+Install the engine first:
+
+```bash
+pip install documentation-engine
+```
+
+Contributors and anyone tracking unreleased development should use a
+source/editable checkout instead; see
+[Step 1 of the setup guide](setup-guide.md#step-1--install-the-engine).
+
 This profile adopts a documentation tree without changing its Markdown first.
 It keeps strict stable-ID semantics as the product default while making legacy
 relative relations inspectable and migratable.

@@ -97,7 +97,7 @@ adds `diagnostics` like any other `--json` tool.
 The MCP SDK is an optional dependency:
 
 ```bash
-pip install "docsystem[mcp]"
+pip install "documentation-engine[mcp]"
 docsystem-mcp
 ```
 

@@ -15,9 +15,9 @@ for compatibility. Their packet variants (`read_document_packet`,
 `impact_packet`) expose the same stdout together with successful-exit
 diagnostics in a structured envelope.
 
-The `mcp` package is an optional dependency: install `docsystem[mcp]` to run
-the server (`docsystem-mcp` or `python -m docsystem.mcp_server`). The tool
-functions themselves are plain Python and work without it.
+The `mcp` package is an optional dependency: install `documentation-engine[mcp]`
+to run the server (`docsystem-mcp` or `python -m docsystem.mcp_server`). The
+tool functions themselves are plain Python and work without it.
 """
 
 from __future__ import annotations
@@ -307,7 +307,7 @@ def build_server():
     except ImportError as error:
         raise RuntimeError(
             "the MCP adapter requires the optional 'mcp' dependency; "
-            "install it with: pip install 'docsystem[mcp]'"
+            "install it with: pip install 'documentation-engine[mcp]'"
         ) from error
     server = FastMCP("docsystem")
     for tool in _TOOLS:

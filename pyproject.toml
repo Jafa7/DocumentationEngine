@@ -3,8 +3,8 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "docsystem"
-version = "0.1.0"
+name = "documentation-engine"
+dynamic = ["version"]
 description = "Provider-neutral structured Markdown documentation engine."
 readme = "README.md"
 license = "MIT"
@@ -36,6 +36,9 @@ dev = [
     "pytest>=9,<10",
     "ruff>=0.14,<1",
 ]
+
+[tool.hatch.version]
+path = "src/docsystem/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/docsystem"]

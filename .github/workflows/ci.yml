@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 env:
   TMPDIR: /tmp
   TMP: /tmp
@@ -14,10 +17,10 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.12"
 
@@ -32,6 +35,19 @@ jobs:
 
       - name: Installed CLI smoke test
         run: ./scripts/installed_cli_smoke.sh
+
+      # The smoke test builds and installs a wheel only. The release workflow
+      # uploads a wheel *and* an sdist, and an index rejects a distribution
+      # whose metadata or long description does not render. Check both
+      # artifacts here rather than during an irreversible upload.
+      - name: Build and check both distributions
+        run: |
+          dist_dir="$(mktemp -d)/dist"
+          uv build --out-dir "$dist_dir"
+          version="$(uv run python -c 'import docsystem; print(docsystem.__version__)')"
+          test -f "$dist_dir/documentation_engine-${version}-py3-none-any.whl"
+          test -f "$dist_dir/documentation_engine-${version}.tar.gz"
+          uvx --from 'twine>=6,<7' twine check --strict "$dist_dir"/*
 
       # Dogfooding: walk the documented adoption sequence end-to-end against
       # the public example profile, on a scratch copy so the fixture stays

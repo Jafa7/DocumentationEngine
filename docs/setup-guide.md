@@ -43,7 +43,15 @@ the user's concrete backup path into tracked public documentation.
 
 ## Step 1 — Install the engine
 
-If the user gave only the repository URL, clone and install it:
+The primary adopter path is installing the published distribution:
+
+```bash
+pip install documentation-engine
+pip install "documentation-engine[mcp]"
+```
+
+If the user is contributing to Documentation Engine itself or wants
+unreleased development from git, clone and install from source instead:
 
 ```bash
 git clone https://github.com/Jafa7/DocumentationEngine.git
@@ -51,7 +59,9 @@ cd DocumentationEngine
 pip install .
 ```
 
-Use `pip install -e .` if the user wants to track engine updates from git.
+Use `pip install -e .` if the user wants a source/editable checkout that
+tracks engine updates from git. This source path is for contributors and
+unreleased development, not the primary adopter path.
 
 **Check:**
 
