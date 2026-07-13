@@ -45,11 +45,13 @@ shadow-overlay, formulas, quality checks and limitations. The chart is a
 static measured snapshot; it does not publish an unqualified forecast for
 larger corpora.
 
-## Installation
+## Get started
+
+### Installation
 
 Choose one installation path. Do not run both published-package commands.
 
-### CLI and Python package
+#### CLI and Python package
 
 For local command-line use and Python imports:
 
@@ -57,7 +59,7 @@ For local command-line use and Python imports:
 pip install documentation-engine
 ```
 
-### CLI with MCP support
+#### CLI with MCP support
 
 If an MCP host will launch Documentation Engine as a local stdio server, use
 the optional extra instead:
@@ -72,7 +74,7 @@ local `docsystem-mcp` adapter. See
 [the MCP adapter guide](docs/mcp-adapter.md) for host configuration and the
 security boundary.
 
-### Contributor or unreleased checkout
+#### Contributor or unreleased checkout
 
 Contributors and anyone intentionally tracking unreleased development should
 use the repository checkout rather than the published package:
@@ -86,7 +88,7 @@ uv sync
 Run development commands through `uv run`; do not mix this checkout with an
 unrelated globally installed `docsystem` executable.
 
-### Verify the selected installation
+#### Verify the selected installation
 
 For a published-package installation:
 
@@ -107,14 +109,14 @@ available and does not modify a project. Continue with
 [Connecting Documentation Engine to your project](#connecting-documentation-engine-to-your-project)
 to configure one deliberately.
 
-## Connecting Documentation Engine to your project
+### Connecting Documentation Engine to your project
 
 Connecting is project configuration, not package installation. It means
 choosing the documentation root and privacy boundary, reviewing or creating
 `.docsystem.toml`, validating the existing Markdown, and then writing the
 disposable projection. It does not require MCP.
 
-### Agent-guided setup
+#### Agent-guided setup
 
 **If you are an AI agent** asked to connect a project: follow
 [docs/setup-guide.md](docs/setup-guide.md) step by step. It contains the
@@ -133,7 +135,7 @@ Ask me where local disaster-recovery backups should be stored before touching
 ignored/private documentation or local configuration.
 ```
 
-### Manual setup
+#### Manual setup
 
 For a manual adoption, follow the same
 [setup guide](docs/setup-guide.md). Start with its fact-gathering and backup
@@ -144,7 +146,7 @@ tree. The compact readiness command will then report the next safe action:
 docsystem readiness /path/to/project
 ```
 
-### Independent local documentation sources
+#### Independent local documentation sources
 
 If public documentation stays in product repositories while private profiles
 live in one local directory, use [workspace source selection](docs/workspace-sources.md)
