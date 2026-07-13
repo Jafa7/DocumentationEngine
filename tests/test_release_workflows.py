@@ -358,6 +358,7 @@ def test_testpypi_smoke_pins_its_own_python_312(release: dict) -> None:
     ]
     assert len(setups) == 1, "the smoke job must set up its interpreter explicitly"
     assert setups[0]["with"]["python-version"] == "3.12"
+    assert setups[0]["with"]["enable-cache"] is False
 
     code = steps_code(job)
     assert 'uv venv "$SMOKE_VENV" --python 3.12' in code

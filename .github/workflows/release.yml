@@ -148,6 +148,9 @@ jobs:
         uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.12"
+          # This deliberately checkout-free consumer job has no uv.lock or
+          # pyproject.toml from which setup-uv could derive a cache key.
+          enable-cache: false
 
       - name: Create the consumer environment on Python 3.12
         run: |
