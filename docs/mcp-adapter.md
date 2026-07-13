@@ -99,19 +99,20 @@ envelope, but it comes directly from `docsystem agent-instructions PROJECT
 --json`: the CLI itself emits that shape, so the adapter only decodes it and
 adds `diagnostics` like any other `--json` tool.
 
-## Install and run
+## Run and configure
 
-The MCP SDK is an optional dependency:
+Install the optional SDK through the README's
+[CLI with MCP support](../README.md#cli-with-mcp-support) path. This guide owns
+adapter behavior and host configuration, not package installation.
 
 ```bash
-pip install "documentation-engine[mcp]"
 docsystem-mcp
 ```
 
 or, in a development checkout:
 
 ```bash
-python -m docsystem.mcp_server
+uv run python -m docsystem.mcp_server
 ```
 
 The server speaks stdio. A typical host configuration:

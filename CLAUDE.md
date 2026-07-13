@@ -16,13 +16,10 @@ Work only in the assigned checkout or detached worktree. Do not commit, push,
 merge, rebase, or modify another checkout unless the task explicitly requires
 it. Do not add Claude-specific behavior to `src/docsystem/`.
 
-Before handing work off, run the checks required by the task contract. The
-default project checks are:
-
-```bash
-TMPDIR=/tmp TMP=/tmp TEMP=/tmp uv run pytest
-ruff check .
-```
+Before handing work off, use the risk level and checks required by `AGENTS.md`
+and the task contract. Do not default to the full suite for structural-only
+documentation changes, and do not broaden a focused gate without a stated
+risk reason.
 
 Report changed files, checks, assumptions and blockers. Your report is not
 acceptance evidence by itself: an independent reviewer verifies the actual

@@ -31,7 +31,7 @@ body:
     id: version
     attributes:
       label: DocumentationEngine version or commit
-      placeholder: "0bf364673c55d76d216a3dfe982b0af746f1ab69"
+      placeholder: "X.Y.Z or a full commit SHA"
     validations:
       required: true
   - type: dropdown

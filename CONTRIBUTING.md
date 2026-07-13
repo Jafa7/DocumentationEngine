@@ -2,52 +2,84 @@
 
 Documentation Engine takes engineering rules from
 [`AGENTS.md`](AGENTS.md); it is the authoritative, provider-neutral source for
-how to work in this repository. This file only adds the mechanics of setting
-up a contributor checkout and the checks a change must pass — it does not
-duplicate `AGENTS.md`, [`README.md`](README.md) or
-[`docs/architecture.md`](docs/architecture.md).
+how to work in this repository. This file explains the contributor workflow
+without redefining installation, product behavior or architecture.
 
-## Contributor setup vs. consumer install
+## Development workflow
 
-A consumer installs the published package from PyPI:
+Choose the contributor checkout path from the README's
+[Installation](README.md#contributor-or-unreleased-checkout) section. That is
+the single source for consumer, MCP and contributor installation commands.
 
-```bash
-pip install documentation-engine
-pip install "documentation-engine[mcp]"
-```
-
-Contributors, and anyone tracking unreleased development, instead work from a
-source/editable checkout of this repository:
+From that checkout, run the CLI against the current sources through `uv`:
 
 ```bash
-git clone https://github.com/Jafa7/DocumentationEngine
-cd DocumentationEngine
-uv sync
+uv run python -m docsystem --help
 ```
 
-Run the CLI as a module against `src/` — `uv run python -m docsystem ...` — or
-with `PYTHONPATH=src`. Do not depend on an installed `docsystem` console
-script while developing; that is the consumer path, exercised separately by
-`scripts/installed_cli_smoke.sh`. See
-[Development setup vs. consumer install](README.md#development-setup-vs-consumer-install)
+Do not set an ad-hoc `PYTHONPATH` or depend on an unrelated globally installed
+`docsystem` executable while developing. The installed consumer path is
+exercised separately by `scripts/installed_cli_smoke.sh`. See
+[Development and release verification](README.md#development-and-release-verification)
 in the README for the full contract between the two.
 
-## Checks
+Keep a change narrowly scoped. Update tests and public documentation in the
+same change when behavior or a public contract changes.
 
-While iterating, run the focused check for the module you are changing (for
-example a single `uv run pytest tests/test_<module>.py`, or
-`uv run ruff check src/docsystem/<module>.py`) rather than the full gate after
-every edit. Before handing off or opening a pull request, run the complete
-gate once, from inside WSL if you are on Windows — native `/tmp` keeps pytest
-capture deterministic and avoids permission issues with Windows-side temp
-directories:
+## Verification
+
+Select the narrowest verification level that covers the risk, as defined in
+[`AGENTS.md`](AGENTS.md):
+
+### Structural only
+
+For prose documentation, comments, badges or repository metadata with no
+runtime, contract, packaging or generated-output effect, do not run a test
+suite. Validate the changed structure and links when applicable, then run:
+
+```bash
+git diff --check
+```
+
+### Focused
+
+For an isolated implementation or test change, run the directly affected tests
+and lint the touched code. For example:
+
+```bash
+TMPDIR=/tmp TMP=/tmp TEMP=/tmp uv run pytest tests/test_workspace.py
+TMPDIR=/tmp TMP=/tmp TEMP=/tmp uv run ruff check src/docsystem/workspace.py
+git diff --check
+```
+
+Every configuration-behavior change must include and run focused configuration
+tests.
+
+### Full
+
+Run the full gate once on a finished candidate when changing shared contracts
+or schemas, CLI behavior, catalog/graph/section semantics, projection or
+workspace safety, dependencies, packaging/CI, cross-module behavior or a
+release candidate:
 
 ```bash
 TMPDIR=/tmp TMP=/tmp TEMP=/tmp uv run pytest
 TMPDIR=/tmp TMP=/tmp TEMP=/tmp uv run ruff check .
+git diff --check
+```
+
+Native `/tmp` keeps pytest capture deterministic when WSL inherits Windows
+temporary directories. Do not repeat an already-passing full gate after a
+later structural-only edit unless it changes generated artifacts, packaging
+inputs or test expectations.
+
+### Additional packaging checks
+
+Run only the additional checks relevant to the changed surface:
+
+```bash
 uv lock --check
 ./scripts/installed_cli_smoke.sh
-git diff --check
 git ls-files --stage scripts/installed_cli_smoke.sh
 test -x scripts/installed_cli_smoke.sh
 ```
@@ -63,8 +95,12 @@ test -x scripts/installed_cli_smoke.sh
 - The `git ls-files`/`test -x` pair confirms `scripts/installed_cli_smoke.sh`
   kept its `100755` executable bit — Windows-side Git staging over
   `\\wsl.localhost` can silently drop it and break CI with
-  `Permission denied`. Apply the same check to any other shell script you add
-  or modify under `scripts/`.
+  `Permission denied`. Run this pair before committing, and apply the same
+  check to any other shell script you add or modify under `scripts/`.
+
+Record which verification level you selected, why it applies, which commands
+passed and which checks were deliberately not run. Never report an unrun check
+as passing.
 
 ## What a change must satisfy
 

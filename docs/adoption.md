@@ -1,14 +1,9 @@
 # Existing-project adoption
 
-Install the engine first:
-
-```bash
-pip install documentation-engine
-```
-
-Contributors and anyone tracking unreleased development should use a
-source/editable checkout instead; see
-[Step 1 of the setup guide](setup-guide.md#step-1--install-the-engine).
+Complete the README's canonical [Installation](../README.md#installation)
+section and the fact-gathering and backup steps in the
+[setup guide](setup-guide.md) before adopting an existing tree. This document
+starts at the profile and migration layer; it does not redefine installation.
 
 This profile adopts a documentation tree without changing its Markdown first.
 It keeps strict stable-ID semantics as the product default while making legacy

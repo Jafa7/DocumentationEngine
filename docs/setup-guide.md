@@ -43,62 +43,18 @@ the user's concrete backup path into tracked public documentation.
 
 ## Step 1 — Install the engine
 
-The primary adopter path is installing the published distribution:
+Choose and complete exactly one path from the README's canonical
+[Installation](../README.md#installation) section. Ordinary adopters use the
+published CLI package. MCP is optional and does not turn Documentation Engine
+into a shared remote service. Contributor and unreleased checkouts use the
+separate source path documented there.
 
-```bash
-pip install documentation-engine
-```
+Do not mix a source checkout with an unrelated globally installed `docsystem`,
+and do not use an ad-hoc `PYTHONPATH` as an installation substitute.
 
-If an MCP host will launch the local stdio adapter, install the optional MCP
-extra instead:
-
-```bash
-pip install "documentation-engine[mcp]"
-```
-
-Choose one command. The MCP extra includes the base package; it is not a second
-required installation step. MCP is optional for project adoption and does not
-turn Documentation Engine into a shared remote documentation server. See
-[`docs/mcp-adapter.md`](mcp-adapter.md) for the adapter boundary.
-
-If the user is contributing to Documentation Engine itself or wants
-unreleased development from git, clone and install from source instead:
-
-```bash
-git clone https://github.com/Jafa7/DocumentationEngine.git
-cd DocumentationEngine
-pip install .
-```
-
-Use `pip install -e .` if the user wants a source/editable checkout that
-tracks engine updates from git. This source path is for contributors and
-unreleased development, not the primary adopter path.
-
-**Check:**
-
-```bash
-docsystem --help
-```
-
-If `docsystem` is not on PATH, use the same interpreter that installed the
-package:
-
-```bash
-python -m docsystem --help
-```
-
-Prefer a real install over ad-hoc `PYTHONPATH`; adopting projects should call
-the installed console script, not import this repository's `src/` directly.
-
-If you are contributing changes to the Documentation Engine repository itself
-from Windows, stage and commit from inside WSL. Do not use Windows Git over
-`\\wsl.localhost`; it can drop executable bits on scripts such as
-`scripts/installed_cli_smoke.sh` and break CI. Verify:
-
-```bash
-git ls-files --stage scripts/installed_cli_smoke.sh
-test -x scripts/installed_cli_smoke.sh
-```
+**Check:** complete the verification command for the selected installation
+path in the README and record whether this adoption uses the published CLI,
+the MCP extra or a contributor checkout.
 
 ## Step 2 — Inspect the target project
 

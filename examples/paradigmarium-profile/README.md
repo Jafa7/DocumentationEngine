@@ -10,9 +10,9 @@ Run the adoption sequence against it (from the repository root, in a
 development checkout):
 
 ```bash
-PYTHONPATH=src python -m docsystem readiness examples/paradigmarium-profile --json
-PYTHONPATH=src python -m docsystem migration-report examples/paradigmarium-profile --json
-PYTHONPATH=src python -m docsystem catalog examples/paradigmarium-profile --explain --json
+uv run python -m docsystem readiness examples/paradigmarium-profile --json
+uv run python -m docsystem migration-report examples/paradigmarium-profile --json
+uv run python -m docsystem catalog examples/paradigmarium-profile --explain --json
 ```
 
 `architecture/README.md` intentionally uses a legacy relative-path

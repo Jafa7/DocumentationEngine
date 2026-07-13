@@ -6,44 +6,8 @@ Documentation Engine is a provider-neutral toolkit for maintaining structured
 Markdown knowledge that remains usable by humans and AI clients as a project
 grows.
 
-The project is in an early extraction stage. Its first integration fixture is
-Paradigmarium.
-
-## Install
-
-For the CLI and Python package:
-
-```bash
-pip install documentation-engine
-```
-
-If an MCP host will start Documentation Engine as a local stdio server, install
-the optional MCP extra instead:
-
-```bash
-pip install "documentation-engine[mcp]"
-```
-
-Choose one command: the MCP extra already includes the base package. It does
-not create or host a shared documentation service; it adds the SDK needed for
-an MCP client to launch the local `docsystem-mcp` adapter. See
-[the MCP adapter guide](docs/mcp-adapter.md) for the host configuration and
-security boundary.
-
-Verify the installation:
-
-```bash
-docsystem --help
-```
-
-The distribution is `documentation-engine`; the import package, `docsystem`
-and `docsystem-mcp` console scripts, and `.docsystem.toml`/`.docsystem/`
-project files keep their existing names. Contributors and anyone tracking
-unreleased development should instead use a source/editable checkout — see
-[Development setup vs. consumer install](#development-setup-vs-consumer-install)
-below. Installing the package does not modify a project; continue with
-[Connecting Documentation Engine to your project](#connecting-documentation-engine-to-your-project)
-to configure one deliberately.
+The published `documentation-engine` package is pre-1.0. Paradigmarium remains
+the first real-project integration fixture for its adoption contracts.
 
 ## Measured context reduction
 
@@ -81,18 +45,81 @@ shadow-overlay, formulas, quality checks and limitations. The chart is a
 static measured snapshot; it does not publish an unqualified forecast for
 larger corpora.
 
+## Installation
+
+Choose one installation path. Do not run both published-package commands.
+
+### CLI and Python package
+
+For local command-line use and Python imports:
+
+```bash
+pip install documentation-engine
+```
+
+### CLI with MCP support
+
+If an MCP host will launch Documentation Engine as a local stdio server, use
+the optional extra instead:
+
+```bash
+pip install "documentation-engine[mcp]"
+```
+
+The MCP extra includes the base package. It does not create or host a shared
+documentation service; it adds the SDK needed for an MCP client to launch the
+local `docsystem-mcp` adapter. See
+[the MCP adapter guide](docs/mcp-adapter.md) for host configuration and the
+security boundary.
+
+### Contributor or unreleased checkout
+
+Contributors and anyone intentionally tracking unreleased development should
+use the repository checkout rather than the published package:
+
+```bash
+git clone https://github.com/Jafa7/DocumentationEngine.git
+cd DocumentationEngine
+uv sync
+```
+
+Run development commands through `uv run`; do not mix this checkout with an
+unrelated globally installed `docsystem` executable.
+
+### Verify the selected installation
+
+For a published-package installation:
+
+```bash
+docsystem --help
+```
+
+For a contributor checkout:
+
+```bash
+uv run python -m docsystem --help
+```
+
+The distribution is `documentation-engine`; the import package, `docsystem`
+and `docsystem-mcp` console scripts, and `.docsystem.toml`/`.docsystem/`
+project files keep their existing names. Installation only makes the commands
+available and does not modify a project. Continue with
+[Connecting Documentation Engine to your project](#connecting-documentation-engine-to-your-project)
+to configure one deliberately.
+
 ## Connecting Documentation Engine to your project
 
-Installing the package only makes the commands available. Connecting a project
-means choosing its documentation root and privacy boundary, reviewing or
-creating `.docsystem.toml`, validating the existing Markdown, and then writing
-the disposable projection. It does not require MCP.
+Connecting is project configuration, not package installation. It means
+choosing the documentation root and privacy boundary, reviewing or creating
+`.docsystem.toml`, validating the existing Markdown, and then writing the
+disposable projection. It does not require MCP.
 
 ### Agent-guided setup
 
 **If you are an AI agent** asked to connect a project: follow
 [docs/setup-guide.md](docs/setup-guide.md) step by step. It contains the
-install/adoption flow, required user questions, backup-policy setup and checks.
+connection/adoption flow, required user questions, backup-policy setup and
+checks.
 Do not improvise a local backup path or commit private planning paths.
 
 **If you are a human using an AI agent**, paste this in the project you want to
@@ -105,6 +132,8 @@ Read docs/setup-guide.md in that repository and follow it exactly.
 Ask me where local disaster-recovery backups should be stored before touching
 ignored/private documentation or local configuration.
 ```
+
+### Manual setup
 
 For a manual adoption, follow the same
 [setup guide](docs/setup-guide.md). Start with its fact-gathering and backup
@@ -143,82 +172,61 @@ the [adopter reporting](docs/adopter-reporting.md) policy and issue templates.
 Reports start with compact diagnostics and sanitized evidence, not private
 document bodies or unbounded logs.
 
-## Development setup vs. consumer install
+## Documentation
 
-Development work in this checkout runs the CLI as a module against `src/`,
-either via `python -m docsystem ...` in an editable install or with
-`PYTHONPATH=src`. Downstream consumers (such as Paradigmarium) instead depend
-on `docsystem` as an ordinary installed package and invoke the `docsystem`
-console script produced by the build, with no `PYTHONPATH` and no direct
-import of this repository's sources.
+Use the [documentation map](docs/README.md) to find the canonical guide for
+setup, adoption, architecture, agent behavior, integrations, safety, reporting
+and releases. Specialized guides link back to their owning contract instead of
+repeating it.
 
-`uv.lock` pins the resolved dependency graph for this checkout.
-`uv lock --check` verifies the lockfile matches `pyproject.toml`.
+## Development and release verification
 
-Publishing the distribution is tag-triggered and documented separately in
-[the release guide](docs/releasing.md).
+Contributor workflow and risk-based checks are defined in
+[CONTRIBUTING.md](CONTRIBUTING.md). Packaging and publication are defined in
+[the release guide](docs/releasing.md). The contributor checkout uses
+`uv run python -m docsystem ...`; published-package consumers use the installed
+`docsystem` command. `scripts/installed_cli_smoke.sh` verifies that boundary.
 
-`scripts/installed_cli_smoke.sh` is the reproducible check for the consumer
-path: it builds a wheel from the current checkout, installs it into an
-isolated venv, and runs the installed `docsystem` entry point against a fresh
-fixture project from an unrelated working directory. It requires no API
-credentials, does not modify this repository, and cleans up all temporary
-files on exit.
+## CLI overview
 
 ```bash
-./scripts/installed_cli_smoke.sh
-```
-
-When working from Windows, stage and commit this repository from inside WSL,
-not with Windows Git over `\\wsl.localhost`. Windows-side staging can drop
-the executable bit on shell scripts. CI expects
-`scripts/installed_cli_smoke.sh` to remain executable (`100755`):
-
-```bash
-git ls-files --stage scripts/installed_cli_smoke.sh
-test -x scripts/installed_cli_smoke.sh
-```
-
-## Initial CLI
-
-```bash
-python -m docsystem init .
-python -m docsystem doctor .
-python -m docsystem show-config .
-python -m docsystem catalog .
-python -m docsystem catalog . --explain
-python -m docsystem catalog . --explain --json
-python -m docsystem validate .
-python -m docsystem validate . --verbose-adoption
-python -m docsystem read DOC-001 .
-python -m docsystem read DOC-001 . --list
-python -m docsystem read DOC-001 . --anchor purpose
-python -m docsystem dependencies DOC-001 .
-python -m docsystem dependencies DOC-001 . --reverse
-python -m docsystem context DOC-001 . --depth 1
-python -m docsystem context DOC-001 . --depth 1 --json
-python -m docsystem context DOC-001 . --outline
-python -m docsystem context DOC-001 . --outline --json
-python -m docsystem context DOC-001 . --assume-known DOC-001@3
-python -m docsystem context DOC-001 . --since 0a1b2c3d4e5f
-python -m docsystem impact DOC-001 .
-python -m docsystem migration-report .
-python -m docsystem migration-report . --json
-python -m docsystem readiness .
-python -m docsystem readiness . --json
-python -m docsystem finish DOC-001 .
-python -m docsystem finish DOC-001 . --json
-python -m docsystem report draft . --project-name "My Project" --type adoption-finding --source codex
-python -m docsystem migrate .
-python -m docsystem migrate . --apply
-python -m docsystem index . --write
-python -m docsystem changes .
-python -m docsystem changes . --json
-python -m docsystem agent-instructions .
-python -m docsystem agent-instructions . --json
-python -m docsystem workspace list . --workspace /path/to/workspace
-python -m docsystem workspace doctor . --workspace /path/to/workspace
-python -m docsystem context DOC-001 . --source example-project
+docsystem init .
+docsystem doctor .
+docsystem show-config .
+docsystem catalog .
+docsystem catalog . --explain
+docsystem catalog . --explain --json
+docsystem validate .
+docsystem validate . --verbose-adoption
+docsystem read DOC-001 .
+docsystem read DOC-001 . --list
+docsystem read DOC-001 . --anchor purpose
+docsystem dependencies DOC-001 .
+docsystem dependencies DOC-001 . --reverse
+docsystem context DOC-001 . --depth 1
+docsystem context DOC-001 . --depth 1 --json
+docsystem context DOC-001 . --outline
+docsystem context DOC-001 . --outline --json
+docsystem context DOC-001 . --assume-known DOC-001@3
+docsystem context DOC-001 . --since 0a1b2c3d4e5f
+docsystem impact DOC-001 .
+docsystem migration-report .
+docsystem migration-report . --json
+docsystem readiness .
+docsystem readiness . --json
+docsystem finish DOC-001 .
+docsystem finish DOC-001 . --json
+docsystem report draft . --project-name "My Project" --type adoption-finding --source codex
+docsystem migrate .
+docsystem migrate . --apply
+docsystem index . --write
+docsystem changes .
+docsystem changes . --json
+docsystem agent-instructions .
+docsystem agent-instructions . --json
+docsystem workspace list . --workspace /path/to/workspace
+docsystem workspace doctor . --workspace /path/to/workspace
+docsystem context DOC-001 . --source example-project
 ```
 
 `init` creates a project-local `.docsystem.toml` and the configured
@@ -348,9 +356,9 @@ map before fetching.
 
 An MCP adapter exposes the read-only commands as typed tools for any
 MCP-capable client; see [the MCP adapter guide](docs/mcp-adapter.md). It is a
-thin wrapper over this CLI contract and requires the optional `mcp`
-dependency (`pip install "documentation-engine[mcp]"`). Text tools keep exact CLI stdout
-for compatibility; packet variants add non-fatal diagnostics such as
+thin wrapper over this CLI contract and requires the optional MCP installation
+described in [Installation](#cli-with-mcp-support). Text tools keep exact CLI
+stdout for compatibility; packet variants add non-fatal diagnostics such as
 projection fallback warnings.
 
 `migrate` previews, by default, every legacy relation value that

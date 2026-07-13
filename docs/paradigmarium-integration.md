@@ -11,9 +11,10 @@ Paradigmarium-specific behavior.
 A Paradigmarium-style wrapper depends on `docsystem` as an ordinary installed
 package and invokes the `docsystem` console script produced by the build. It
 never sets `PYTHONPATH` and never imports this repository's `src/` directly.
-See the "Development setup vs. consumer install" section of the top-level
-[`README.md`](../README.md) and `scripts/installed_cli_smoke.sh` for the
-reproducible check of that install path.
+See the top-level README's [Installation](../README.md#installation) section
+for the consumer/contributor boundary and
+[`CONTRIBUTING.md`](../CONTRIBUTING.md#additional-packaging-checks) for the
+reproducible installed-consumer check.
 
 ## Example profile
 

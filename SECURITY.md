@@ -3,13 +3,13 @@
 ## Supported versions
 
 Documentation Engine is pre-1.0. Until a broader support policy exists, only
-the latest published `0.1.x` version is supported for security fixes. There is
-no commitment to backport fixes to an older `0.1.x` version once a newer one is
+the latest published release is supported for security fixes. There is no
+commitment to backport fixes to an older pre-1.0 release once a newer one is
 available.
 
 ## Reporting a vulnerability
 
-Report suspected vulnerabilities through
+When enabled, report suspected vulnerabilities through
 [GitHub Private Vulnerability Reporting](https://github.com/Jafa7/DocumentationEngine/security/advisories/new)
 on this repository (the "Security" tab → "Report a vulnerability"). This
 keeps the report private to maintainers until a fix is available.
@@ -48,6 +48,6 @@ and its issue templates for those instead.
 
 GitHub Private Vulnerability Reporting must be enabled in this repository's
 settings (Settings → Security → Private vulnerability reporting) for this
-channel to work. Enabling it is a repository settings change outside this
-codebase and is expected to happen as part of preparing the release, not as
-part of any code change.
+channel to work. The setting is external to this codebase and must be verified
+separately; the policy above remains explicit about the safe fallback when the
+private channel is unavailable.

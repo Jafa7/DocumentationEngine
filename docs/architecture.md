@@ -268,7 +268,7 @@ fall back to the default, while a configured non-H2 match is invalid.
 4. Working context, impact, adoption and sharded-projection vertical slice.
 5. Mature migration workflow (`migrate`, `readiness`) for legacy path
    relations, plus `finish` handoff and privacy-safe adopter report drafts.
-6. Thin Codex integration and generated agent instructions.
+6. Provider-neutral client contract and generated agent instructions.
 7. MCP adapter (an initial read-only stdio adapter ships as
    `docsystem.mcp_server`) and additional client integrations.
 8. Local workspace source selection for independently owned profiles, before
