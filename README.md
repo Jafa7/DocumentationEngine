@@ -9,21 +9,40 @@ grows.
 The published `documentation-engine` package is pre-1.0. Paradigmarium remains
 the first real-project integration fixture for its adoption contracts.
 
-## Measured context reduction
+## Complete access. Task-sized reads.
 
-The graph below shows the product's core benefit: an AI client receives the
-complete task-relevant documentation context without reading an entire growing
-corpus. It compares a naive full-tree read with DocumentationEngine context
-packets for three predefined tasks over a real 6.41 MB legacy Markdown corpus
-containing 292 documents. Lower is better.
+> **Every cataloged document remains fully available to the agent.**
+> Documentation Engine reads original Markdown in structured, task-relevant
+> fragments and expands to related sections or complete documents on demand.
+
+"Task-sized" means selected according to the current task, document
+relationships, and explicit requests—not compressed, summarized, or truncated
+to fit an arbitrary token budget. Sections outside the initial read are listed
+explicitly and remain available by anchor or as complete documents. An
+operation that claims a complete dependency answer fails closed when that
+completeness cannot be established.
+
+The graph measures how much original documentation had to be loaded initially
+for three predefined tasks over a real 6.41 MB legacy Markdown corpus
+containing 292 documents. Each task retained access to the entire catalog and
+passed its predefined document and section coverage requirements. Lower
+initial reading is better when those quality requirements remain satisfied.
 
 ![Documentation context read for one task](docs/assets/context-reduction.svg)
 
-The reduction is selective retrieval, not lossy compression. DocumentationEngine
-does not paraphrase, summarize or arbitrarily truncate the selected context:
-navigation excerpts and requested sections remain verbatim Markdown, required
-scenario coverage is checked, and every omitted H2 remains visible. A client
-can request any omitted section or the complete document explicitly.
+The efficiency comes from structured, on-demand reading rather than rewriting
+source material:
+
+| Read on demand instead of upfront | Quality safeguard |
+| --- | --- |
+| Unrelated documents | Selected source Markdown verbatim |
+| Unrequested sections | Explicit omitted-section list and addressable anchors |
+| Repeated full-corpus reads | Stable IDs, revisions and dependency coverage |
+| Unproven dependency results | A fail-closed error instead of silent incompleteness |
+
+Omitted content is neither destroyed nor hidden. It remains in the Markdown
+source of truth and can be requested by section anchor or as a complete
+document.
 
 | Scenario | Required documents | Required sections | Packet | Corpus read | Reduction |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -32,9 +51,10 @@ can request any omitted section or the complete document explicitly.
 | Research continuation | 4 | 9 | 60.2 KB | 0.94% | 99.06% |
 
 Each task passed a quality guard: every predefined required document and
-section was present, every selected document carried an explicit coverage
-line. The smaller packet comes from excluding unrelated documents and
-unrequested sections, not from rewriting or degrading the selected material.
+section was present, and every selected document carried an explicit coverage
+line. Navigation excerpts and requested sections remained verbatim Markdown.
+The smaller packet comes from excluding unrelated documents and unrequested
+sections, not from rewriting or degrading the selected material.
 The baseline is deliberately specific: reading every Markdown byte, not every
 possible manual or competing retrieval strategy. UTF-8 bytes are a
 deterministic provider-neutral proxy for context volume, not tokenizer-specific
