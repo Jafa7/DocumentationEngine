@@ -205,6 +205,7 @@ def test_release_builds_once_and_feeds_both_indexes_the_same_artifact(release: d
     build = steps_text(jobs["build"])
     assert "rm -rf dist" in build, "the build must not pick up stale local artifacts"
     assert "uv build --out-dir dist" in build
+    assert "rm -f dist/.gitignore" in build, "uv's generated marker is not a release artifact"
 
     uploads = [step for step in jobs["build"]["steps"] if "upload-artifact" in step.get("uses", "")]
     assert len(uploads) == 1

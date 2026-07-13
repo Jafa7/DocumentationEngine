@@ -54,6 +54,10 @@ jobs:
         run: |
           rm -rf dist
           uv build --out-dir dist
+          # uv protects its default output directory with a generated
+          # .gitignore. It is not a distribution artifact and must not enter
+          # either the exact-file gate or the uploaded Actions artifact.
+          rm -f dist/.gitignore
 
       # The tag is the release's only identity. If it disagrees with the
       # dynamic package version by even one character, stop before anything is
