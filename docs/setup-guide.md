@@ -47,8 +47,19 @@ The primary adopter path is installing the published distribution:
 
 ```bash
 pip install documentation-engine
+```
+
+If an MCP host will launch the local stdio adapter, install the optional MCP
+extra instead:
+
+```bash
 pip install "documentation-engine[mcp]"
 ```
+
+Choose one command. The MCP extra includes the base package; it is not a second
+required installation step. MCP is optional for project adoption and does not
+turn Documentation Engine into a shared remote documentation server. See
+[`docs/mcp-adapter.md`](mcp-adapter.md) for the adapter boundary.
 
 If the user is contributing to Documentation Engine itself or wants
 unreleased development from git, clone and install from source instead:

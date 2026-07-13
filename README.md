@@ -11,9 +11,29 @@ Paradigmarium.
 
 ## Install
 
+For the CLI and Python package:
+
 ```bash
 pip install documentation-engine
+```
+
+If an MCP host will start Documentation Engine as a local stdio server, install
+the optional MCP extra instead:
+
+```bash
 pip install "documentation-engine[mcp]"
+```
+
+Choose one command: the MCP extra already includes the base package. It does
+not create or host a shared documentation service; it adds the SDK needed for
+an MCP client to launch the local `docsystem-mcp` adapter. See
+[the MCP adapter guide](docs/mcp-adapter.md) for the host configuration and
+security boundary.
+
+Verify the installation:
+
+```bash
+docsystem --help
 ```
 
 The distribution is `documentation-engine`; the import package, `docsystem`
@@ -21,7 +41,9 @@ and `docsystem-mcp` console scripts, and `.docsystem.toml`/`.docsystem/`
 project files keep their existing names. Contributors and anyone tracking
 unreleased development should instead use a source/editable checkout — see
 [Development setup vs. consumer install](#development-setup-vs-consumer-install)
-below.
+below. Installing the package does not modify a project; continue with
+[Connecting Documentation Engine to your project](#connecting-documentation-engine-to-your-project)
+to configure one deliberately.
 
 ## Measured context reduction
 
@@ -61,13 +83,20 @@ larger corpora.
 
 ## Connecting Documentation Engine to your project
 
-**If you are an AI agent** asked to set this up: follow
+Installing the package only makes the commands available. Connecting a project
+means choosing its documentation root and privacy boundary, reviewing or
+creating `.docsystem.toml`, validating the existing Markdown, and then writing
+the disposable projection. It does not require MCP.
+
+### Agent-guided setup
+
+**If you are an AI agent** asked to connect a project: follow
 [docs/setup-guide.md](docs/setup-guide.md) step by step. It contains the
 install/adoption flow, required user questions, backup-policy setup and checks.
 Do not improvise a local backup path or commit private planning paths.
 
-**If you are a human**: paste this to the agent in the project you want to
-adopt:
+**If you are a human using an AI agent**, paste this in the project you want to
+connect:
 
 ```text
 Connect Documentation Engine to this project.
@@ -76,6 +105,17 @@ Read docs/setup-guide.md in that repository and follow it exactly.
 Ask me where local disaster-recovery backups should be stored before touching
 ignored/private documentation or local configuration.
 ```
+
+For a manual adoption, follow the same
+[setup guide](docs/setup-guide.md). Start with its fact-gathering and backup
+steps rather than running `init` blindly against an existing documentation
+tree. The compact readiness command will then report the next safe action:
+
+```bash
+docsystem readiness /path/to/project
+```
+
+### Independent local documentation sources
 
 If public documentation stays in product repositories while private profiles
 live in one local directory, use [workspace source selection](docs/workspace-sources.md)
