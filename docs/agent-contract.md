@@ -77,6 +77,13 @@ unrelated directories, and an implicit-cwd invocation against the wrong
 directory produces a confusing `configuration not found` error at best and
 operates on an unintended project at worst.
 
+For a profile registered in a local documentation workspace, an agent must
+instead pass the positional discovery root and `--source NAME`. Workspace
+resolution is fail-closed: an unknown or unavailable source must never be
+replaced with the positional project. The local pointer and absolute workspace
+path are private machine wiring and must not be committed. See
+[workspace source selection](workspace-sources.md).
+
 ## Prefer `--json` over parsing text
 
 `readiness`, `migration-report`, `catalog --explain`, `changes` and

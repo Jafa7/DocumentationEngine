@@ -2,6 +2,30 @@
 
 All notable changes to Documentation Engine are documented in this file.
 
+## [0.2.0] - 2026-07-13
+
+### Highlights
+
+- Local workspace source selection lets one checkout address an independent
+  public or private Documentation Engine profile by a stable source name,
+  without committing machine-specific absolute paths.
+- A strict `workspace.toml` registry and ignored `.docsystem.local.toml`
+  pointer provide deterministic discovery through explicit CLI options, an
+  environment variable or local project wiring.
+- New read-only `workspace list` and `workspace doctor` commands report source
+  visibility and availability without reading document bodies or exposing
+  local paths.
+- Existing project commands and MCP tools can select one registered source;
+  explicit selection fails closed and never falls back to the positional
+  project.
+- Source roots must be contained, unique and non-overlapping. Writable
+  documentation and projection paths cannot escape through symlinks, and
+  malformed or looping paths produce bounded diagnostics instead of stack
+  traces.
+- Existing single-project CLI and MCP behavior remains unchanged when no
+  source is selected. This release deliberately does not claim cross-source
+  graph federation, remote storage, synchronization or authorization.
+
 ## [0.1.2] - 2026-07-13
 
 ### Fixed
@@ -52,6 +76,7 @@ documentation-engine` starts working only after the first successful release.
 - Measured context-reduction methodology and a reproducible consumer-install
   smoke test.
 
-[0.1.2]: https://github.com/Jafa7/DocumentationEngine/compare/v0.1.1...main
+[0.2.0]: https://github.com/Jafa7/DocumentationEngine/compare/v0.1.2...v0.2.0
+[0.1.2]: https://github.com/Jafa7/DocumentationEngine/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/Jafa7/DocumentationEngine/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Jafa7/DocumentationEngine/releases/tag/v0.1.0

@@ -146,6 +146,12 @@ delete or migration mistake. Define a local backup command before letting an
 agent perform broad or mutating work on ignored documentation. The reusable
 contract is described in [local state safety](local-state-safety.md).
 
+When several independent public or private profiles live under one local
+documentation directory, register them with
+[workspace source selection](workspace-sources.md). The registry selects one
+ordinary profile by name; it does not merge catalogs or authorize deleting an
+original `plan/` after a copy-only migration.
+
 Project-specific registry synchronization, `finish` orchestration, private
 history/backup, and provider adapters remain outside this adoption profile.
 

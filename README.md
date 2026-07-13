@@ -77,6 +77,12 @@ Ask me where local disaster-recovery backups should be stored before touching
 ignored/private documentation or local configuration.
 ```
 
+If public documentation stays in product repositories while private profiles
+live in one local directory, use [workspace source selection](docs/workspace-sources.md)
+to register those independent profiles and address one by name. This removes
+machine-specific paths from routine commands without claiming a federated
+cross-project graph.
+
 ## Principles
 
 - Markdown is the editable source of truth.
@@ -170,6 +176,9 @@ python -m docsystem changes .
 python -m docsystem changes . --json
 python -m docsystem agent-instructions .
 python -m docsystem agent-instructions . --json
+python -m docsystem workspace list . --workspace /path/to/workspace
+python -m docsystem workspace doctor . --workspace /path/to/workspace
+python -m docsystem context DOC-001 . --source example-project
 ```
 
 `init` creates a project-local `.docsystem.toml` and the configured

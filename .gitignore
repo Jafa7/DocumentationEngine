@@ -8,6 +8,7 @@ __pycache__/
 /.docsystem.toml
 /.docsystem/
 .docsystem/
+.docsystem.local.toml
 /.claude/
 /.paradigmarium/
 /.orchestrator/

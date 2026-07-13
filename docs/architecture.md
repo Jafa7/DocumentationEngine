@@ -62,6 +62,12 @@ Project policy may configure:
 - legacy path-relation migration and historical snapshot document types;
 - provider adapters.
 
+A local workspace registry is an outer selection layer, not another project
+configuration table. It maps a stable source name to one contained project
+root, after which the existing configuration, catalog, graph and projection
+contracts apply unchanged. It deliberately does not aggregate multiple
+sources; see [workspace source selection](workspace-sources.md).
+
 ## Scalable projection
 
 The target projection is sharded and generation-based:
@@ -265,3 +271,5 @@ fall back to the default, while a configured non-H2 match is invalid.
 6. Thin Codex integration and generated agent instructions.
 7. MCP adapter (an initial read-only stdio adapter ships as
    `docsystem.mcp_server`) and additional client integrations.
+8. Local workspace source selection for independently owned profiles, before
+   any atomic cross-source federation design.

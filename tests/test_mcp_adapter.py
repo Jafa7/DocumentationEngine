@@ -41,6 +41,24 @@ Detailed content.
     return project
 
 
+def adapter_workspace(tmp_path: Path) -> tuple[Path, Path]:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    project = adapter_project(workspace)
+    (workspace / "workspace.toml").write_text(
+        """\
+version = 1
+
+[[sources]]
+name = "example-project"
+root = "project"
+visibility = "private"
+""",
+        encoding="utf-8",
+    )
+    return workspace, project
+
+
 def test_tools_return_structured_payloads_from_the_cli_contract(
     tmp_path: Path,
 ) -> None:
@@ -115,6 +133,64 @@ def test_readiness_carries_not_ready_payload_instead_of_raising(
     assert payload["ready"] is False
     assert payload["blocking"]
     assert {issue["path"] for issue in payload["blocking"]} == {"orphan.md"}
+
+
+def test_workspace_selection_is_forwarded_to_the_cli_contract(tmp_path: Path) -> None:
+    workspace, project = adapter_workspace(tmp_path)
+    anchor = str(tmp_path / "anchor")
+
+    listing = mcp_server.workspace_list(anchor, workspace=str(workspace))
+    assert listing["sources"] == [
+        {
+            "available": True,
+            "name": "example-project",
+            "reason": None,
+            "visibility": "private",
+        }
+    ]
+
+    catalog = mcp_server.catalog(
+        anchor, source="example-project", workspace=str(workspace)
+    )
+    assert [item["path"] for item in catalog["documents"]] == [
+        "README.md",
+        "target.md",
+    ]
+
+    readiness = mcp_server.readiness(
+        anchor, source="example-project", workspace=str(workspace)
+    )
+    assert readiness["source"] == "example-project"
+    assert readiness["ready"] is True
+    assert str(project) not in readiness["next_command"]
+
+
+def test_workspace_arguments_are_omitted_exactly_when_not_requested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def invoke(arguments, *, allow_failure_payload=False):
+        calls.append(arguments)
+        return "{}", ""
+
+    monkeypatch.setattr(mcp_server, "_invoke", invoke)
+
+    assert mcp_server.catalog("/project") == {}
+    assert calls.pop() == ["catalog", "/project", "--json"]
+
+    assert mcp_server.catalog(
+        "/project", source="example-project", workspace="/workspace"
+    ) == {}
+    assert calls.pop() == [
+        "catalog",
+        "/project",
+        "--json",
+        "--source",
+        "example-project",
+        "--workspace",
+        "/workspace",
+    ]
 
 
 def test_cli_errors_surface_as_exceptions(tmp_path: Path) -> None:

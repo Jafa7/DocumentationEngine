@@ -42,6 +42,12 @@ from docsystem.projection import (
 )
 from docsystem.readiness import evaluate_readiness
 from docsystem.sections import MarkdownSection, extract_navigation, extract_section
+from docsystem.workspace import (
+    WorkspaceError,
+    resolve_source_root,
+    resolve_workspace,
+    source_statuses,
+)
 
 # Version of every `--json` root object. Bump only on a breaking change to
 # an existing field; adding new fields is compatible and does not bump it.
@@ -74,6 +80,70 @@ REPORT_COMPONENTS = (
     "local-state",
     "privacy",
 )
+
+
+@dataclass(frozen=True)
+class _Selection:
+    """The one project a command runs against, and how it was addressed.
+
+    Without `--source` this is exactly the positional project root and every
+    command behaves as before. With `--source` the root comes from the local
+    workspace registry, and `selector` replaces the root in any output a
+    reader could paste elsewhere, so a private workspace path never leaves the
+    machine that holds it.
+    """
+
+    project_root: Path
+    source: str | None = None
+    discovery_root: Path | None = None
+
+    @property
+    def project_argument(self) -> Path:
+        """Return the caller's public/discovery root, not the private source."""
+
+        return self.discovery_root or self.project_root
+
+    @property
+    def selector(self) -> str:
+        if self.source is None:
+            return str(self.project_argument)
+        return f"{self.project_argument} --source {self.source}"
+
+    @property
+    def report_selector(self) -> str:
+        """Render source selection without colliding with report host source."""
+
+        if self.source is None:
+            return str(self.project_argument)
+        return f"{self.project_argument} --workspace-source {self.source}"
+
+
+def _resolve_selection(args: argparse.Namespace) -> _Selection | None:
+    """Resolve the effective project, or print one diagnostic and fail closed.
+
+    Workspace state is neither loaded nor validated when `--source` is absent,
+    so an unrelated broken workspace can never affect a plain project command.
+    """
+
+    source = getattr(args, "workspace_source", None)
+    if source is None:
+        if getattr(args, "workspace", None) is not None:
+            print(
+                "ERROR: --workspace requires --source/--workspace-source",
+                file=sys.stderr,
+            )
+            return None
+        return _Selection(args.project)
+    try:
+        project_root = resolve_source_root(
+            source,
+            workspace_option=getattr(args, "workspace", None),
+            project_root=args.project,
+        )
+    except WorkspaceError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return None
+    return _Selection(project_root, source, args.project)
 
 
 def _print_json(payload: dict[str, object]) -> None:
@@ -166,6 +236,80 @@ def _print_validation_issues(
             file=sys.stderr,
         )
     return any(issue.severity != "warning" for issue in issues)
+
+
+def _workspace_status_rows(
+    project_root: Path, workspace_option: Path | None
+) -> list[dict[str, object]]:
+    workspace = resolve_workspace(
+        workspace_option=workspace_option, project_root=project_root
+    )
+    return [
+        {
+            "name": status.name,
+            "visibility": status.visibility,
+            "available": status.available,
+            "reason": status.reason,
+        }
+        for status in source_statuses(workspace)
+    ]
+
+
+def workspace_list(
+    project_root: Path,
+    *,
+    workspace_option: Path | None = None,
+    json_output: bool = False,
+) -> int:
+    """List registered sources, sorted by name, with availability.
+
+    Read-only and body-free: only the registered name, its declared
+    visibility, whether it can be selected and a fixed reason slug are
+    reported. No local path and no document content is ever emitted, so a
+    listing is safe to share.
+    """
+
+    try:
+        rows = _workspace_status_rows(project_root, workspace_option)
+    except WorkspaceError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    if json_output:
+        _print_json({"sources": rows})
+        return 0
+    for row in rows:
+        state = "available" if row["available"] else "unavailable"
+        print(f"{row['name']}\t{row['visibility']}\t{state}\t{row['reason'] or '-'}")
+    return 0
+
+
+def workspace_doctor(
+    project_root: Path,
+    *,
+    workspace_option: Path | None = None,
+    json_output: bool = False,
+) -> int:
+    """Report whether every registered source is currently selectable."""
+
+    try:
+        rows = _workspace_status_rows(project_root, workspace_option)
+    except WorkspaceError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    unavailable = [row for row in rows if not row["available"]]
+    if json_output:
+        _print_json({"sources": rows, "ready": not unavailable})
+        return 1 if unavailable else 0
+    print(f"Workspace manifest is valid: {len(rows)} source(s).")
+    print(f"- Available sources: {len(rows) - len(unavailable)}")
+    print(f"- Unavailable sources: {len(unavailable)}")
+    for row in unavailable:
+        print(
+            f"ERROR: workspace source is unavailable: {row['name']} "
+            f"({row['reason']})",
+            file=sys.stderr,
+        )
+    return 1 if unavailable else 0
 
 
 def initialize(project_root: Path) -> int:
@@ -1609,7 +1753,12 @@ def _issue_json(issue: ValidationIssue) -> dict[str, object]:
     }
 
 
-def readiness(project_root: Path, *, json_output: bool = False) -> int:
+def readiness(
+    project_root: Path,
+    *,
+    json_output: bool = False,
+    selection: _Selection | None = None,
+) -> int:
     """Report, read-only, whether an existing project is adoption-ready.
 
     Stable summary data (counts, projection state, the next safe command)
@@ -1617,8 +1766,14 @@ def readiness(project_root: Path, *, json_output: bool = False) -> int:
     `validate`, `doctor` and `migrate`. `--json` prints one deterministic
     object carrying the same data in full instead of counts, so a consumer
     never has to parse the stderr diagnostics.
+
+    In selected-source mode the project is addressed by its reusable
+    `--source NAME` selector everywhere the project root would otherwise be
+    printed, and the payload gains a `source` key. Without a source the
+    output is unchanged.
     """
 
+    selection = selection or _Selection(project_root)
     try:
         config = load_config(project_root)
     except ValueError as error:
@@ -1626,42 +1781,50 @@ def readiness(project_root: Path, *, json_output: bool = False) -> int:
         return 1
     catalog_value = build_catalog(config)
     report = evaluate_readiness(config, catalog_value)
-    next_command = report.next_command(str(project_root))
+    next_command = report.next_command(selection.selector)
 
     if json_output:
         # One payload shape for every project state: a missing documentation
         # root reports empty categories rather than a shorter object, so a
         # consumer never has to branch on which keys exist.
-        _print_json(
-            {
-                "documentation_root_exists": report.documentation_root_exists,
-                "ready": report.ready,
-                "blocking": [_issue_json(issue) for issue in report.blocking],
-                "resolvable_migrations": [
-                    _migration_json(item) for item in report.resolvable_migrations
-                ],
-                "boundaries": [_boundary_json(item) for item in report.boundaries],
-                "stale_pins": [_issue_json(issue) for issue in report.stale_pins],
-                "projection": {
-                    "state": report.projection_state,
-                    "reason": report.projection_reason,
-                },
-                "next_command": next_command,
-            }
-        )
+        payload: dict[str, object] = {
+            "documentation_root_exists": report.documentation_root_exists,
+            "ready": report.ready,
+            "blocking": [_issue_json(issue) for issue in report.blocking],
+            "resolvable_migrations": [
+                _migration_json(item) for item in report.resolvable_migrations
+            ],
+            "boundaries": [_boundary_json(item) for item in report.boundaries],
+            "stale_pins": [_issue_json(issue) for issue in report.stale_pins],
+            "projection": {
+                "state": report.projection_state,
+                "reason": report.projection_reason,
+            },
+            "next_command": next_command,
+        }
+        if selection.source is not None:
+            payload["source"] = selection.source
+        _print_json(payload)
         return 0 if report.ready else 1
 
     if not report.documentation_root_exists:
-        print(f"# Adoption readiness: {project_root}")
+        # The documentation root is named relatively under a selected source,
+        # so no diagnostic stream carries the private absolute path either.
+        documentation_root = (
+            config.documentation_root.relative_to(config.project_root).as_posix()
+            if selection.source is not None
+            else config.documentation_root
+        )
+        print(f"# Adoption readiness: {selection.selector}")
         print()
         print(
-            f"ERROR: documentation root does not exist: {config.documentation_root}",
+            f"ERROR: documentation root does not exist: {documentation_root}",
             file=sys.stderr,
         )
         print(f"- Next safe command: {next_command}")
         return 1
 
-    print(f"# Adoption readiness: {project_root}")
+    print(f"# Adoption readiness: {selection.selector}")
     print()
     print(f"- Blocking structural/configuration errors: {len(report.blocking)}")
     for issue in report.blocking:
@@ -1777,19 +1940,31 @@ def _validation_summary(issues: tuple[ValidationIssue, ...]) -> dict[str, int]:
     return summary
 
 
-def _sanitize_local_error(error: Exception, project_root: Path) -> str:
+def _sanitize_local_error(error: Exception, selection: _Selection) -> str:
+    """Strip the local project root out of an error message.
+
+    Without a source the message keeps naming the project root exactly as the
+    caller typed it. With a source the root is private workspace wiring, so
+    every spelling of it is replaced by the reusable selector.
+    """
+
+    project_root = selection.project_root
     message = str(error)
     try:
         resolved = project_root.resolve().as_posix()
     except OSError:
         return message
-    return message.replace(resolved, project_root.as_posix())
+    if selection.source is None:
+        return message.replace(resolved, project_root.as_posix())
+    for spelling in (resolved, project_root.as_posix(), str(project_root)):
+        message = message.replace(spelling, selection.selector)
+    return message
 
 
 def _readiness_diagnostics(
     config,
     catalog_value: MarkdownCatalog,
-    project_root: Path,
+    selection: _Selection,
 ) -> list[str]:
     report = evaluate_readiness(config, catalog_value)
     diagnostics = [
@@ -1800,19 +1975,20 @@ def _readiness_diagnostics(
         f"boundaries={len(report.boundaries)}",
         f"stale_pins={len(report.stale_pins)}",
         f"projection={report.projection_state} ({report.projection_reason})",
-        f"next_command={report.next_command(str(project_root))}",
+        f"next_command={report.next_command(selection.selector)}",
     ]
     return diagnostics
 
 
 def _report_body(
     *,
-    project_root: Path,
+    selection: _Selection,
     project_name: str,
     report_type: str,
     source: str,
     component: str | None,
 ) -> str:
+    project_root = selection.project_root
     labels = [
         report_type,
         "triage",
@@ -1831,7 +2007,7 @@ def _report_body(
         catalog_value = build_catalog(config)
         issues = validate_catalog(catalog_value, config)
         summary = _validation_summary(issues)
-        diagnostics.extend(_readiness_diagnostics(config, catalog_value, project_root))
+        diagnostics.extend(_readiness_diagnostics(config, catalog_value, selection))
         diagnostics.append(
             "validation="
             f"{summary['errors']} error(s), {summary['warnings']} warning(s)"
@@ -1910,7 +2086,7 @@ def _report_body(
         )
     except (OSError, ValueError) as error:
         diagnostics.append(
-            f"configuration_error={_sanitize_local_error(error, project_root)}"
+            f"configuration_error={_sanitize_local_error(error, selection)}"
         )
 
     title = REPORT_TYPES[report_type]
@@ -1919,7 +2095,7 @@ def _report_body(
     diagnostics_text = "\n".join(f"- {item}" for item in diagnostics) or "- none captured"
     labels_text = ", ".join(f"`{label}`" for label in labels)
     command = (
-        f"docsystem report draft {project_root} --project-name "
+        f"docsystem report draft {selection.report_selector} --project-name "
         f"{project_name!r} --type {report_type} --source {source}"
         + (f" --component {component}" if component else "")
     )
@@ -1992,12 +2168,13 @@ def report_draft(
     source: str,
     component: str | None = None,
     output: Path | None = None,
+    selection: _Selection | None = None,
 ) -> int:
     if component is not None and component not in REPORT_COMPONENTS:
         print(f"ERROR: unsupported report component: {component}", file=sys.stderr)
         return 1
     text = _report_body(
-        project_root=project_root,
+        selection=selection or _Selection(project_root),
         project_name=project_name,
         report_type=report_type,
         source=source,
@@ -2222,7 +2399,7 @@ def show_config(project_root: Path) -> int:
     return 0
 
 
-def _agent_instructions_text(project_root: Path, config: ProjectConfig) -> str:
+def _agent_instructions_text(selection: _Selection, config: ProjectConfig) -> str:
     doc_root = config.documentation_root.relative_to(config.project_root).as_posix()
     out: list[str] = []
     out.append("## Documentation with Documentation Engine")
@@ -2247,7 +2424,7 @@ def _agent_instructions_text(project_root: Path, config: ProjectConfig) -> str:
     )
     out.append(
         "- Start read-only with `docsystem readiness "
-        f"{project_root} --json` and follow its `next_command` field."
+        f"{selection.selector} --json` and follow its `next_command` field."
     )
     out.append(
         "- Prefer `--json` on commands that support it instead of parsing "
@@ -2273,7 +2450,12 @@ def _agent_instructions_text(project_root: Path, config: ProjectConfig) -> str:
     return "\n".join(out) + "\n"
 
 
-def agent_instructions(project_root: Path, *, json_output: bool = False) -> int:
+def agent_instructions(
+    project_root: Path,
+    *,
+    json_output: bool = False,
+    selection: _Selection | None = None,
+) -> int:
     """Print a deterministic agent-rules snippet for AGENTS.md/CLAUDE.md.
 
     Read-only: the snippet is derived from the project's `.docsystem.toml`
@@ -2281,6 +2463,10 @@ def agent_instructions(project_root: Path, *, json_output: bool = False) -> int:
     `docs/setup-guide.md`, so a pasted snippet cannot silently drift from the
     project's actually configured areas and identifiers. Works even when the
     documentation root itself is missing, since only configuration is read.
+
+    Under a selected source the snippet addresses the project as
+    `--source NAME`, so a snippet pasted into a committed AGENTS.md never
+    carries the private workspace path it was generated from.
     """
     try:
         config = load_config(project_root)
@@ -2288,12 +2474,44 @@ def agent_instructions(project_root: Path, *, json_output: bool = False) -> int:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
 
-    text = _agent_instructions_text(project_root, config)
+    text = _agent_instructions_text(selection or _Selection(project_root), config)
     if json_output:
         _print_json({"text": text})
         return 0
     sys.stdout.write(text)
     return 0
+
+
+def _add_source_options(
+    command_parser: argparse.ArgumentParser, *, short_flag: bool = True
+) -> None:
+    """Add the workspace selection flags shared by every project command.
+
+    `--workspace-source` is the spelling every project command accepts.
+    `--source` is the short alias for the same option, added everywhere it is
+    free; `report draft` already owns `--source` for the reporting host, whose
+    existing meaning is preserved rather than overloaded.
+    """
+
+    names = ["--source", "--workspace-source"] if short_flag else ["--workspace-source"]
+    command_parser.add_argument(
+        *names,
+        dest="workspace_source",
+        metavar="NAME",
+        help=(
+            "Run against the named source from the local workspace registry "
+            "instead of the positional project root."
+        ),
+    )
+    command_parser.add_argument(
+        "--workspace",
+        metavar="PATH",
+        type=Path,
+        help=(
+            "Workspace root holding workspace.toml. Overrides "
+            "DOCSYSTEM_WORKSPACE and .docsystem.local.toml."
+        ),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2308,6 +2526,8 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         command_parser = subparsers.add_parser(command, help=help_text)
         command_parser.add_argument("project", nargs="?", type=Path, default=Path.cwd())
+        if command != "init":
+            _add_source_options(command_parser)
         if command == "catalog":
             command_parser.add_argument(
                 "--explain",
@@ -2393,11 +2613,13 @@ def build_parser() -> argparse.ArgumentParser:
     impact_parser.add_argument("document_id")
     impact_parser.add_argument("project", nargs="?", type=Path, default=Path.cwd())
 
-    report_parser = subparsers.add_parser(
+    migration_report_parser = subparsers.add_parser(
         "migration-report", help="Report legacy relation adoption mappings."
     )
-    report_parser.add_argument("project", nargs="?", type=Path, default=Path.cwd())
-    report_parser.add_argument(
+    migration_report_parser.add_argument(
+        "project", nargs="?", type=Path, default=Path.cwd()
+    )
+    migration_report_parser.add_argument(
         "--json",
         action="store_true",
         dest="json_output",
@@ -2495,26 +2717,95 @@ def build_parser() -> argparse.ArgumentParser:
         dest="json_output",
         help="Print a deterministic JSON object instead of the Markdown snippet.",
     )
+
+    workspace_parser = subparsers.add_parser(
+        "workspace",
+        help="Inspect the local workspace registry of selectable sources.",
+    )
+    workspace_subparsers = workspace_parser.add_subparsers(
+        dest="workspace_command", required=True
+    )
+    for workspace_command, workspace_help in (
+        ("list", "List registered sources, their visibility and availability."),
+        ("doctor", "Report whether every registered source is selectable."),
+    ):
+        command_parser = workspace_subparsers.add_parser(
+            workspace_command, help=workspace_help
+        )
+        command_parser.add_argument(
+            "project", nargs="?", type=Path, default=Path.cwd()
+        )
+        command_parser.add_argument(
+            "--workspace",
+            metavar="PATH",
+            type=Path,
+            help=(
+                "Workspace root holding workspace.toml. Overrides "
+                "DOCSYSTEM_WORKSPACE and .docsystem.local.toml."
+            ),
+        )
+        command_parser.add_argument(
+            "--json",
+            action="store_true",
+            dest="json_output",
+            help="Print a deterministic JSON object instead of tab-separated text.",
+        )
+
+    for command_parser in (
+        read_parser,
+        dependencies_parser,
+        context_parser,
+        impact_parser,
+        migration_report_parser,
+        migrate_parser,
+        readiness_parser,
+        index_parser,
+        changes_parser,
+        finish_parser,
+        agent_instructions_parser,
+    ):
+        _add_source_options(command_parser)
+    _add_source_options(draft_parser, short_flag=False)
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
+    if args.command == "workspace":
+        if args.workspace_command == "list":
+            return workspace_list(
+                args.project,
+                workspace_option=args.workspace,
+                json_output=args.json_output,
+            )
+        if args.workspace_command == "doctor":
+            return workspace_doctor(
+                args.project,
+                workspace_option=args.workspace,
+                json_output=args.json_output,
+            )
+        raise AssertionError(f"unknown workspace command: {args.workspace_command}")
+
+    selection = _resolve_selection(args)
+    if selection is None:
+        return 1
+    project = selection.project_root
+
     if args.command == "read":
         return read_document(
-            args.project,
+            project,
             args.document_id,
             anchor=args.anchor,
             navigation=args.navigation,
             list_sections=args.list_sections,
         )
     if args.command == "dependencies":
-        return dependencies(args.project, args.document_id, reverse=args.reverse)
+        return dependencies(project, args.document_id, reverse=args.reverse)
     if args.command == "catalog":
-        return catalog(args.project, explain=args.explain, json_output=args.json_output)
+        return catalog(project, explain=args.explain, json_output=args.json_output)
     if args.command == "context":
         return context(
-            args.project,
+            project,
             args.document_id,
             anchor=args.anchor,
             depth=args.depth,
@@ -2526,48 +2817,53 @@ def main() -> int:
             since=args.since,
         )
     if args.command == "impact":
-        return impact(args.project, args.document_id)
+        return impact(project, args.document_id)
     if args.command == "migration-report":
-        return migration_report(args.project, json_output=args.json_output)
+        return migration_report(project, json_output=args.json_output)
     if args.command == "migrate":
-        return migrate(args.project, apply=args.apply)
+        return migrate(project, apply=args.apply)
     if args.command == "readiness":
-        return readiness(args.project, json_output=args.json_output)
+        return readiness(
+            project, json_output=args.json_output, selection=selection
+        )
     if args.command == "index":
-        return index_projection(args.project, write=args.write)
+        return index_projection(project, write=args.write)
     if args.command == "changes":
-        return changes(args.project, json_output=args.json_output)
+        return changes(project, json_output=args.json_output)
     if args.command == "finish":
         return finish(
-            args.project,
+            project,
             args.document_id,
             depth=args.depth,
             include_related=args.include_related,
             json_output=args.json_output,
         )
     if args.command == "agent-instructions":
-        return agent_instructions(args.project, json_output=args.json_output)
+        return agent_instructions(
+            project, json_output=args.json_output, selection=selection
+        )
     if args.command == "report":
         if args.report_command == "draft":
             return report_draft(
-                args.project,
+                project,
                 project_name=args.project_name,
                 report_type=args.report_type,
                 source=args.source,
                 component=args.component,
                 output=args.output,
+                selection=selection,
             )
         raise AssertionError(f"unknown report command: {args.report_command}")
     if args.command == "doctor":
         return doctor(
-            args.project, verbose_adoption=args.verbose_adoption
+            project, verbose_adoption=args.verbose_adoption
         )
     if args.command == "validate":
         return validate(
-            args.project, verbose_adoption=args.verbose_adoption
+            project, verbose_adoption=args.verbose_adoption
         )
     handlers = {
         "init": initialize,
         "show-config": show_config,
     }
-    return handlers[args.command](args.project)
+    return handlers[args.command](project)
