@@ -250,6 +250,10 @@ docsystem context DOC-001 . --since 0a1b2c3d4e5f
 docsystem impact DOC-001 .
 docsystem graph-health .
 docsystem graph-health . --json
+docsystem criteria .
+docsystem criteria . --json
+docsystem workstream WS-001 . --record workstream-record.json
+docsystem workstream WS-001 . --record workstream-record.json --json
 docsystem migration-report .
 docsystem migration-report . --json
 docsystem readiness .
@@ -257,6 +261,7 @@ docsystem readiness . --json
 docsystem finish DOC-001 .
 docsystem finish DOC-001 . --json
 docsystem finish DOC-001 . --context-expansion material-gap --context-gap-report drafted
+docsystem finish WS-001 . --workstream-record workstream-record.json --json
 docsystem report draft . --project-name "My Project" --type adoption-finding --source codex
 docsystem report context-gap . --project-name "My Project" --type adoption-finding --source codex --reason missing_dependency --initial DOC-001#summary --expanded DOC-002#constraints --impact decision
 docsystem migrate .
@@ -478,7 +483,15 @@ cache.
 `finish` produces a compact handoff packet for returning a workstream or
 document-focused task to its parent context. It summarizes included context,
 omitted H2 sections, migration boundaries and stale versus historical snapshot
-pins. `report draft` produces a privacy-safe GitHub issue body for adopter
+pins. A project can opt into a stricter, versioned completion contract with
+`workstreams.criteria`, inspect it with `criteria`, validate a bounded JSON
+lifecycle/evidence record with `workstream` and require that record through
+`finish --workstream-record`. The strict gate preserves corrective attempts,
+requires configured check/review/change/omission/risk/return evidence and
+fails without a handoff when the completion claim is incomplete. See
+[bounded workstream evidence](docs/workstream-evidence.md).
+
+`report draft` produces a privacy-safe GitHub issue body for adopter
 runtime reports, adoption findings, core bugs or documentation pattern
 requests; it is read-only and leaves expected/actual/requested-action fields
 for the reporter to fill in.
@@ -506,8 +519,9 @@ only project configuration and works even when the documentation root itself
 is missing, so the pasted snippet can never drift from
 `docs/setup-guide.md` Step 7 by hand-copying.
 
-`readiness`, `migration-report`, `catalog --explain`, `changes`, `context` and
-`agent-instructions` accept `--json` and print one deterministic JSON value
+`readiness`, `migration-report`, `catalog --explain`, `changes`, `context`,
+`criteria`, `workstream` and `agent-instructions` accept `--json` and print one
+deterministic JSON value
 (sorted keys, stable field names) instead of text, carrying the same
 information the text form prints plus what it sends to stderr, so a machine
 client never has to parse human prose. Every `--json` root is an object

@@ -17,6 +17,10 @@ MAINTENANCE_ROLES = frozenset(
 )
 MAINTENANCE_TARGET_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 CONTEXT_VIEW_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
+WORKSTREAM_CRITERION_ID_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+WORKSTREAM_EVIDENCE_FIELDS = frozenset(
+    {"changes", "checks", "review", "omissions", "risks", "returns"}
+)
 CONTEXT_VIEW_RELATIONS = frozenset(
     {"derived_from", "depends_on", "validated_against", "related", "supersedes"}
 )
@@ -56,6 +60,8 @@ snapshot_rules = []
 [graph_health]
 required_metadata = []
 report_orphans = false
+
+[workstreams]
 
 [projection]
 format = "sharded-json"
@@ -131,6 +137,22 @@ class GraphHealthPolicy:
 
 
 @dataclass(frozen=True)
+class WorkstreamCriterion:
+    """One versioned, project-authored completion evidence policy."""
+
+    criterion_id: str
+    revision: int
+    required_sections: tuple[str, ...]
+    required_evidence: tuple[str, ...]
+    max_attempts: int
+    safe_fallback: str
+
+    @property
+    def reference(self) -> str:
+        return f"{self.criterion_id}@{self.revision}"
+
+
+@dataclass(frozen=True)
 class ProjectConfig:
     project_root: Path
     documentation_root: Path
@@ -147,6 +169,7 @@ class ProjectConfig:
     graph_health_policy: GraphHealthPolicy = GraphHealthPolicy()
     maintenance_targets: tuple[MaintenanceTarget, ...] = ()
     context_views: tuple[ContextView, ...] = ()
+    workstream_criteria: tuple[WorkstreamCriterion, ...] = ()
 
 
 def _relative_path(value: object, field: str) -> PurePosixPath:
@@ -439,6 +462,104 @@ def _context_views(raw: object) -> tuple[ContextView, ...]:
     return tuple(sorted(result, key=lambda item: (item.tier, item.name)))
 
 
+def _workstream_criteria(raw: object) -> tuple[WorkstreamCriterion, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, dict):
+        raise ValueError("workstreams must be a table")
+    unknown = set(raw) - {"criteria"}
+    if unknown:
+        raise ValueError(
+            "workstreams has unknown key(s): " + ", ".join(sorted(unknown))
+        )
+    criteria = raw.get("criteria", [])
+    if not isinstance(criteria, list):
+        raise ValueError("workstreams.criteria must be a list of tables")
+
+    result: list[WorkstreamCriterion] = []
+    seen: set[tuple[str, int]] = set()
+    allowed = {
+        "id",
+        "revision",
+        "required_sections",
+        "required_evidence",
+        "max_attempts",
+        "safe_fallback",
+    }
+    for index, entry in enumerate(criteria):
+        field = f"workstreams.criteria[{index}]"
+        if not isinstance(entry, dict):
+            raise ValueError(f"{field} must be a table")
+        missing = allowed - set(entry)
+        unknown_entry = set(entry) - allowed
+        if missing:
+            raise ValueError(
+                f"{field} is missing required key(s): {', '.join(sorted(missing))}"
+            )
+        if unknown_entry:
+            raise ValueError(
+                f"{field} has unknown key(s): {', '.join(sorted(unknown_entry))}"
+            )
+        criterion_id = entry["id"]
+        if not isinstance(criterion_id, str) or not WORKSTREAM_CRITERION_ID_PATTERN.fullmatch(
+            criterion_id
+        ):
+            raise ValueError(f"{field}.id has an invalid criterion ID")
+        revision = entry["revision"]
+        if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
+            raise ValueError(f"{field}.revision must be a positive integer")
+        key = (criterion_id, revision)
+        if key in seen:
+            raise ValueError(f"workstream criterion is duplicated: {criterion_id}@{revision}")
+        seen.add(key)
+
+        sections = entry["required_sections"]
+        if not isinstance(sections, list) or any(
+            not isinstance(item, str) or not is_valid_anchor(item) for item in sections
+        ):
+            raise ValueError(
+                f"{field}.required_sections must contain supported stable anchors"
+            )
+        if len(set(sections)) != len(sections):
+            raise ValueError(f"{field}.required_sections must be unique")
+
+        evidence = entry["required_evidence"]
+        if not isinstance(evidence, list) or any(
+            not isinstance(item, str) or item not in WORKSTREAM_EVIDENCE_FIELDS
+            for item in evidence
+        ):
+            raise ValueError(
+                f"{field}.required_evidence may contain only: "
+                + ", ".join(sorted(WORKSTREAM_EVIDENCE_FIELDS))
+            )
+        if not evidence:
+            raise ValueError(f"{field}.required_evidence must not be empty")
+        if len(set(evidence)) != len(evidence):
+            raise ValueError(f"{field}.required_evidence must be unique")
+
+        max_attempts = entry["max_attempts"]
+        if (
+            not isinstance(max_attempts, int)
+            or isinstance(max_attempts, bool)
+            or not 1 <= max_attempts <= 20
+        ):
+            raise ValueError(f"{field}.max_attempts must be between 1 and 20")
+        safe_fallback = entry["safe_fallback"]
+        if safe_fallback != "blocked":
+            raise ValueError(f"{field}.safe_fallback must be 'blocked'")
+        result.append(
+            WorkstreamCriterion(
+                criterion_id,
+                revision,
+                tuple(sections),
+                tuple(evidence),
+                max_attempts,
+                safe_fallback,
+            )
+        )
+    return tuple(sorted(result, key=lambda item: (item.criterion_id, item.revision)))
+
+
 def _maintenance_id(value: object, field: str, prefixes: frozenset[str]) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{field} must be a stable document ID")
@@ -598,6 +719,7 @@ def load_config(project_root: Path) -> ProjectConfig:
     )
     context_views = _context_views(raw.get("context"))
     graph_health_policy = _graph_health_policy(raw.get("graph_health"))
+    workstream_criteria = _workstream_criteria(raw.get("workstreams"))
 
     projection_format = projection.get("format")
     if projection_format != "sharded-json":
@@ -622,4 +744,5 @@ def load_config(project_root: Path) -> ProjectConfig:
         graph_health_policy=graph_health_policy,
         maintenance_targets=maintenance_targets,
         context_views=context_views,
+        workstream_criteria=workstream_criteria,
     )

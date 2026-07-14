@@ -40,6 +40,7 @@ from docsystem.config import (
     DEFAULT_CONFIG,
     ContextView,
     ProjectConfig,
+    WorkstreamCriterion,
     is_historical_snapshot,
     load_config,
 )
@@ -113,6 +114,13 @@ from docsystem.workspace import (
     resolve_source_root,
     resolve_workspace,
     source_statuses,
+)
+from docsystem.workstream import (
+    WorkstreamError,
+    WorkstreamEvaluation,
+    WorkstreamRecord,
+    evaluate_record,
+    load_record,
 )
 
 # Version of every `--json` root object. Bump only on a breaking change to
@@ -3266,6 +3274,198 @@ def report_draft(
     return _write_text_or_stdout(text, output)
 
 
+def _criterion_json(criterion: WorkstreamCriterion) -> dict[str, object]:
+    return {
+        "id": criterion.criterion_id,
+        "revision": criterion.revision,
+        "reference": criterion.reference,
+        "required_sections": list(criterion.required_sections),
+        "required_evidence": list(criterion.required_evidence),
+        "max_attempts": criterion.max_attempts,
+        "safe_fallback": criterion.safe_fallback,
+    }
+
+
+def criteria_registry(project_root: Path, *, json_output: bool = False) -> int:
+    """Inspect project-authored, versioned workstream completion criteria."""
+
+    try:
+        config = load_config(project_root)
+    except ValueError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    if json_output:
+        _print_json(
+            {
+                "criteria": [
+                    _criterion_json(criterion)
+                    for criterion in config.workstream_criteria
+                ]
+            }
+        )
+        return 0
+    for criterion in config.workstream_criteria:
+        print(
+            f"{criterion.reference}\t{criterion.max_attempts}\t"
+            f"{criterion.safe_fallback}\t"
+            f"{','.join(criterion.required_sections) or '-'}\t"
+            f"{','.join(criterion.required_evidence)}"
+        )
+    return 0
+
+
+def _criterion_by_reference(
+    config: ProjectConfig, reference: str
+) -> WorkstreamCriterion:
+    matches = [
+        criterion
+        for criterion in config.workstream_criteria
+        if criterion.reference == reference
+    ]
+    if not matches:
+        raise WorkstreamError(f"workstream criterion not found: {reference}")
+    return matches[0]
+
+
+def _validate_evidence_address(
+    catalog_value: MarkdownCatalog,
+    raw: str,
+    *,
+    field: str,
+) -> None:
+    try:
+        address = parse_address(raw)
+        document = find_document(catalog_value, address.document_id)
+    except ValueError as error:
+        raise WorkstreamError(
+            f"{field} has invalid address {raw!r}: {error}"
+        ) from error
+    if address.anchor is not None and all(
+        section.anchor != address.anchor for section in document.sections
+    ):
+        raise WorkstreamError(
+            f"{field} has unknown section address: {address.text}"
+        )
+
+
+def _evaluate_workstream_file(
+    config: ProjectConfig,
+    document_id: str,
+    record_path: Path,
+) -> tuple[WorkstreamRecord, WorkstreamEvaluation]:
+    catalog_value = build_catalog(config)
+    blocking = [
+        issue
+        for issue in validate_catalog(catalog_value, config)
+        if issue.severity != "warning"
+    ]
+    if blocking:
+        first = blocking[0]
+        raise WorkstreamError(
+            f"catalog validation blocks workstream evidence: "
+            f"{first.path.as_posix()}: {first.message}"
+        )
+    document = find_document(catalog_value, document_id)
+    if document.metadata is None or document.metadata.document_type != "workstream":
+        raise WorkstreamError(
+            f"document {document_id} must declare metadata.type 'workstream'"
+        )
+    record = load_record(record_path)
+    if record.workstream_id != document_id:
+        raise WorkstreamError(
+            f"record workstream_id {record.workstream_id!r} does not match "
+            f"{document_id!r}"
+        )
+    criterion = _criterion_by_reference(config, record.criterion)
+    evaluation = evaluate_record(
+        record,
+        criterion,
+        section_anchors=frozenset(section.anchor for section in document.sections),
+    )
+    for index, address in enumerate(record.evidence.changes):
+        _validate_evidence_address(
+            catalog_value, address, field=f"evidence.changes[{index}]"
+        )
+    for index, address in enumerate(record.evidence.returns):
+        _validate_evidence_address(
+            catalog_value, address, field=f"evidence.returns[{index}]"
+        )
+    return record, evaluation
+
+
+def _workstream_evaluation_json(
+    record: WorkstreamRecord,
+    evaluation: WorkstreamEvaluation,
+) -> dict[str, object]:
+    return {
+        "workstream_id": evaluation.workstream_id,
+        "criterion": evaluation.criterion,
+        "final_state": evaluation.final_state,
+        "attempts": evaluation.attempts,
+        "max_attempts": evaluation.max_attempts,
+        "findings": evaluation.findings,
+        "resolved_findings": evaluation.resolved_findings,
+        "ready_to_finish": evaluation.ready_to_finish,
+        "evidence": {
+            "changes": list(record.evidence.changes),
+            "checks": [
+                {
+                    "name": check.name,
+                    "status": check.status,
+                    "evidence": check.evidence,
+                }
+                for check in record.evidence.checks
+            ],
+            "review": (
+                {
+                    "status": record.evidence.review.status,
+                    "independent": record.evidence.review.independent,
+                    "reviewer": record.evidence.review.reviewer,
+                    "evidence": record.evidence.review.evidence,
+                }
+                if record.evidence.review is not None
+                else None
+            ),
+            "omissions": list(record.evidence.omissions),
+            "risks": list(record.evidence.risks),
+            "returns": list(record.evidence.returns),
+        },
+    }
+
+
+def workstream_status(
+    project_root: Path,
+    document_id: str,
+    *,
+    record_path: Path,
+    json_output: bool = False,
+) -> int:
+    """Validate one bounded workstream record without changing source or state."""
+
+    try:
+        config = load_config(project_root)
+        record, evaluation = _evaluate_workstream_file(
+            config, document_id, record_path
+        )
+    except (OSError, ValueError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    if json_output:
+        _print_json(_workstream_evaluation_json(record, evaluation))
+        return 0
+    print(f"# Workstream evidence: {evaluation.workstream_id}")
+    print()
+    print(f"- Criterion: {evaluation.criterion}")
+    print(f"- Final state: {evaluation.final_state}")
+    print(f"- Attempts: {evaluation.attempts}/{evaluation.max_attempts}")
+    print(
+        f"- Findings: {evaluation.findings}; "
+        f"resolved: {evaluation.resolved_findings}"
+    )
+    print(f"- Ready to finish: {'yes' if evaluation.ready_to_finish else 'no'}")
+    return 0
+
+
 def finish(
     project_root: Path,
     document_id: str,
@@ -3275,6 +3475,7 @@ def finish(
     json_output: bool = False,
     context_expansion: str = "not-observed",
     context_gap_report: str = "not-needed",
+    workstream_record: Path | None = None,
 ) -> int:
     if context_expansion not in CONTEXT_EXPANSION_STATES:
         print(
@@ -3300,8 +3501,17 @@ def finish(
             file=sys.stderr,
         )
         return 1
+    workstream_result: tuple[WorkstreamRecord, WorkstreamEvaluation] | None = None
     try:
         config = load_config(project_root)
+        if workstream_record is not None:
+            workstream_result = _evaluate_workstream_file(
+                config, document_id, workstream_record
+            )
+            if not workstream_result[1].ready_to_finish:
+                raise WorkstreamError(
+                    "workstream record is valid but final state is not completed"
+                )
         views, _, catalog_value = _load_views(config)
         if catalog_value is not None:
             find_document(catalog_value, document_id)
@@ -3373,6 +3583,8 @@ def finish(
                 "classification": context_expansion,
                 "report_state": context_gap_report,
             }
+        if workstream_result is not None:
+            payload["workstream"] = _workstream_evaluation_json(*workstream_result)
         _print_json(payload)
         return 0
 
@@ -3431,6 +3643,47 @@ def finish(
         print()
         print(f"- Classification: {context_expansion}")
         print(f"- Report state: {context_gap_report}")
+    if workstream_result is not None:
+        record, evaluation = workstream_result
+        print()
+        print("## Verified workstream evidence")
+        print()
+        print(f"- Criterion: {evaluation.criterion}")
+        print(f"- Lifecycle: {evaluation.final_state}")
+        print(f"- Attempts: {evaluation.attempts}/{evaluation.max_attempts}")
+        print(
+            f"- Findings: {evaluation.findings}; "
+            f"resolved: {evaluation.resolved_findings}"
+        )
+        print(
+            "- Changes: "
+            + (", ".join(record.evidence.changes) or "none")
+        )
+        print(
+            "- Checks: "
+            + (
+                ", ".join(
+                    f"{check.name}={check.status}"
+                    for check in record.evidence.checks
+                )
+                or "none"
+            )
+        )
+        if record.evidence.review is not None:
+            print(
+                f"- Review: {record.evidence.review.status}; "
+                f"independent={str(record.evidence.review.independent).lower()}; "
+                f"reviewer={record.evidence.review.reviewer}"
+            )
+        print(
+            "- Omissions: "
+            + (", ".join(record.evidence.omissions) or "none declared")
+        )
+        print("- Risks: " + (", ".join(record.evidence.risks) or "none declared"))
+        print(
+            "- Returns to: "
+            + (", ".join(record.evidence.returns) or "none")
+        )
     print()
     print("## Return protocol")
     print()
@@ -4879,6 +5132,14 @@ def show_config(project_root: Path) -> int:
             f"direction:{view.direction},depth:{view.depth},"
             f"relations:{','.join(view.relations) or '-'},layers:{','.join(view.layers)}"
         )
+    for criterion in config.workstream_criteria:
+        print(
+            f"workstreams.criterion.{criterion.reference}="
+            f"sections:{','.join(criterion.required_sections) or '-'},"
+            f"evidence:{','.join(criterion.required_evidence)},"
+            f"max_attempts:{criterion.max_attempts},"
+            f"fallback:{criterion.safe_fallback}"
+        )
     print(f"projection.format={config.projection_format}")
     print(f"projection.keep_generations={config.keep_generations}")
     return 0
@@ -4910,6 +5171,16 @@ def _agent_instructions_text(selection: _Selection, config: ProjectConfig) -> st
                 f"{view.direction}, depth {view.depth}, authored relations "
                 f"{','.join(view.relations) or 'none'}"
             )
+    if config.workstream_criteria:
+        out.append("")
+        out.append("Configured workstream completion criteria:")
+        out.append("")
+        for criterion in config.workstream_criteria:
+            out.append(
+                f"- {criterion.reference}: max {criterion.max_attempts} attempt(s), "
+                f"fallback {criterion.safe_fallback}, evidence "
+                f"{','.join(criterion.required_evidence)}"
+            )
     out.append("")
     out.append("Agent rules:")
     out.append("")
@@ -4940,6 +5211,12 @@ def _agent_instructions_text(selection: _Selection, config: ProjectConfig) -> st
         "graph diagnosis, not as mandatory overhead for every edit; metrics are "
         "facts and configured signals remain advisory."
     )
+    if config.workstream_criteria:
+        out.append(
+            "- For governed workstreams, inspect `docsystem criteria PROJECT "
+            "--json`, validate the bounded record with `docsystem workstream`, "
+            "and never claim completion unless `ready_to_finish` is true."
+        )
     if config.context_views:
         out.append(
             "- Prefer the lowest configured `docsystem context --view NAME` tier "
@@ -5232,6 +5509,42 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print a deterministic JSON object instead of Markdown.",
     )
 
+    criteria_parser = subparsers.add_parser(
+        "criteria",
+        help="List versioned, project-authored workstream completion criteria.",
+    )
+    criteria_parser.add_argument(
+        "project", nargs="?", type=Path, default=Path.cwd()
+    )
+    criteria_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print a deterministic JSON object instead of tab-separated text.",
+    )
+
+    workstream_parser = subparsers.add_parser(
+        "workstream",
+        help="Validate a bounded workstream lifecycle and evidence record.",
+    )
+    workstream_parser.add_argument("document_id")
+    workstream_parser.add_argument(
+        "project", nargs="?", type=Path, default=Path.cwd()
+    )
+    workstream_parser.add_argument(
+        "--record",
+        required=True,
+        type=Path,
+        dest="record_path",
+        help="Read-only path to the bounded JSON lifecycle/evidence record.",
+    )
+    workstream_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print a deterministic JSON object instead of Markdown.",
+    )
+
     migration_report_parser = subparsers.add_parser(
         "migration-report", help="Report legacy relation adoption mappings."
     )
@@ -5304,6 +5617,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         dest="json_output",
         help="Print a deterministic JSON object instead of the Markdown packet.",
+    )
+    finish_parser.add_argument(
+        "--workstream-record",
+        type=Path,
+        help=(
+            "Require a completed, criteria-verified workstream record and include "
+            "its bounded evidence in the handoff."
+        ),
     )
 
     report_parser = subparsers.add_parser(
@@ -5424,6 +5745,8 @@ def build_parser() -> argparse.ArgumentParser:
         context_parser,
         impact_parser,
         graph_health_parser,
+        criteria_parser,
+        workstream_parser,
         migration_report_parser,
         migrate_parser,
         readiness_parser,
@@ -5524,6 +5847,15 @@ def main() -> int:
         return impact(project, args.document_id)
     if args.command == "graph-health":
         return graph_health(project, json_output=args.json_output)
+    if args.command == "criteria":
+        return criteria_registry(project, json_output=args.json_output)
+    if args.command == "workstream":
+        return workstream_status(
+            project,
+            args.document_id,
+            record_path=args.record_path,
+            json_output=args.json_output,
+        )
     if args.command == "migration-report":
         return migration_report(project, json_output=args.json_output)
     if args.command == "migrate":
@@ -5545,6 +5877,7 @@ def main() -> int:
             json_output=args.json_output,
             context_expansion=args.context_expansion,
             context_gap_report=args.context_gap_report,
+            workstream_record=args.workstream_record,
         )
     if args.command == "agent-instructions":
         return agent_instructions(

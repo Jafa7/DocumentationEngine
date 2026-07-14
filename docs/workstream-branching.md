@@ -67,6 +67,10 @@ Recommended sections:
 - current artifacts;
 - review gate.
 
+Use explicit canonical anchors for sections referenced by project completion
+criteria. The reusable template does this so a heading wording improvement
+does not silently change the evidence address.
+
 ## Return protocol
 
 The return protocol is the handoff contract. It should say what the branch must
@@ -92,3 +96,9 @@ needed for the current task.
 
 Good mandates are not bureaucracy; they are a map label: "this tunnel starts
 here, carries this context, and comes back there."
+
+For long-running or higher-risk branches, the optional
+[bounded workstream evidence](workstream-evidence.md) contract validates
+lifecycle transitions, corrective attempts, checks, independent review and the
+final return without requiring chat memory. Small tasks can keep using this
+lightweight mandate alone.

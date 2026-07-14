@@ -75,6 +75,15 @@ mandate before implementation work. See
 [`docs/workstream-branching.md`](workstream-branching.md) and the reusable
 template in [`examples/workstream-branch-template.md`](../examples/workstream-branch-template.md).
 
+For a long-running or higher-risk workstream, inspect project-authored
+completion policy with `docsystem criteria PROJECT --json`. If the project
+uses a bounded record, validate it with `docsystem workstream ID PROJECT
+--record RECORD --json` before claiming completion and pass the same record to
+`finish --workstream-record`. A valid in-progress record is not completion:
+`ready_to_finish` must be true. Never remove failed attempts or findings to
+make the record pass; correction lineage is evidence. See
+[bounded workstream evidence](workstream-evidence.md).
+
 When installing or adopting Documentation Engine for a project that will keep
 important state outside git, the agent must ask the user where backups should
 be stored and then write that choice only to local ignored policy, such as

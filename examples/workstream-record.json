@@ -1,0 +1,96 @@
+{
+  "criterion": "verified-delivery@1",
+  "evidence": {
+    "changes": [
+      "WS-001#mandate"
+    ],
+    "checks": [
+      {
+        "evidence": "ci-run-184",
+        "name": "project-gate",
+        "status": "passed"
+      }
+    ],
+    "omissions": [],
+    "returns": [
+      "DOC-020#review-gate"
+    ],
+    "review": {
+      "evidence": "review-WS-001-attempt-2",
+      "independent": true,
+      "reviewer": "review-agent",
+      "status": "accepted"
+    },
+    "risks": []
+  },
+  "findings": [
+    {
+      "attempt": 1,
+      "correction": "Preserve the parent compatibility contract.",
+      "evidence": "review-WS-001-attempt-1",
+      "id": "F-01",
+      "resolved_in_attempt": 2,
+      "severity": "medium",
+      "target": "WS-001#mandate"
+    }
+  ],
+  "history": [
+    {
+      "attempt": 1,
+      "evidence": "WS-001#mandate",
+      "state": "mandated"
+    },
+    {
+      "attempt": 1,
+      "evidence": "change-plan-WS-001",
+      "state": "planned"
+    },
+    {
+      "attempt": 1,
+      "evidence": "patch-WS-001-attempt-1",
+      "state": "implementing"
+    },
+    {
+      "attempt": 1,
+      "evidence": "ci-run-183",
+      "state": "validating"
+    },
+    {
+      "attempt": 1,
+      "evidence": "review-WS-001-attempt-1",
+      "state": "reviewing"
+    },
+    {
+      "attempt": 1,
+      "evidence": "F-01",
+      "state": "correcting"
+    },
+    {
+      "attempt": 2,
+      "evidence": "ci-run-184",
+      "state": "validating"
+    },
+    {
+      "attempt": 2,
+      "evidence": "review-WS-001-attempt-2",
+      "state": "reviewing"
+    },
+    {
+      "attempt": 2,
+      "evidence": "review-WS-001-attempt-2",
+      "state": "accepted"
+    },
+    {
+      "attempt": 2,
+      "evidence": "finish-WS-001",
+      "state": "finishing"
+    },
+    {
+      "attempt": 2,
+      "evidence": "finish-WS-001",
+      "state": "completed"
+    }
+  ],
+  "schema_version": 1,
+  "workstream_id": "WS-001"
+}

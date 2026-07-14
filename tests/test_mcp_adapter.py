@@ -193,6 +193,52 @@ def test_workspace_arguments_are_omitted_exactly_when_not_requested(
     ]
 
 
+def test_workstream_tools_delegate_to_read_only_json_cli(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def invoke(arguments, *, allow_failure_payload=False):
+        calls.append(arguments)
+        return '{"schema_version": 1}', ""
+
+    monkeypatch.setattr(mcp_server, "_invoke", invoke)
+
+    assert mcp_server.criteria("/project") == {"schema_version": 1}
+    assert calls.pop() == ["criteria", "/project", "--json"]
+
+    assert mcp_server.workstream(
+        "/project", "DOC-002", "/tmp/record.json"
+    ) == {"schema_version": 1}
+    assert calls.pop() == [
+        "workstream",
+        "DOC-002",
+        "/project",
+        "--record",
+        "/tmp/record.json",
+        "--json",
+    ]
+
+    assert mcp_server.finish_handoff(
+        "/project",
+        "DOC-002",
+        workstream_record="/tmp/record.json",
+        depth=2,
+        include_related=True,
+    ) == {"schema_version": 1}
+    assert calls.pop() == [
+        "finish",
+        "DOC-002",
+        "/project",
+        "--depth",
+        "2",
+        "--json",
+        "--include-related",
+        "--workstream-record",
+        "/tmp/record.json",
+    ]
+
+
 def test_cli_errors_surface_as_exceptions(tmp_path: Path) -> None:
     project = adapter_project(tmp_path)
 

@@ -183,6 +183,68 @@ def changes(
     return _json_tool(arguments)
 
 
+def criteria(
+    project: str, source: str | None = None, workspace: str | None = None
+) -> dict:
+    """List versioned workstream completion criteria authored by the project."""
+
+    arguments = [
+        "criteria",
+        project,
+        "--json",
+        *_selection_arguments(source, workspace),
+    ]
+    return _json_tool(arguments)
+
+
+def workstream(
+    project: str,
+    document_id: str,
+    record: str,
+    source: str | None = None,
+    workspace: str | None = None,
+) -> dict:
+    """Validate one bounded lifecycle/evidence record without modifying it."""
+
+    arguments = [
+        "workstream",
+        document_id,
+        project,
+        "--record",
+        record,
+        "--json",
+        *_selection_arguments(source, workspace),
+    ]
+    return _json_tool(arguments)
+
+
+def finish_handoff(
+    project: str,
+    document_id: str,
+    workstream_record: str | None = None,
+    depth: int = 1,
+    include_related: bool = False,
+    source: str | None = None,
+    workspace: str | None = None,
+) -> dict:
+    """Build a finish packet, optionally requiring verified workstream evidence."""
+
+    arguments = [
+        "finish",
+        document_id,
+        project,
+        "--depth",
+        str(depth),
+        "--json",
+    ]
+    if include_related:
+        arguments.append("--include-related")
+    if workstream_record is not None:
+        arguments.extend(["--workstream-record", workstream_record])
+    arguments.extend(_selection_arguments(source, workspace))
+    return _json_tool(arguments)
+
+
 def workspace_list(project: str, workspace: str | None = None) -> dict:
     """List the selectable sources in the local workspace registry.
 
@@ -426,6 +488,9 @@ _TOOLS = (
     catalog,
     migration_report,
     changes,
+    criteria,
+    workstream,
+    finish_handoff,
     context,
     read_document,
     read_document_packet,

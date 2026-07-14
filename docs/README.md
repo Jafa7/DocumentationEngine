@@ -23,6 +23,8 @@ link to that owner rather than repeat commands or policy.
   project-authored advisory thresholds.
 - [Compact context delivery](context-delivery.md) — lossless range
   deduplication, inclusion reasons and diagnostics drill-down.
+- [Bounded workstream evidence](workstream-evidence.md) — versioned completion
+  criteria, corrective lineage and fail-closed finish evidence.
 
 ## Integrations and project structure
 

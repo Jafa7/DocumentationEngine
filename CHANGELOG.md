@@ -2,6 +2,15 @@
 
 All notable changes to Documentation Engine are documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Versioned, project-authored workstream completion criteria.
+- Read-only `criteria` and `workstream` commands for deterministic lifecycle,
+  correction and bounded evidence validation.
+- Optional `finish --workstream-record` gate and matching read-only MCP tools.
+
 ## [0.2.0] - 2026-07-13
 
 ### Highlights

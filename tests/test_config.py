@@ -19,6 +19,111 @@ def test_default_config_loads(tmp_path: Path) -> None:
     assert config.graph_health_policy.report_orphans is False
     assert config.projection_format == "sharded-json"
     assert config.context_views == ()
+    assert config.workstream_criteria == ()
+
+
+def test_workstream_criteria_are_versioned_and_deterministically_ordered(
+    tmp_path: Path,
+) -> None:
+    configured = DEFAULT_CONFIG + """
+[[workstreams.criteria]]
+id = "verified-delivery"
+revision = 2
+required_sections = ["mandate", "review-gate"]
+required_evidence = ["changes", "checks", "review", "omissions", "risks", "returns"]
+max_attempts = 3
+safe_fallback = "blocked"
+
+[[workstreams.criteria]]
+id = "verified-delivery"
+revision = 1
+required_sections = ["mandate"]
+required_evidence = ["checks", "review", "returns"]
+max_attempts = 2
+safe_fallback = "blocked"
+"""
+    (tmp_path / CONFIG_FILENAME).write_text(configured, encoding="utf-8")
+
+    criteria = load_config(tmp_path).workstream_criteria
+    assert [criterion.reference for criterion in criteria] == [
+        "verified-delivery@1",
+        "verified-delivery@2",
+    ]
+    assert criteria[1].required_sections == ("mandate", "review-gate")
+    assert criteria[1].max_attempts == 3
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        ("[[workstreams]]\n", "workstreams must be a table"),
+        ("[workstreams]\nunknown = true\n", "workstreams has unknown key"),
+        ("[workstreams]\ncriteria = {}\n", "must be a list of tables"),
+        (
+            "[[workstreams.criteria]]\n"
+            'id = "Bad_ID"\nrevision = 1\nrequired_sections = []\n'
+            'required_evidence = ["checks"]\nmax_attempts = 1\n'
+            'safe_fallback = "blocked"\n',
+            "invalid criterion ID",
+        ),
+        (
+            "[[workstreams.criteria]]\n"
+            'id = "delivery"\nrevision = 0\nrequired_sections = []\n'
+            'required_evidence = ["checks"]\nmax_attempts = 1\n'
+            'safe_fallback = "blocked"\n',
+            "revision must be a positive integer",
+        ),
+        (
+            "[[workstreams.criteria]]\n"
+            'id = "delivery"\nrevision = 1\nrequired_sections = ["Bad Anchor"]\n'
+            'required_evidence = ["checks"]\nmax_attempts = 1\n'
+            'safe_fallback = "blocked"\n',
+            "supported stable anchors",
+        ),
+        (
+            "[[workstreams.criteria]]\n"
+            'id = "delivery"\nrevision = 1\nrequired_sections = []\n'
+            'required_evidence = ["logs"]\nmax_attempts = 1\n'
+            'safe_fallback = "blocked"\n',
+            "may contain only",
+        ),
+        (
+            "[[workstreams.criteria]]\n"
+            'id = "delivery"\nrevision = 1\nrequired_sections = []\n'
+            'required_evidence = ["checks"]\nmax_attempts = 21\n'
+            'safe_fallback = "blocked"\n',
+            "max_attempts must be between 1 and 20",
+        ),
+        (
+            "[[workstreams.criteria]]\n"
+            'id = "delivery"\nrevision = 1\nrequired_sections = []\n'
+            'required_evidence = ["checks"]\nmax_attempts = 1\n'
+            'safe_fallback = "continue"\n',
+            "safe_fallback must be 'blocked'",
+        ),
+        (
+            "[[workstreams.criteria]]\n"
+            'id = "delivery"\nrevision = 1\nrequired_sections = []\n'
+            'required_evidence = ["checks"]\nmax_attempts = 1\n'
+            'safe_fallback = "blocked"\n'
+            "[[workstreams.criteria]]\n"
+            'id = "delivery"\nrevision = 1\nrequired_sections = []\n'
+            'required_evidence = ["checks"]\nmax_attempts = 1\n'
+            'safe_fallback = "blocked"\n',
+            "criterion is duplicated",
+        ),
+    ],
+)
+def test_invalid_workstream_criteria_are_rejected(
+    tmp_path: Path, body: str, message: str
+) -> None:
+    configured = DEFAULT_CONFIG.replace(
+        "[workstreams]\n\n",
+        body + "\n",
+    )
+    (tmp_path / CONFIG_FILENAME).write_text(configured, encoding="utf-8")
+    with pytest.raises(ValueError, match=message):
+        load_config(tmp_path)
 
 
 def test_context_views_are_validated_and_ordered_by_tier(tmp_path: Path) -> None:

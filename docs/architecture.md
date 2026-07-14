@@ -389,6 +389,15 @@ generation evidence and refuses recovery over newer source. Successful write
 and recovery rebuild the disposable projection; a refresh failure is visible
 and falls back to direct Markdown without weakening Markdown authority.
 
+Versioned `workstreams.criteria` are authored completion policy, not projection
+data or hidden prompt instructions. A bounded JSON workstream record may be
+produced by any agent or orchestration runtime; the core validates lifecycle
+transitions, correction lineage, mandate sections and configured evidence.
+`workstream` is read-only. `finish --workstream-record` is an opt-in strict
+gate and does not replace the existing lightweight finish handoff. The engine
+does not execute workers, approve its own result, authenticate a declared
+reviewer or infer product semantics.
+
 ## Product sequence
 
 1. Configuration contract, bootstrap and diagnostics.
@@ -408,3 +417,6 @@ and falls back to direct Markdown without weakening Markdown authority.
     only when progressive expansion exposes a material reproducible gap.
 11. Project-authored purpose context views with visible relation/depth
     omissions and unrestricted on-demand expansion.
+12. Lossless compact content delivery with stable address/reason manifests.
+13. Provider-neutral bounded workstream criteria, corrective lineage and
+    opt-in fail-closed finish evidence.
