@@ -15,6 +15,8 @@ def test_default_config_loads(tmp_path: Path) -> None:
     assert config.legacy_relation_mode == "strict"
     assert config.snapshot_document_types == ()
     assert config.snapshot_rules == ()
+    assert config.graph_health_policy.required_metadata == ()
+    assert config.graph_health_policy.report_orphans is False
     assert config.projection_format == "sharded-json"
     assert config.context_views == ()
 
@@ -48,6 +50,67 @@ layers = ["authored"]
         "derived_from",
         "validated_against",
     )
+
+
+def test_graph_health_policy_is_optional_and_normalized(tmp_path: Path) -> None:
+    configured = DEFAULT_CONFIG.replace(
+        "required_metadata = []\nreport_orphans = false",
+        'hub_in_degree = 3\nhub_out_degree = 4\nboundary_count = 2\n'
+        'stale_pin_count = 2\nmax_weak_components = 1\n'
+        'required_metadata = ["type", "status"]\nreport_orphans = true',
+    )
+    (tmp_path / CONFIG_FILENAME).write_text(configured, encoding="utf-8")
+    policy = load_config(tmp_path).graph_health_policy
+    assert policy.hub_in_degree == 3
+    assert policy.hub_out_degree == 4
+    assert policy.boundary_count == 2
+    assert policy.stale_pin_count == 2
+    assert policy.max_weak_components == 1
+    assert policy.required_metadata == ("type", "status")
+    assert policy.report_orphans is True
+
+    legacy = configured.replace(
+        "[graph_health]\n"
+        "hub_in_degree = 3\nhub_out_degree = 4\nboundary_count = 2\n"
+        "stale_pin_count = 2\nmax_weak_components = 1\n"
+        'required_metadata = ["type", "status"]\nreport_orphans = true\n\n',
+        "",
+    )
+    (tmp_path / CONFIG_FILENAME).write_text(legacy, encoding="utf-8")
+    assert load_config(tmp_path).graph_health_policy.required_metadata == ()
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        ("[[graph_health]]\n", "graph_health must be a table"),
+        ("[graph_health]\nunknown = 1\n", "graph_health has unknown key"),
+        ("[graph_health]\nhub_in_degree = 0\n", "must be a positive integer"),
+        ("[graph_health]\nhub_out_degree = true\n", "must be a positive integer"),
+        (
+            '[graph_health]\nrequired_metadata = ["owner"]\n',
+            "may contain only 'type' and 'status'",
+        ),
+        (
+            '[graph_health]\nrequired_metadata = ["type", "type"]\n',
+            "required_metadata must be unique",
+        ),
+        (
+            '[graph_health]\nreport_orphans = "yes"\n',
+            "report_orphans must be a boolean",
+        ),
+    ],
+)
+def test_invalid_graph_health_policy_is_rejected(
+    tmp_path: Path, body: str, message: str
+) -> None:
+    configured = DEFAULT_CONFIG.replace(
+        "[graph_health]\nrequired_metadata = []\nreport_orphans = false\n\n",
+        body,
+    )
+    (tmp_path / CONFIG_FILENAME).write_text(configured, encoding="utf-8")
+    with pytest.raises(ValueError, match=message):
+        load_config(tmp_path)
 
 
 @pytest.mark.parametrize(

@@ -247,6 +247,8 @@ docsystem context DOC-001 . --view task --json
 docsystem context DOC-001 . --assume-known DOC-001@3
 docsystem context DOC-001 . --since 0a1b2c3d4e5f
 docsystem impact DOC-001 .
+docsystem graph-health .
+docsystem graph-health . --json
 docsystem migration-report .
 docsystem migration-report . --json
 docsystem readiness .
@@ -359,6 +361,17 @@ agents can always request another section or the full Markdown source.
 `dependencies` reports deterministic forward or reverse semantic edges.
 It fails without partial stdout when metadata errors make the requested graph
 incomplete; stale revision warnings remain non-blocking.
+
+`graph-health PROJECT [--json]` gives an inspectable whole-catalog inventory:
+document and section counts, edges by authority/relation, explicit boundaries,
+weak components, orphans, stale/historical pins and missing configured
+metadata. Metrics are facts; smell signals such as hubs, concentrated
+boundaries or disconnected components appear only when the project enables a
+threshold in `[graph_health]`; objectively missing Markdown anchors are always
+identified as dead references. Signals are advisory and never grant write
+authority. A structurally ambiguous graph fails closed with no partial stdout.
+See [graph health](docs/graph-health.md) for the configuration and output
+contract.
 
 `references ID[#anchor] PROJECT` is a read-only inspection of the section and
 reference graph: authored metadata relations, observed Markdown links, and

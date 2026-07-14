@@ -392,10 +392,13 @@ class LoadedProjection:
     documents: dict[str, dict[str, Any]]
     reverse: dict[str, tuple[dict[str, Any], ...]]
     contents: dict[str, str]
+    references: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 def load_verified_projection(
     config: ProjectConfig,
+    *,
+    include_references: bool = False,
 ) -> tuple[LoadedProjection | None, str]:
     """Verify the selected generation against current sources and load it.
 
@@ -408,7 +411,9 @@ def load_verified_projection(
     (for example `relations.legacy_paths` or `navigation.extend_through`)
     forces a rebuild instead of serving stale, differently-shaped output.
     Every consumed document and reverse shard is checked against a hash in the
-    manifest.  The manifest itself is the generation's content-addressed root,
+    manifest. Callers that need whole-graph observed-reference inventory set
+    `include_references`; ordinary reads do not pay that shard-loading cost.
+    The manifest itself is the generation's content-addressed root,
     so changing either a shard hash or any manifest record invalidates the
     selected generation before output is produced. On any mismatch the caller
     receives `(None, reason)` and falls back to direct Markdown with a
@@ -489,9 +494,36 @@ def load_verified_projection(
             ):
                 return None, f"projection reverse shard invalid: {document_id}"
             reverse[document_id] = tuple(shard.get("incoming", ()))
+        references: dict[str, dict[str, Any]] = {}
+        if include_references:
+            manifest_references = manifest.get("references")
+            if not isinstance(manifest_references, dict):
+                return None, "projection unreadable: manifest references missing"
+            for document_id in sorted(documents):
+                record = manifest_references.get(document_id)
+                if not isinstance(record, dict):
+                    return None, (
+                        f"projection reference manifest missing: {document_id}"
+                    )
+                shard = _read(generation_dir / _shard("references", document_id))
+                if (
+                    shard.get("schema_version") != REFERENCE_SCHEMA_VERSION
+                    or shard.get("id") != document_id
+                    or shard.get("path") != documents[document_id].get("path")
+                    or shard.get("source_sha256")
+                    != documents[document_id].get("source_sha256")
+                    or not _verify_shard_hash(
+                        shard, record.get("shard_sha256")
+                    )
+                ):
+                    return None, f"projection references shard invalid: {document_id}"
+                references[document_id] = shard
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
         return None, f"projection unreadable: {error}"
-    return LoadedProjection(generation, documents, reverse, contents), "projection current"
+    return (
+        LoadedProjection(generation, documents, reverse, contents, references),
+        "projection current",
+    )
 
 
 def _body_hash(body: dict[str, Any]) -> str:

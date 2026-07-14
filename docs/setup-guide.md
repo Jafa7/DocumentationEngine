@@ -149,6 +149,23 @@ format = "sharded-json"
 keep_generations = 2
 ```
 
+Whole-graph smell policy is optional and should reflect the adopting project,
+not copied thresholds. With no thresholds, `graph-health` still reports the
+complete deterministic inventory and emits only intrinsic dead-link evidence:
+
+```toml
+[graph_health]
+hub_in_degree = 12
+boundary_count = 5
+max_weak_components = 1
+required_metadata = ["type", "status"]
+report_orphans = true
+```
+
+Thresholds are positive integers. `required_metadata` accepts only `type` and
+`status`; omitted settings remain disabled. Signals are advisory and do not
+weaken validation or authorize an automated rewrite.
+
 Optional AI-agent context tiers are authored project policy. Start small; do
 not copy view names or relations from another project without validating its
 workflow:

@@ -59,6 +59,7 @@ Project policy may configure:
 - templates and document types;
 - lifecycle states;
 - review policy;
+- graph-health advisory thresholds and required metadata fields;
 - projection retention;
 - legacy path-relation migration and historical snapshot document types;
 - provider adapters.
@@ -218,6 +219,17 @@ independent of `relations.legacy_paths`, so `migration-report` and
 `readiness` can report what a project could migrate before it opts into the
 compatibility mode; only the resulting graph edges and validation severity
 depend on the configured mode.
+
+## Graph health
+
+Graph health is a read-only interpretation of the existing graph, not a new
+authority layer. `graph-health` derives factual metrics from authored metadata
+edges, observed Markdown references, generated containment and explicit
+boundaries. Optional project thresholds turn selected measurements into
+advisory smells; the core does not infer architecture, rewrite relations or
+promote an observed/generated edge into semantic authority. A verified
+projection and direct Markdown reduce to the same health facts and output.
+See [`graph-health.md`](graph-health.md) for the exact policy and CLI contract.
 
 `docsystem migrate` computes a deterministic plan of the same resolved
 mappings, previews it by default, and — only with an explicit `--apply` —

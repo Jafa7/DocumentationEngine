@@ -25,13 +25,21 @@ Five operations write anything:
   generation's recorded after state.
 
 Every other command — `doctor`, `show-config`, `catalog`, `validate`, `read`,
-`dependencies`, `references`, `change-plan`, `maintenance` with `--check` or
+`dependencies`, `references`, `change-plan`, `graph-health`, `maintenance` with `--check` or
 `--preview`, `context`,
 `impact`, `migration-report`, `migrate` without `--apply`, `readiness`,
 `finish`, `report draft`, `report context-gap`, and `index`/`changes` without
 `--write` — is
 read-only. An agent may call any read-only command freely to inspect project
 state before deciding whether a mutating command is warranted.
+
+`graph-health` is intended for broad planning, documentation-architecture
+review and graph diagnosis. It is not mandatory overhead for every small edit.
+Its inventory values are facts; configured smell signals are advisory, do not
+authorize edits, and require an agent or human to interpret them in task
+context. On graph-blocking structural errors it exits `1`, writes no partial
+stdout and reports the blocking diagnostics on stderr. Direct Markdown and a
+verified projection produce byte-identical stdout.
 
 `docsystem migrate` without `--apply` is always a preview: it computes and
 prints the same plan `--apply` would write, but touches nothing. An agent

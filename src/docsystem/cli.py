@@ -59,6 +59,12 @@ from docsystem.graph import (
 from docsystem.graph import (
     traverse_reasons as graph_traverse_reasons,
 )
+from docsystem.health import (
+    GraphHealthReport,
+    evaluate_graph_health,
+    facts_from_catalog,
+    facts_from_projection,
+)
 from docsystem.journal import (
     FileEdit,
     FileGuard,
@@ -548,6 +554,118 @@ def validate(project_root: Path, *, verbose_adoption: bool = False) -> int:
     ):
         return 1
     print("Markdown navigation is valid.")
+    return 0
+
+
+def _graph_health_json(report: GraphHealthReport) -> dict[str, object]:
+    return {
+        "metrics": {
+            "documents": report.document_count,
+            "sections": report.section_count,
+            "edges": report.edge_count,
+            "edges_by_authority": dict(report.edges_by_authority),
+            "edges_by_relation": dict(report.edges_by_relation),
+            "boundaries": report.boundary_count,
+            "boundaries_by_category": dict(report.boundaries_by_category),
+            "weak_component_sizes": list(report.weak_component_sizes),
+            "orphan_documents": list(report.orphan_documents),
+            "stale_pins": report.stale_pin_count,
+            "historical_pins": report.historical_pin_count,
+            "missing_metadata": dict(report.missing_metadata),
+        },
+        "signals": [
+            {
+                "code": signal.code,
+                "severity": "advisory",
+                "documents": list(signal.documents),
+                "value": signal.value,
+                "threshold": signal.threshold,
+                "detail": signal.detail,
+            }
+            for signal in report.signals
+        ],
+    }
+
+
+def _emit_graph_health_text(report: GraphHealthReport) -> None:
+    print("# Graph health")
+    print()
+    print(f"- Documents: {report.document_count}")
+    print(f"- Sections: {report.section_count}")
+    print(f"- Edges: {report.edge_count}")
+    print(f"- Boundaries: {report.boundary_count}")
+    print(
+        "- Weak components: "
+        + (", ".join(str(item) for item in report.weak_component_sizes) or "none")
+    )
+    print(
+        "- Orphan documents: "
+        + (", ".join(report.orphan_documents) or "none")
+    )
+    print(f"- Stale pins: {report.stale_pin_count}")
+    print(f"- Historical pins: {report.historical_pin_count}")
+    print()
+    print("## Inventory")
+    print()
+    print("| Kind | Name | Count |")
+    print("| --- | --- | ---: |")
+    inventory = (
+        *(("authority", name, count) for name, count in report.edges_by_authority),
+        *(("relation", name, count) for name, count in report.edges_by_relation),
+        *(("boundary", name, count) for name, count in report.boundaries_by_category),
+        *(("missing-metadata", name, count) for name, count in report.missing_metadata),
+    )
+    if inventory:
+        for kind, name, count in inventory:
+            print(f"| {kind} | {name} | {count} |")
+    else:
+        print("| - | - | 0 |")
+    print()
+    print("## Advisory signals")
+    print()
+    print("| Code | Documents | Value | Threshold | Detail |")
+    print("| --- | --- | ---: | ---: | --- |")
+    if report.signals:
+        for signal in report.signals:
+            documents = ", ".join(signal.documents) or "-"
+            threshold = str(signal.threshold) if signal.threshold is not None else "-"
+            print(
+                f"| {signal.code} | {documents} | {signal.value} | "
+                f"{threshold} | {signal.detail} |"
+            )
+    else:
+        print("| none | - | 0 | - | No configured advisory threshold was crossed. |")
+
+
+def graph_health(project_root: Path, *, json_output: bool = False) -> int:
+    """Report deterministic graph metrics without granting write authority."""
+
+    try:
+        config = load_config(project_root)
+        loaded, reason = load_verified_projection(config, include_references=True)
+        if loaded is not None:
+            facts = facts_from_projection(loaded)
+        else:
+            markdown_catalog = build_catalog(config)
+            issues = _with_graph_issues(
+                validate_catalog(markdown_catalog, config),
+                markdown_catalog,
+                config,
+            )
+            blocking = tuple(issue for issue in issues if issue.severity != "warning")
+            if blocking:
+                _print_validation_issues(blocking, verbose_adoption=False)
+                return 1
+            print(f"WARNING: {reason}; using direct Markdown", file=sys.stderr)
+            facts = facts_from_catalog(markdown_catalog, config)
+        report = evaluate_graph_health(facts, config)
+    except (OSError, ValueError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    if json_output:
+        _print_json(_graph_health_json(report))
+    else:
+        _emit_graph_health_text(report)
     return 0
 
 
@@ -4336,6 +4454,24 @@ def show_config(project_root: Path) -> int:
             f"source_type:{rule.source_type or '-'},"
             f"source_status:{rule.source_status or '-'}"
         )
+    graph_health_values = (
+        ("hub_in_degree", config.graph_health_policy.hub_in_degree),
+        ("hub_out_degree", config.graph_health_policy.hub_out_degree),
+        ("boundary_count", config.graph_health_policy.boundary_count),
+        ("stale_pin_count", config.graph_health_policy.stale_pin_count),
+        ("max_weak_components", config.graph_health_policy.max_weak_components),
+    )
+    for name, value in graph_health_values:
+        if value is not None:
+            print(f"graph_health.{name}={value}")
+    print(
+        "graph_health.required_metadata="
+        + (",".join(config.graph_health_policy.required_metadata) or "-")
+    )
+    print(
+        "graph_health.report_orphans="
+        + str(config.graph_health_policy.report_orphans).lower()
+    )
     for view in config.context_views:
         print(
             f"context.view.{view.name}=tier:{view.tier},delivery:{view.delivery},"
@@ -4392,6 +4528,11 @@ def _agent_instructions_text(selection: _Selection, config: ProjectConfig) -> st
         "- Without a configured view, expand context with `--depth`, `--include` "
         "or `--include-related` instead of assuming an omitted document or "
         "section is irrelevant."
+    )
+    out.append(
+        "- Use `docsystem graph-health PROJECT --json` for broad planning or "
+        "graph diagnosis, not as mandatory overhead for every edit; metrics are "
+        "facts and configured signals remain advisory."
     )
     if config.context_views:
         out.append(
@@ -4663,6 +4804,20 @@ def build_parser() -> argparse.ArgumentParser:
     impact_parser.add_argument("document_id")
     impact_parser.add_argument("project", nargs="?", type=Path, default=Path.cwd())
 
+    graph_health_parser = subparsers.add_parser(
+        "graph-health",
+        help="Report deterministic graph metrics and configured advisory signals.",
+    )
+    graph_health_parser.add_argument(
+        "project", nargs="?", type=Path, default=Path.cwd()
+    )
+    graph_health_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print a deterministic JSON object instead of Markdown.",
+    )
+
     migration_report_parser = subparsers.add_parser(
         "migration-report", help="Report legacy relation adoption mappings."
     )
@@ -4854,6 +5009,7 @@ def build_parser() -> argparse.ArgumentParser:
         maintenance_recover_parser,
         context_parser,
         impact_parser,
+        graph_health_parser,
         migration_report_parser,
         migrate_parser,
         readiness_parser,
@@ -4951,6 +5107,8 @@ def main() -> int:
         )
     if args.command == "impact":
         return impact(project, args.document_id)
+    if args.command == "graph-health":
+        return graph_health(project, json_output=args.json_output)
     if args.command == "migration-report":
         return migration_report(project, json_output=args.json_output)
     if args.command == "migrate":

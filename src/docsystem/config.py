@@ -53,6 +53,10 @@ legacy_paths = "strict"
 snapshot_types = []
 snapshot_rules = []
 
+[graph_health]
+required_metadata = []
+report_orphans = false
+
 [projection]
 format = "sharded-json"
 keep_generations = 2
@@ -114,6 +118,19 @@ class SnapshotRule:
 
 
 @dataclass(frozen=True)
+class GraphHealthPolicy:
+    """Optional project thresholds for advisory graph-health signals."""
+
+    hub_in_degree: int | None = None
+    hub_out_degree: int | None = None
+    boundary_count: int | None = None
+    stale_pin_count: int | None = None
+    max_weak_components: int | None = None
+    required_metadata: tuple[str, ...] = ()
+    report_orphans: bool = False
+
+
+@dataclass(frozen=True)
 class ProjectConfig:
     project_root: Path
     documentation_root: Path
@@ -127,6 +144,7 @@ class ProjectConfig:
     legacy_relation_mode: str = "strict"
     snapshot_document_types: tuple[str, ...] = ()
     snapshot_rules: tuple[SnapshotRule, ...] = ()
+    graph_health_policy: GraphHealthPolicy = GraphHealthPolicy()
     maintenance_targets: tuple[MaintenanceTarget, ...] = ()
     context_views: tuple[ContextView, ...] = ()
 
@@ -275,6 +293,66 @@ def is_historical_snapshot(
 
     return document_type in config.snapshot_document_types or any(
         rule.matches(document_type, status) for rule in config.snapshot_rules
+    )
+
+
+def _optional_positive_int(
+    raw: dict[str, object], key: str, field: str
+) -> int | None:
+    value = raw.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ValueError(f"{field}.{key} must be a positive integer")
+    return value
+
+
+def _graph_health_policy(raw: object) -> GraphHealthPolicy:
+    if raw is None:
+        return GraphHealthPolicy()
+    if not isinstance(raw, dict):
+        raise ValueError("graph_health must be a table")
+    allowed = {
+        "hub_in_degree",
+        "hub_out_degree",
+        "boundary_count",
+        "stale_pin_count",
+        "max_weak_components",
+        "required_metadata",
+        "report_orphans",
+    }
+    unknown = set(raw) - allowed
+    if unknown:
+        raise ValueError(
+            "graph_health has unknown key(s): " + ", ".join(sorted(unknown))
+        )
+    required = raw.get("required_metadata", [])
+    if not isinstance(required, list) or any(
+        not isinstance(item, str) or item not in {"type", "status"}
+        for item in required
+    ):
+        raise ValueError(
+            "graph_health.required_metadata may contain only 'type' and 'status'"
+        )
+    if len(set(required)) != len(required):
+        raise ValueError("graph_health.required_metadata must be unique")
+    report_orphans = raw.get("report_orphans", False)
+    if not isinstance(report_orphans, bool):
+        raise ValueError("graph_health.report_orphans must be a boolean")
+    return GraphHealthPolicy(
+        hub_in_degree=_optional_positive_int(raw, "hub_in_degree", "graph_health"),
+        hub_out_degree=_optional_positive_int(
+            raw, "hub_out_degree", "graph_health"
+        ),
+        boundary_count=_optional_positive_int(raw, "boundary_count", "graph_health"),
+        stale_pin_count=_optional_positive_int(
+            raw, "stale_pin_count", "graph_health"
+        ),
+        max_weak_components=_optional_positive_int(
+            raw, "max_weak_components", "graph_health"
+        ),
+        required_metadata=tuple(required),
+        report_orphans=report_orphans,
     )
 
 
@@ -519,6 +597,7 @@ def load_config(project_root: Path) -> ProjectConfig:
         raw.get("maintenance"), frozenset(normalized_identifiers.values())
     )
     context_views = _context_views(raw.get("context"))
+    graph_health_policy = _graph_health_policy(raw.get("graph_health"))
 
     projection_format = projection.get("format")
     if projection_format != "sharded-json":
@@ -540,6 +619,7 @@ def load_config(project_root: Path) -> ProjectConfig:
         legacy_relation_mode=legacy_relation_mode,
         snapshot_document_types=snapshot_document_types,
         snapshot_rules=snapshot_rules,
+        graph_health_policy=graph_health_policy,
         maintenance_targets=maintenance_targets,
         context_views=context_views,
     )

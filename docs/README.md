@@ -19,6 +19,8 @@ link to that owner rather than repeat commands or policy.
 - [Agent contract](agent-contract.md) — safe command behavior for AI clients.
 - [Context measurement](context-efficiency.md) — measured reduction method,
   quality guard and limitations.
+- [Graph health](graph-health.md) — deterministic graph inventory and optional
+  project-authored advisory thresholds.
 
 ## Integrations and project structure
 
