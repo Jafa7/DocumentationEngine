@@ -79,25 +79,31 @@ The target projection is sharded and generation-based:
     ├── manifest.json
     ├── areas/<logical-path>/_index.json
     ├── documents/<namespace>/<bucket>/<ID>.json
-    └── reverse/<namespace>/<bucket>/<ID>.json
+    ├── reverse/<namespace>/<bucket>/<ID>.json
+    ├── references/<namespace>/<bucket>/<ID>.json
+    └── reverse-references/<namespace>/<bucket>/<ID>.json
 ```
 
 A stable ID maps to a document shard without a global routing table.
+`references` uses the same deterministic routing and verifies only the graph
+shards reached by its query after validating the manifest root and source
+freshness; unrelated shard bodies are not read.
 
 Read commands (`read`, `context`, `impact`) serve from the projection when it
 is verified current. Verification enumerates the catalog's source paths
 without parsing them, re-reads every included source and compares its sha256
-with the generation manifest, and validates every document and reverse shard
-up front. It also rejects the generation when the active configuration
+with the generation manifest, and validates every consumed document and
+reverse shard against its recorded hash. It also rejects the generation when the active configuration
 fingerprint no longer matches the one recorded at build time — a normalized
 digest of the documentation root identity, areas, identifiers, catalog
 exclusions, `navigation.extend_through`, `relations.legacy_paths`,
 `relations.snapshot_types`, the projection format and the schema version — so a
 read-time policy change forces a rebuild instead of serving differently-shaped
-output. Finally it reconstructs the canonical projection payload from the
-loaded shards and compares its hash with the selected generation, so semantic
-shard tampering (a dropped dependency, an altered revision) that leaves the
-Markdown source hashes untouched is detected before any output is produced.
+output. The generation ID is the canonical hash of the complete manifest,
+including the hashes of document, reverse, reference, and reverse-reference
+shards. Semantic shard tampering (a dropped dependency, an altered revision)
+or a matching edit to a shard hash therefore invalidates the immutable
+generation before any output is produced.
 None of this parses Markdown on the fast path — what it removes is Markdown,
 metadata and link parsing plus dependency-graph reconstruction, not source I/O;
 a stat-based freshness cache that avoids re-hashing unchanged sources remains a
@@ -109,8 +115,8 @@ the configuration fingerprint that shaped it, so a semantic configuration
 change yields a distinct generation. A new generation is assembled in a staging
 directory and renamed into place before the small `current.json` pointer is
 atomically replaced. Existing generation directories are never rewritten.
-Readers validate schema, generation identity, the configuration fingerprint,
-source hashes, required shards and the reconstructed generation hash; invalid,
+Readers validate schema, the manifest-root generation identity, the configuration
+fingerprint, source hashes and required shard hashes; invalid,
 stale or corrupt projections fall back to direct Markdown with a diagnostic.
 
 Projection writes assume a single writer. Two concurrent `index --write`
@@ -150,7 +156,7 @@ with no current or removed section anchor is marked as changed outside
 addressable sections. An explicit `--anchor` or `--include` selection is never
 discarded merely because its document is unchanged in the generation. Before
 these comparisons, the retained generation is verified from its manifest,
-document and reverse shards, active configuration fingerprint and reconstructed
+document and reverse shards, active configuration fingerprint and manifest-root
 generation hash. Both modes read the same shared view shape on either serving
 path, so a delta served from a fresh projection's fast path is
 byte-identical to the same delta reconstructed from direct Markdown, even when

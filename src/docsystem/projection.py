@@ -16,10 +16,22 @@ from docsystem.catalog import (
     included_source_paths,
 )
 from docsystem.config import ProjectConfig
+from docsystem.graph import (
+    AUTHORED,
+    GENERATED,
+    Address,
+    GraphEdge,
+    build_reference_graph,
+)
 
-# Version 2 adds per-document `migrations` and `related_values` shard fields
-# so read commands can serve context packets from shards alone.
-SCHEMA_VERSION = 2
+# Version 3 binds every document, reverse, reference, and reverse-reference
+# shard hash into the immutable generation identity.  Version 2 generations
+# therefore fail closed as incompatible and are rebuilt by `index --write`.
+SCHEMA_VERSION = 3
+
+# The observed-reference graph shard payload has its own version, while its
+# hashes and presence remain part of the generation identity.
+REFERENCE_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -178,14 +190,112 @@ def build_projection(
         ]
         for document_id in documents
     }
-    payload = {
+    payload: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "config_fingerprint": config_fingerprint(config),
         "documents": dict(sorted(documents.items())),
         "reverse": {key: value for key, value in sorted(reverse.items()) if value},
     }
-    payload["generation"] = _sha(_json(payload))
+    payload["references"], payload["reverse_references"] = _build_reference_shards(
+        catalog, config, documents
+    )
+    payload["generation"] = _manifest_generation(_projection_manifest(payload))
     return payload
+
+
+def _build_reference_shards(
+    catalog: MarkdownCatalog, config: ProjectConfig, documents: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    graph = build_reference_graph(catalog, config)
+    forward_by_doc: dict[str, list[dict[str, Any]]] = {}
+    boundaries_by_doc: dict[str, list[dict[str, Any]]] = {}
+    reverse_by_doc: dict[str, list[dict[str, Any]]] = {}
+    for edge in graph.edges:
+        if edge.authority != "observed":
+            # Authored dependencies are already carried by the existing
+            # `documents`/`reverse` shards; generated containment is derivable
+            # from a document shard's `sections` map. Only the new observed
+            # Markdown-reference layer needs dedicated storage.
+            continue
+        forward_by_doc.setdefault(edge.source.document_id, []).append(
+            {
+                "source_anchor": edge.source.anchor,
+                "relation": edge.relation,
+                "authority": edge.authority,
+                "origin": edge.origin,
+                "target": edge.target.document_id,
+                "target_anchor": edge.target.anchor,
+                "reason": edge.reason,
+            }
+        )
+        reverse_by_doc.setdefault(edge.target.document_id, []).append(
+            {
+                "source": edge.source.document_id,
+                "source_anchor": edge.source.anchor,
+                "target_anchor": edge.target.anchor,
+                "relation": edge.relation,
+                "authority": edge.authority,
+                "origin": edge.origin,
+                "reason": edge.reason,
+            }
+        )
+    for boundary in graph.boundaries:
+        boundaries_by_doc.setdefault(boundary.source.document_id, []).append(
+            {
+                "source_anchor": boundary.source.anchor,
+                "raw_target": boundary.raw_target,
+                "category": boundary.category,
+                "reason": boundary.reason,
+            }
+        )
+
+    def _sort_forward(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return sorted(
+            items,
+            key=lambda item: (
+                item["source_anchor"] or "",
+                item["target"],
+                item["target_anchor"] or "",
+                item["reason"] or "",
+            ),
+        )
+
+    def _sort_boundaries(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return sorted(
+            items,
+            key=lambda item: (
+                item["source_anchor"] or "",
+                item["category"],
+                item["raw_target"],
+            ),
+        )
+
+    def _sort_incoming(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return sorted(
+            items,
+            key=lambda item: (
+                item["target_anchor"] or "",
+                item["source"],
+                item["source_anchor"] or "",
+                item["reason"] or "",
+            ),
+        )
+
+    references = {
+        document_id: {
+            "path": record["path"],
+            "source_sha256": record["source_sha256"],
+            "forward": _sort_forward(forward_by_doc.get(document_id, [])),
+            "boundaries": _sort_boundaries(boundaries_by_doc.get(document_id, [])),
+        }
+        for document_id, record in documents.items()
+    }
+    reverse_references = {
+        document_id: {"incoming": _sort_incoming(incoming)}
+        for document_id, incoming in reverse_by_doc.items()
+        if incoming
+    }
+    return references, reverse_references
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -209,25 +319,46 @@ def projection_status(
         manifest = _read(
             cache_root(config) / "generations" / str(generation) / "manifest.json"
         )
-        if generation != manifest.get("generation"):
+        if not isinstance(generation, str) or manifest.get("generation") != generation:
             return False, "projection pointer mismatch"
+        if not _manifest_is_bound(manifest, generation):
+            return False, "projection corrupt"
         if generation != current.get("generation"):
             return False, "projection stale"
         generation_dir = cache_root(config) / "generations" / str(generation)
         for document_id in current["documents"]:
             shard = _read(generation_dir / _shard("documents", document_id))
+            record = manifest.get("documents", {}).get(document_id, {})
             if (
                 shard.get("schema_version") != SCHEMA_VERSION
                 or shard.get("id") != document_id
+                or not _verify_shard_hash(shard, record.get("shard_sha256"))
             ):
                 return False, f"projection document shard invalid: {document_id}"
         for document_id in current["reverse"]:
             shard = _read(generation_dir / _shard("reverse", document_id))
+            record = manifest.get("reverse", {}).get(document_id, {})
             if (
                 shard.get("schema_version") != SCHEMA_VERSION
                 or shard.get("id") != document_id
+                or not _verify_shard_hash(shard, record.get("shard_sha256"))
             ):
                 return False, f"projection reverse shard invalid: {document_id}"
+        for kind, manifest_key, schema_version in (
+            ("references", "references", REFERENCE_SCHEMA_VERSION),
+            ("reverse-references", "reverse_references", REFERENCE_SCHEMA_VERSION),
+        ):
+            records = manifest.get(manifest_key)
+            if not isinstance(records, dict):
+                return False, f"projection {kind} manifest invalid"
+            for document_id, record in records.items():
+                shard = _read(generation_dir / _shard(kind, document_id))
+                if (
+                    shard.get("schema_version") != schema_version
+                    or shard.get("id") != document_id
+                    or not _verify_shard_hash(shard, record.get("shard_sha256"))
+                ):
+                    return False, f"projection {kind} shard invalid: {document_id}"
     except (OSError, ValueError, json.JSONDecodeError) as error:
         return False, f"projection unreadable: {error}"
     return True, "projection current"
@@ -256,12 +387,12 @@ def load_verified_projection(
     matches the one recorded at build time, so a read-time policy change
     (for example `relations.legacy_paths` or `navigation.extend_through`)
     forces a rebuild instead of serving stale, differently-shaped output.
-    Every document and reverse shard is validated up front, and the canonical
-    projection payload is reconstructed from the loaded shards and compared
-    with the selected generation hash, so any semantic shard tampering is
-    detected before output is produced -- without parsing Markdown on the
-    fast path. On any mismatch the caller receives `(None, reason)` and falls
-    back to direct Markdown with a diagnostic.
+    Every consumed document and reverse shard is checked against a hash in the
+    manifest.  The manifest itself is the generation's content-addressed root,
+    so changing either a shard hash or any manifest record invalidates the
+    selected generation before output is produced. On any mismatch the caller
+    receives `(None, reason)` and falls back to direct Markdown with a
+    diagnostic.
     """
 
     pointer = cache_root(config) / "current.json"
@@ -274,8 +405,10 @@ def load_verified_projection(
         generation = str(selected.get("generation"))
         generation_dir = cache_root(config) / "generations" / generation
         manifest = _read(generation_dir / "manifest.json")
-        if generation != manifest.get("generation"):
+        if manifest.get("generation") != generation:
             return None, "projection pointer mismatch"
+        if not _manifest_is_bound(manifest, generation):
+            return None, "projection corrupt"
         if manifest.get("config_fingerprint") != config_fingerprint(config):
             return None, "projection stale: configuration changed"
         manifest_documents = manifest.get("documents")
@@ -298,12 +431,15 @@ def load_verified_projection(
         documents: dict[str, dict[str, Any]] = {}
         for document_id in manifest_documents:
             shard = _read(generation_dir / _shard("documents", document_id))
+            record = manifest_documents[document_id]
             if (
                 shard.get("schema_version") != SCHEMA_VERSION
                 or shard.get("id") != document_id
+                or not _verify_shard_hash(
+                    shard, record.get("shard_sha256")
+                )
             ):
                 return None, f"projection document shard invalid: {document_id}"
-            record = manifest_documents[document_id]
             if (
                 shard.get("path") != record.get("path")
                 or shard.get("source_sha256") != record.get("source_sha256")
@@ -324,117 +460,154 @@ def load_verified_projection(
             if (
                 shard.get("schema_version") != SCHEMA_VERSION
                 or shard.get("id") != document_id
+                or not _verify_shard_hash(
+                    shard,
+                    manifest.get("reverse", {})
+                    .get(document_id, {})
+                    .get("shard_sha256"),
+                )
             ):
                 return None, f"projection reverse shard invalid: {document_id}"
             reverse[document_id] = tuple(shard.get("incoming", ()))
-        if _reconstructed_generation(documents, reverse, config) != generation:
-            return None, "projection corrupt"
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
         return None, f"projection unreadable: {error}"
     return LoadedProjection(generation, documents, reverse, contents), "projection current"
 
 
-def _reconstructed_generation(
-    documents: dict[str, dict[str, Any]],
-    reverse: dict[str, tuple[dict[str, Any], ...]],
-    config: ProjectConfig,
-) -> str:
-    """Recompute the generation hash from loaded shards alone.
+def _body_hash(body: dict[str, Any]) -> str:
+    content = {
+        key: value for key, value in body.items() if key not in ("schema_version", "id")
+    }
+    return _sha(_json(content))
 
-    `build_projection` derives the generation from the canonical payload of
-    the active configuration fingerprint, the document records, and the
-    reverse edges. Rebuilding that payload from the shards (stripping the
-    per-shard `schema_version`/`id` envelope) and re-hashing it detects any
-    semantic tampering -- a removed dependency, an altered revision, a
-    rewritten section map -- that leaves the Markdown source hashes untouched,
-    using only data already read from the cache and no Markdown parsing.
-    """
 
-    recon_documents = {
+def _projection_manifest(projection: dict[str, Any]) -> dict[str, Any]:
+    """Build the complete hash manifest whose digest is the generation ID."""
+
+    documents = {
         document_id: {
-            key: value
-            for key, value in shard.items()
-            if key not in ("schema_version", "id")
+            "path": record["path"],
+            "source_sha256": record["source_sha256"],
+            "sections": record["sections"],
+            "shard_sha256": _body_hash(record),
         }
-        for document_id, shard in documents.items()
+        for document_id, record in sorted(projection["documents"].items())
     }
-    recon_reverse = {
-        document_id: list(incoming)
-        for document_id, incoming in reverse.items()
-        if incoming
+    reverse = {
+        document_id: {"shard_sha256": _body_hash({"incoming": incoming})}
+        for document_id, incoming in sorted(projection["reverse"].items())
     }
-    payload = {
+    references = {
+        document_id: {
+            "path": record["path"],
+            "source_sha256": record["source_sha256"],
+            "shard_sha256": _body_hash(record),
+        }
+        for document_id, record in sorted(projection.get("references", {}).items())
+    }
+    reverse_references = {
+        document_id: {"shard_sha256": _body_hash(record)}
+        for document_id, record in sorted(
+            projection.get("reverse_references", {}).items()
+        )
+    }
+    return {
         "schema_version": SCHEMA_VERSION,
-        "config_fingerprint": config_fingerprint(config),
-        "documents": dict(sorted(recon_documents.items())),
-        "reverse": dict(sorted(recon_reverse.items())),
+        "config_fingerprint": projection["config_fingerprint"],
+        "documents": documents,
+        "reverse": reverse,
+        "references": references,
+        "reverse_references": reverse_references,
     }
-    return _sha(_json(payload))
+
+
+def _manifest_generation(manifest: dict[str, Any]) -> str:
+    identity = {key: value for key, value in manifest.items() if key != "generation"}
+    return _sha(_json(identity))
+
+
+def _manifest_is_bound(manifest: dict[str, Any], generation: str) -> bool:
+    return (
+        manifest.get("schema_version") == SCHEMA_VERSION
+        and manifest.get("generation") == generation
+        and _manifest_generation(manifest) == generation
+    )
+
+
+def _write_shard(staging: Path, kind: str, document_id: str, body: dict[str, Any]) -> str:
+    """Write one shard and return the sha256 of its content (envelope stripped)."""
+
+    path = staging / _shard(kind, document_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(body, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return _body_hash(body)
 
 
 def write_projection(config: ProjectConfig, projection: dict[str, Any]) -> str:
     root = cache_root(config)
     generation = str(projection["generation"])
     generation_dir = root / "generations" / generation
-    manifest = {
-        "schema_version": SCHEMA_VERSION,
-        "generation": generation,
-        "config_fingerprint": projection.get(
-            "config_fingerprint", config_fingerprint(config)
-        ),
-        "documents": {
-            key: {
-                "path": value["path"],
-                "source_sha256": value["source_sha256"],
-                "sections": value["sections"],
-            }
-            for key, value in projection["documents"].items()
-        },
-    }
     generations = root / "generations"
     generations.mkdir(parents=True, exist_ok=True)
     if not generation_dir.exists():
         staging = Path(tempfile.mkdtemp(prefix=".staging-", dir=generations))
         try:
+            manifest = _projection_manifest(projection)
+            manifest["generation"] = generation
+            if _manifest_generation(manifest) != generation:
+                raise ValueError("projection generation does not match shard manifest")
+            for document_id, record in projection["documents"].items():
+                _write_shard(
+                    staging,
+                    "documents",
+                    document_id,
+                    {"schema_version": SCHEMA_VERSION, "id": document_id, **record},
+                )
+
+            for document_id, incoming in projection["reverse"].items():
+                _write_shard(
+                    staging,
+                    "reverse",
+                    document_id,
+                    {
+                        "schema_version": SCHEMA_VERSION,
+                        "id": document_id,
+                        "incoming": incoming,
+                    },
+                )
+
+            for document_id, record in projection.get("references", {}).items():
+                _write_shard(
+                    staging,
+                    "references",
+                    document_id,
+                    {
+                        "schema_version": REFERENCE_SCHEMA_VERSION,
+                        "id": document_id,
+                        **record,
+                    },
+                )
+
+            for document_id, record in projection.get("reverse_references", {}).items():
+                _write_shard(
+                    staging,
+                    "reverse-references",
+                    document_id,
+                    {
+                        "schema_version": REFERENCE_SCHEMA_VERSION,
+                        "id": document_id,
+                        **record,
+                    },
+                )
+
             (staging / "manifest.json").write_text(
                 json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True)
                 + "\n",
                 encoding="utf-8",
             )
-            for document_id, record in projection["documents"].items():
-                path = staging / _shard("documents", document_id)
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(
-                    json.dumps(
-                        {
-                            "schema_version": SCHEMA_VERSION,
-                            "id": document_id,
-                            **record,
-                        },
-                        ensure_ascii=False,
-                        indent=2,
-                        sort_keys=True,
-                    )
-                    + "\n",
-                    encoding="utf-8",
-                )
-            for document_id, incoming in projection["reverse"].items():
-                path = staging / _shard("reverse", document_id)
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(
-                    json.dumps(
-                        {
-                            "schema_version": SCHEMA_VERSION,
-                            "id": document_id,
-                            "incoming": incoming,
-                        },
-                        ensure_ascii=False,
-                        indent=2,
-                        sort_keys=True,
-                    )
-                    + "\n",
-                    encoding="utf-8",
-                )
             staging.replace(generation_dir)
         finally:
             if staging.exists():
@@ -508,7 +681,7 @@ def resolve_generation_manifest(
         manifest = _read(generation_dir / "manifest.json")
         if manifest.get("schema_version") != SCHEMA_VERSION:
             return None
-        if manifest.get("generation") != generation:
+        if not _manifest_is_bound(manifest, generation):
             return None
         if manifest.get("config_fingerprint") != config_fingerprint(config):
             return None
@@ -527,6 +700,7 @@ def resolve_generation_manifest(
                 or shard.get("path") != record.get("path")
                 or shard.get("source_sha256") != record.get("source_sha256")
                 or shard.get("sections") != record.get("sections")
+                or not _verify_shard_hash(shard, record.get("shard_sha256"))
             ):
                 return None
             documents[document_id] = shard
@@ -543,11 +717,15 @@ def resolve_generation_manifest(
                 shard.get("schema_version") != SCHEMA_VERSION
                 or shard.get("id") != document_id
                 or not isinstance(shard.get("incoming"), list)
+                or not _verify_shard_hash(
+                    shard,
+                    manifest.get("reverse", {})
+                    .get(document_id, {})
+                    .get("shard_sha256"),
+                )
             ):
                 return None
             reverse[document_id] = tuple(shard["incoming"])
-        if _reconstructed_generation(documents, reverse, config) != generation:
-            return None
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
         return None
     return generation, {**manifest, "documents": documents}
@@ -561,15 +739,26 @@ def evaluate_changes(config: ProjectConfig, current: dict[str, Any]) -> ChangesR
         return ChangesReport(status="absent")
     try:
         selected = _read(pointer)
+        if selected.get("schema_version") != SCHEMA_VERSION:
+            return ChangesReport(status="unavailable")
+        generation = selected.get("generation")
+        if not isinstance(generation, str):
+            return ChangesReport(status="unavailable")
         manifest = _read(
             cache_root(config)
             / "generations"
-            / str(selected["generation"])
+            / generation
             / "manifest.json"
         )
+        if not _manifest_is_bound(manifest, generation):
+            return ChangesReport(status="unavailable")
+        if manifest.get("config_fingerprint") != config_fingerprint(config):
+            return ChangesReport(status="unavailable")
     except (OSError, KeyError, ValueError, json.JSONDecodeError):
         return ChangesReport(status="unavailable")
     previous = manifest.get("documents", {})
+    if not isinstance(previous, dict):
+        return ChangesReport(status="unavailable")
     current_documents = current["documents"]
     document_changes: list[DocumentChange] = []
     for document_id in sorted(set(previous) | set(current_documents)):
@@ -607,3 +796,271 @@ def changes(config: ProjectConfig, current: dict[str, Any]) -> tuple[str, ...]:
         for anchor in change.sections:
             lines.append(f"section\t{change.document_id}#{anchor}")
     return tuple(lines) or ("no changes",)
+
+
+def _verify_shard_hash(shard: dict[str, Any], expected: object) -> bool:
+    if not isinstance(expected, str):
+        return False
+    body = {key: value for key, value in shard.items() if key not in ("schema_version", "id")}
+    return _sha(_json(body)) == expected
+
+
+@dataclass
+class TargetedProjection:
+    """A verified generation opened for narrow, per-document shard access.
+
+    Unlike `load_verified_projection`, opening this does not read every
+    document/reverse/reference shard: `document`, `incoming`, `references`
+    and `reverse_references` each read and verify exactly one shard the first
+    time it is requested, recording it in `read_shards` as evidence that
+    unrelated shards were never touched.
+    """
+
+    generation_dir: Path
+    manifest: dict[str, Any]
+    read_shards: set[tuple[str, str]] = field(default_factory=set)
+
+    def document(self, document_id: str) -> dict[str, Any] | None:
+        record = self.manifest.get("documents", {}).get(document_id)
+        if record is None:
+            return None
+        try:
+            shard = _read(self.generation_dir / _shard("documents", document_id))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return None
+        if (
+            shard.get("schema_version") != SCHEMA_VERSION
+            or shard.get("id") != document_id
+            or shard.get("path") != record.get("path")
+            or shard.get("source_sha256") != record.get("source_sha256")
+            or not _verify_shard_hash(shard, record.get("shard_sha256"))
+        ):
+            return None
+        self.read_shards.add(("documents", document_id))
+        return shard
+
+    def incoming(self, document_id: str) -> tuple[dict[str, Any], ...] | None:
+        record = self.manifest.get("reverse", {}).get(document_id)
+        if record is None:
+            return ()
+        try:
+            shard = _read(self.generation_dir / _shard("reverse", document_id))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return None
+        if (
+            shard.get("schema_version") != SCHEMA_VERSION
+            or shard.get("id") != document_id
+            or not _verify_shard_hash(shard, record.get("shard_sha256"))
+        ):
+            return None
+        self.read_shards.add(("reverse", document_id))
+        incoming = shard.get("incoming")
+        if not isinstance(incoming, list):
+            return None
+        return tuple(incoming)
+
+    def references(
+        self, document_id: str
+    ) -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]] | None:
+        record = self.manifest.get("references", {}).get(document_id)
+        if record is None:
+            return (), ()
+        try:
+            shard = _read(self.generation_dir / _shard("references", document_id))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return None
+        if (
+            shard.get("schema_version") != REFERENCE_SCHEMA_VERSION
+            or shard.get("id") != document_id
+            or shard.get("path") != record.get("path")
+            or shard.get("source_sha256") != record.get("source_sha256")
+            or not _verify_shard_hash(shard, record.get("shard_sha256"))
+        ):
+            return None
+        forward = shard.get("forward")
+        boundaries = shard.get("boundaries")
+        if not isinstance(forward, list) or not isinstance(boundaries, list):
+            return None
+        self.read_shards.add(("references", document_id))
+        return tuple(forward), tuple(boundaries)
+
+    def reverse_references(self, document_id: str) -> tuple[dict[str, Any], ...] | None:
+        record = self.manifest.get("reverse_references", {}).get(document_id)
+        if record is None:
+            return ()
+        try:
+            shard = _read(self.generation_dir / _shard("reverse-references", document_id))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return None
+        if (
+            shard.get("schema_version") != REFERENCE_SCHEMA_VERSION
+            or shard.get("id") != document_id
+            or not _verify_shard_hash(shard, record.get("shard_sha256"))
+        ):
+            return None
+        incoming = shard.get("incoming")
+        if not isinstance(incoming, list):
+            return None
+        self.read_shards.add(("reverse-references", document_id))
+        return tuple(incoming)
+
+
+def open_targeted_projection(config: ProjectConfig) -> tuple[TargetedProjection | None, str]:
+    """Verify pointer/schema/config/complete-source-freshness for targeted reads.
+
+    This proves the same freshness guarantee as `load_verified_projection`
+    (every included source's sha256 matches the manifest) without reading any
+    document, reverse or reference *shard*; callers then fetch only the
+    shards their query actually needs through the returned accessor.
+    """
+
+    pointer = cache_root(config) / "current.json"
+    if not pointer.is_file():
+        return None, "projection absent"
+    try:
+        selected = _read(pointer)
+        if selected.get("schema_version") != SCHEMA_VERSION:
+            return None, "projection schema incompatible"
+        generation = str(selected.get("generation"))
+        generation_dir = cache_root(config) / "generations" / generation
+        manifest = _read(generation_dir / "manifest.json")
+        if manifest.get("generation") != generation:
+            return None, "projection pointer mismatch"
+        if not _manifest_is_bound(manifest, generation):
+            return None, "projection corrupt"
+        if manifest.get("config_fingerprint") != config_fingerprint(config):
+            return None, "projection stale: configuration changed"
+        manifest_documents = manifest.get("documents")
+        if not isinstance(manifest_documents, dict):
+            return None, "projection unreadable: manifest documents missing"
+        manifest_paths = {
+            str(record.get("path")): document_id
+            for document_id, record in manifest_documents.items()
+        }
+        included = included_source_paths(config)
+        if {path.as_posix() for path in included} != set(manifest_paths):
+            return None, "projection stale"
+        for relative in included:
+            text = (config.documentation_root / relative).read_text(encoding="utf-8")
+            document_id = manifest_paths[relative.as_posix()]
+            if _sha(text) != manifest_documents[document_id].get("source_sha256"):
+                return None, "projection stale"
+        if not isinstance(manifest.get("references"), dict) or not isinstance(
+            manifest.get("reverse_references"), dict
+        ):
+            return None, "projection incompatible: reference graph shards missing"
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+        return None, f"projection unreadable: {error}"
+    return TargetedProjection(generation_dir, manifest), "projection current"
+
+
+def targeted_forward_edges(
+    accessor: TargetedProjection, address: Address
+) -> tuple[tuple[GraphEdge, ...], tuple[dict[str, Any], ...]] | None:
+    """Outgoing contains/authored/observed edges for one address, targeted.
+
+    Mirrors `build_reference_graph` exactly: `contains` and authored metadata
+    edges only ever originate from the bare document address (metadata
+    references and section containment are not anchor-specific), while
+    observed edges originate from whichever section anchor contained the
+    Markdown link -- including `None` for links above the first heading.
+    """
+
+    document_shard = accessor.document(address.document_id)
+    if document_shard is None:
+        return None
+    graph_refs = accessor.references(address.document_id)
+    if graph_refs is None:
+        return None
+    forward, boundaries = graph_refs
+    edges: list[GraphEdge] = []
+    if address.anchor is None:
+        edges.extend(
+            GraphEdge(
+                address, Address(address.document_id, anchor), "contains", GENERATED,
+                "section-parser",
+            )
+            for anchor in document_shard.get("sections", {})
+        )
+        edges.extend(
+            GraphEdge(
+                address,
+                Address(dependency["target"], None),
+                dependency["relation"],
+                AUTHORED,
+                "metadata",
+                pin=dependency.get("expected_revision"),
+            )
+            for dependency in document_shard.get("dependencies", ())
+        )
+    edges.extend(
+        GraphEdge(
+            Address(address.document_id, reference.get("source_anchor")),
+            Address(reference["target"], reference.get("target_anchor")),
+            reference["relation"],
+            reference["authority"],
+            reference["origin"],
+            reason=reference.get("reason"),
+        )
+        for reference in forward
+        if reference.get("source_anchor") == address.anchor
+    )
+    boundaries_for_address = tuple(
+        boundary for boundary in boundaries if boundary.get("source_anchor") == address.anchor
+    )
+    return tuple(edges), boundaries_for_address
+
+
+def targeted_reverse_edges(
+    accessor: TargetedProjection, address: Address
+) -> tuple[GraphEdge, ...] | None:
+    """Incoming authored/observed edges for one address, targeted.
+
+    Authored dependency edges only ever target a bare document address;
+    a section address's only structural incoming edge is its own document's
+    `contains` edge, which is synthesized here rather than cached.
+    """
+
+    edges: list[GraphEdge] = []
+    if address.anchor is None:
+        incoming_dependencies = accessor.incoming(address.document_id)
+        if incoming_dependencies is None:
+            return None
+        edges.extend(
+            GraphEdge(
+                Address(dependency["source"], None),
+                address,
+                dependency["relation"],
+                AUTHORED,
+                "metadata",
+                pin=dependency.get("expected_revision"),
+            )
+            for dependency in incoming_dependencies
+        )
+    else:
+        document_shard = accessor.document(address.document_id)
+        if document_shard is None:
+            return None
+        if address.anchor in document_shard.get("sections", {}):
+            edges.append(
+                GraphEdge(
+                    Address(address.document_id, None), address, "contains", GENERATED,
+                    "section-parser",
+                )
+            )
+    incoming_references = accessor.reverse_references(address.document_id)
+    if incoming_references is None:
+        return None
+    edges.extend(
+        GraphEdge(
+            Address(reference["source"], reference.get("source_anchor")),
+            address,
+            reference["relation"],
+            reference["authority"],
+            reference["origin"],
+            reason=reference.get("reason"),
+        )
+        for reference in incoming_references
+        if reference.get("target_anchor") == address.anchor
+    )
+    return tuple(edges)

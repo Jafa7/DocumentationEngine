@@ -20,11 +20,11 @@ Three operations write anything:
   below `.docsystem/cache`.
 
 Every other command — `doctor`, `show-config`, `catalog`, `validate`, `read`,
-`dependencies`, `context`, `impact`, `migration-report`, `migrate` without
-`--apply`, `readiness`, `finish`, `report draft`, and `index`/`changes`
-without `--write` — is read-only. An agent may call any read-only command
-freely to inspect project state before deciding whether a mutating command is
-warranted.
+`dependencies`, `references`, `context`, `impact`, `migration-report`,
+`migrate` without `--apply`, `readiness`, `finish`, `report draft`, and
+`index`/`changes` without `--write` — is read-only. An agent may call any
+read-only command freely to inspect project state before deciding whether a
+mutating command is warranted.
 
 `docsystem migrate` without `--apply` is always a preview: it computes and
 prints the same plan `--apply` would write, but touches nothing. An agent
@@ -132,6 +132,59 @@ touches values the engine has already classified as unambiguously resolved.
 Stable IDs themselves are project-assigned identity, not something an agent
 should generate as a side effect of an unrelated task.
 
+## `references` is navigation evidence, not write authority
+
+`docsystem references ID[#anchor] PROJECT [--reverse] [--transitive] [--json]`
+inspects the read-only section/reference graph: authored metadata relations
+(`depends_on`, `derived_from`, `related`, `supersedes`), observed Markdown
+links, and generated section containment. It never edits Markdown and has no
+`--apply`/write variant in this milestone.
+
+Default text output is deterministic, tab-separated rows with a fixed nine
+column schema:
+
+```text
+kind    relation  authority  origin  distance  class  address  path  reason
+```
+
+`kind` is `edge` for a traversal result or `boundary` for a visible unresolved
+target; a boundary row puts its source address in `address`, its unresolved raw
+target in `path`, and `category: reason` in `reason`. `class` is `direct` (distance 1)
+or `transitive` (only present with `--transitive`); `path` is the
+proving-path address chain, source-to-target, joined with ` -> `.
+`authority` is one of `authored` (explicit metadata), `observed` (a Markdown
+link), or `generated` (section containment); none of them grants write
+permission by itself, and observed/generated edges never imply that a
+target should be changed. `--json` prints one object carrying
+`"schema_version": 1` plus `address`, `reverse`, `transitive`, `results`
+(one entry per edge, mirroring the
+text columns), `boundaries`, and `completeness`. The authored layer is
+`complete` after validation. The observed layer is `complete` when all targets
+resolve, `bounded` when every unresolved target is explicitly listed, and
+`unknown` for reverse queries because an unresolved link cannot prove its
+intended target. An agent should treat `boundaries` and non-`error`
+diagnostics as visible context, not as a reason to invent an edge or a
+write target.
+
+An unknown document ID, an unknown or malformed anchor, or a metadata error
+that makes the requested graph ambiguous (for example a duplicate document ID
+or an unresolved reference target, mirroring `dependencies`) fails closed:
+exit `1`, no stdout, and one precise `ERROR` line per blocking diagnostic on
+stderr. Relation-specific
+cycle diagnostics are a corpus-wide check, not a per-query one, so they
+surface through `doctor`/`validate` rather than blocking an individual
+`references` call: `depends_on`, `derived_from` and `supersedes` cycles are
+reported there as errors, while a `related` cycle or an observed `references`
+cycle is allowed navigation evidence.
+
+`references` prefers a verified, generation-bound projection and reads only
+the shards its query actually touches; it transparently falls back to
+direct Markdown when the projection is absent, stale, incompatible with the
+current configuration, or fails per-shard integrity verification. Either
+path produces byte-identical stdout for the same query. A fallback always
+prints exactly one `NOTE` diagnostic to stderr — an agent should treat that
+note as informational, not as a query failure.
+
 ## Context is explicit, never silently truncated
 
 `docsystem context ID PROJECT` reports exactly what it included (navigation,
@@ -216,3 +269,19 @@ content, full generated projections, MCP context payloads or unbounded logs.
 is the preferred first step when available. It is read-only: it gathers compact
 diagnostic counts and emits a GitHub issue body draft, but it does not create
 the issue or mutate the adopter project.
+
+## Balanced documentation policy
+
+Routine corrective or internal-history detail (a bug fix, a small refactor,
+what changed and why for its own sake) belongs in Git history and tests, not
+in prose documentation. An observable contract change (CLI surface, output
+schema, projection format, public behavior) updates the one existing document
+that already owns it, instead of spawning a parallel description. A durable,
+hard-to-reverse choice (an identity model, a safety invariant, a naming or
+schema policy) is recorded as a decision, not folded into an architecture or
+roadmap document. Genuinely multi-step work that needs its own scope,
+acceptance and verification uses exactly one bounded roadmap entry, not a
+running log. A project owner may opt into recording more detail than this
+baseline for their own needs, but that choice can only add detail — it can
+never weaken the safety or public-contract documentation this contract and
+`AGENTS.md` already require.

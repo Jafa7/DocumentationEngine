@@ -125,8 +125,8 @@ After an index is written, `read`, `context` and `impact` serve from it: the
 projection is verified against the current sources (every included file is
 re-hashed against the generation manifest), against the active configuration
 fingerprint (so a semantic config change such as `relations.legacy_paths` or
-`navigation.extend_through` invalidates it), and against a generation hash
-reconstructed from the shards (so semantic shard tampering is caught). When
+`navigation.extend_through` invalidates it), and against a manifest-root
+generation hash that binds every shard hash (so semantic shard tampering is caught). When
 current, shards replace Markdown parsing while producing byte-identical output.
 An absent, stale, corrupt or incompatible projection produces a stderr warning
 and falls back to direct source reads. `changes` compares the current

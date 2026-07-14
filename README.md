@@ -225,6 +225,10 @@ docsystem read DOC-001 . --list
 docsystem read DOC-001 . --anchor purpose
 docsystem dependencies DOC-001 .
 docsystem dependencies DOC-001 . --reverse
+docsystem references DOC-001 .
+docsystem references DOC-001#purpose . --reverse
+docsystem references DOC-001 . --transitive
+docsystem references DOC-001 . --json
 docsystem context DOC-001 . --depth 1
 docsystem context DOC-001 . --depth 1 --json
 docsystem context DOC-001 . --outline
@@ -313,6 +317,23 @@ is an error.
 `dependencies` reports deterministic forward or reverse semantic edges.
 It fails without partial stdout when metadata errors make the requested graph
 incomplete; stale revision warnings remain non-blocking.
+
+`references ID[#anchor] PROJECT` is a read-only inspection of the section and
+reference graph: authored metadata relations, observed Markdown links, and
+generated section containment, each tagged with its `authority` so an
+observed link or a generated containment edge is never mistaken for write
+permission. `--reverse` lists incoming edges, `--transitive` expands beyond
+direct neighbors, and `--json` carries the same rows structurally. Unknown
+addresses and metadata errors that make the requested graph ambiguous fail
+closed with no stdout; unresolved targets (external URLs, non-document
+resources, and missing anchors) remain visible, non-blocking boundaries.
+Relation-specific cycle diagnostics (`depends_on`, `derived_from` and
+`supersedes` are errors; `related` and observed `references` cycles are
+allowed) surface through `doctor`/`validate`, which cover the whole graph,
+rather than blocking an individual `references` call. It prefers a verified
+projection and reads only the shards a query touches, falling back to direct
+Markdown with one diagnostic on any staleness or corruption — either path
+produces byte-identical stdout.
 
 Existing projects may opt into a migration bridge for relative path relations:
 

@@ -27,14 +27,29 @@ from docsystem.catalog import (
     validate_metadata,
 )
 from docsystem.config import CONFIG_FILENAME, DEFAULT_CONFIG, ProjectConfig, load_config
+from docsystem.graph import (
+    Address,
+    Boundary,
+    ProjectionUnavailable,
+    TraversalResult,
+    build_reference_graph,
+    graph_validation_issues,
+    parse_address,
+)
+from docsystem.graph import (
+    traverse as graph_traverse,
+)
 from docsystem.migration import apply_migration_plan, build_migration_plan, validate_plan
 from docsystem.projection import (
     LoadedProjection,
     build_projection,
     evaluate_changes,
     load_verified_projection,
+    open_targeted_projection,
     projection_status,
     resolve_generation_manifest,
+    targeted_forward_edges,
+    targeted_reverse_edges,
     write_projection,
 )
 from docsystem.projection import (
@@ -118,6 +133,21 @@ class _Selection:
         return f"{self.project_argument} --workspace-source {self.source}"
 
 
+@dataclass(frozen=True)
+class _ReferencesOutput:
+    results: tuple[TraversalResult, ...]
+    boundaries: tuple[Boundary, ...]
+    observed_completeness: str
+
+
+class _ReferenceGraphInvalid(Exception):
+    """Graph-affecting diagnostics that make a query unsafe to answer."""
+
+    def __init__(self, issues: tuple[ValidationIssue, ...]) -> None:
+        super().__init__("reference graph is invalid")
+        self.issues = issues
+
+
 def _resolve_selection(args: argparse.Namespace) -> _Selection | None:
     """Resolve the effective project, or print one diagnostic and fail closed.
 
@@ -191,6 +221,21 @@ def _boundary_json(item: RelationBoundary) -> dict[str, object]:
         "value": item.value,
         "reason": item.reason,
     }
+
+
+def _with_graph_issues(
+    issues: tuple[ValidationIssue, ...],
+    markdown_catalog: MarkdownCatalog,
+    config: ProjectConfig,
+) -> tuple[ValidationIssue, ...]:
+    """Fold relation-specific cycle and dead-reference diagnostics into validate/doctor."""
+
+    return tuple(
+        sorted(
+            (*issues, *graph_validation_issues(markdown_catalog, config)),
+            key=lambda issue: (issue.path.as_posix(), issue.severity, issue.message),
+        )
+    )
 
 
 def _print_validation_issues(
@@ -340,7 +385,10 @@ def doctor(project_root: Path, *, verbose_adoption: bool = False) -> int:
             file=sys.stderr,
         )
         return 1
-    issues = validate_catalog(build_catalog(config), config)
+    markdown_catalog = build_catalog(config)
+    issues = _with_graph_issues(
+        validate_catalog(markdown_catalog, config), markdown_catalog, config
+    )
     if _print_validation_issues(
         issues, verbose_adoption=verbose_adoption
     ):
@@ -400,7 +448,10 @@ def validate(project_root: Path, *, verbose_adoption: bool = False) -> int:
     except ValueError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
-    issues = validate_catalog(build_catalog(config), config)
+    markdown_catalog = build_catalog(config)
+    issues = _with_graph_issues(
+        validate_catalog(markdown_catalog, config), markdown_catalog, config
+    )
     if _print_validation_issues(
         issues, verbose_adoption=verbose_adoption
     ):
@@ -2375,6 +2426,261 @@ def dependencies(project_root: Path, document_id: str, *, reverse: bool = False)
     return 0
 
 
+# Text column order for `references`: kind, relation, authority, origin,
+# distance, class (direct/transitive), address, path, reason. `kind` is
+# "edge" for a traversal result or "boundary" for a visible unresolved
+# target; unused columns for a boundary row are "-".
+_REFERENCES_COLUMNS = (
+    "kind",
+    "relation",
+    "authority",
+    "origin",
+    "distance",
+    "class",
+    "address",
+    "path",
+    "reason",
+)
+
+
+def _references_result_row(result: TraversalResult) -> str:
+    path = " -> ".join(address.text for address in result.path.addresses)
+    return "\t".join(
+        (
+            "edge",
+            result.relation,
+            result.authority,
+            result.origin,
+            str(result.distance),
+            "direct" if result.direct else "transitive",
+            result.address.text,
+            path,
+            result.reason or "-",
+        )
+    )
+
+
+def _references_boundary_row(boundary: Boundary) -> str:
+    return "\t".join(
+        (
+            "boundary",
+            "-",
+            "-",
+            "-",
+            "-",
+            "-",
+            boundary.source.text,
+            boundary.raw_target,
+            f"{boundary.category}: {boundary.reason}",
+        )
+    )
+
+
+def _references_result_json(result: TraversalResult) -> dict[str, object]:
+    return {
+        "address": result.address.text,
+        "relation": result.relation,
+        "authority": result.authority,
+        "origin": result.origin,
+        "distance": result.distance,
+        "direct": result.direct,
+        "path": [address.text for address in result.path.addresses],
+        "reason": result.reason,
+    }
+
+
+def _references_boundary_json(boundary: Boundary) -> dict[str, object]:
+    return {
+        "source": boundary.source.text,
+        "raw_target": boundary.raw_target,
+        "category": boundary.category,
+        "reason": boundary.reason,
+    }
+
+
+def _references_direct(
+    config: ProjectConfig, address: Address, *, reverse: bool, transitive: bool
+) -> _ReferencesOutput | None:
+    """Resolve entirely from Markdown: the fallback and no-projection path."""
+
+    markdown_catalog = build_catalog(config)
+    try:
+        document = find_document(markdown_catalog, address.document_id)
+    except ValueError:
+        return None
+    if address.anchor is not None and address.anchor not in {
+        section.anchor for section in document.sections
+    }:
+        return None
+    all_graph_issues = (
+        *validate_membership(markdown_catalog),
+        *validate_metadata(markdown_catalog),
+        *validate_adoption(markdown_catalog, config),
+    )
+    relevant_issues = (
+        all_graph_issues
+        if reverse or transitive
+        else tuple(
+            issue
+            for issue in all_graph_issues
+            if issue.path == document.path
+        )
+    )
+    blockers = tuple(
+        issue
+        for issue in relevant_issues
+        if issue.affects_graph and issue.severity != "warning"
+    )
+    if blockers:
+        raise _ReferenceGraphInvalid(blockers)
+    reference_graph = build_reference_graph(markdown_catalog, config)
+    results = reference_graph.traverse(address, reverse=reverse, transitive=transitive)
+    boundary_sources = (
+        ()
+        if reverse
+        else (address, *(result.address for result in results if transitive))
+    )
+    boundaries = tuple(
+        sorted(
+            (
+                boundary
+                for source in boundary_sources
+                for boundary in reference_graph.boundaries_from(source)
+            ),
+            key=lambda item: (item.source.text, item.category, item.raw_target),
+        )
+    )
+    observed = "unknown" if reverse else ("bounded" if boundaries else "complete")
+    return _ReferencesOutput(results, boundaries, observed)
+
+
+def _references_projected(
+    config: ProjectConfig, address: Address, *, reverse: bool, transitive: bool
+) -> _ReferencesOutput | None:
+    """Resolve using only the shards the query touches, or raise/return None.
+
+    Returns `None` for a genuinely unknown ID/anchor (proven by manifest
+    membership, which `open_targeted_projection` already bound to current
+    source freshness). Raises `ProjectionUnavailable` when a *touched* shard
+    fails verification, so the caller can fall back to `_references_direct`
+    for the whole query instead of reporting a partial result.
+    """
+
+    accessor, reason = open_targeted_projection(config)
+    if accessor is None:
+        raise ProjectionUnavailable(reason)
+    if address.document_id not in accessor.manifest.get("documents", {}):
+        return None
+    if address.anchor is not None:
+        document_shard = accessor.document(address.document_id)
+        if document_shard is None:
+            raise ProjectionUnavailable(f"document shard unavailable for {address.document_id}")
+        if address.anchor not in document_shard.get("sections", {}):
+            return None
+    observed_boundaries: dict[tuple[str, str, str], Boundary] = {}
+
+    def _forward(current: Address) -> tuple:
+        edges = targeted_forward_edges(accessor, current)
+        if edges is None:
+            raise ProjectionUnavailable(f"references shard unavailable for {current.text}")
+        for item in edges[1]:
+            boundary = Boundary(
+                current, item["raw_target"], item["category"], item["reason"]
+            )
+            observed_boundaries[
+                (boundary.source.text, boundary.category, boundary.raw_target)
+            ] = boundary
+        return edges[0]
+
+    def _reverse_edges(current: Address) -> tuple:
+        edges = targeted_reverse_edges(accessor, current)
+        if edges is None:
+            raise ProjectionUnavailable(f"reverse shard unavailable for {current.text}")
+        return edges
+
+    results = graph_traverse(
+        address, forward=_forward, reverse_edges=_reverse_edges, reverse=reverse,
+        transitive=transitive,
+    )
+    boundaries = tuple(
+        sorted(
+            observed_boundaries.values(),
+            key=lambda item: (item.source.text, item.category, item.raw_target),
+        )
+    )
+    observed = "unknown" if reverse else ("bounded" if boundaries else "complete")
+    return _ReferencesOutput(results, boundaries, observed)
+
+
+def references(
+    project_root: Path,
+    raw_address: str,
+    *,
+    reverse: bool = False,
+    transitive: bool = False,
+    json_output: bool = False,
+) -> int:
+    try:
+        config = load_config(project_root)
+    except ValueError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    try:
+        address = parse_address(raw_address)
+    except ValueError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+
+    diagnostic: str | None = None
+    output = None
+    try:
+        output = _references_projected(
+            config, address, reverse=reverse, transitive=transitive
+        )
+    except ProjectionUnavailable as error:
+        diagnostic = f"{error}; using direct Markdown"
+        try:
+            output = _references_direct(
+                config, address, reverse=reverse, transitive=transitive
+            )
+        except _ReferenceGraphInvalid as invalid:
+            for issue in invalid.issues:
+                print(
+                    f"ERROR: {issue.path.as_posix()}: {issue.message}",
+                    file=sys.stderr,
+                )
+            return 1
+
+    if output is None:
+        print(f"ERROR: unknown graph address: {address.text}", file=sys.stderr)
+        return 1
+
+    if diagnostic is not None:
+        print(f"NOTE: {diagnostic}", file=sys.stderr)
+
+    results, boundaries = output.results, output.boundaries
+    if json_output:
+        _print_json(
+            {
+                "address": address.text,
+                "reverse": reverse,
+                "transitive": transitive,
+                "results": [_references_result_json(result) for result in results],
+                "boundaries": [_references_boundary_json(boundary) for boundary in boundaries],
+                "completeness": {
+                    "authored": "complete",
+                    "observed": output.observed_completeness,
+                },
+            }
+        )
+        return 0
+    for result in results:
+        print(_references_result_row(result))
+    for boundary in boundaries:
+        print(_references_boundary_row(boundary))
+    return 0
+
+
 def show_config(project_root: Path) -> int:
     try:
         config = load_config(project_root)
@@ -2566,6 +2872,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dependencies_parser.add_argument("--reverse", action="store_true")
 
+    references_parser = subparsers.add_parser(
+        "references",
+        help="Read-only forward/reverse section-and-reference graph inspection.",
+    )
+    references_parser.add_argument("address", metavar="ID[#anchor]")
+    references_parser.add_argument("project", nargs="?", type=Path, default=Path.cwd())
+    references_parser.add_argument("--reverse", action="store_true")
+    references_parser.add_argument("--transitive", action="store_true")
+    references_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print a deterministic JSON object instead of tab-separated text.",
+    )
+
     context_parser = subparsers.add_parser("context", help="Build an inspectable context packet.")
     context_parser.add_argument("document_id")
     context_parser.add_argument("project", nargs="?", type=Path, default=Path.cwd())
@@ -2754,6 +3075,7 @@ def build_parser() -> argparse.ArgumentParser:
     for command_parser in (
         read_parser,
         dependencies_parser,
+        references_parser,
         context_parser,
         impact_parser,
         migration_report_parser,
@@ -2801,6 +3123,14 @@ def main() -> int:
         )
     if args.command == "dependencies":
         return dependencies(project, args.document_id, reverse=args.reverse)
+    if args.command == "references":
+        return references(
+            project,
+            args.address,
+            reverse=args.reverse,
+            transitive=args.transitive,
+            json_output=args.json_output,
+        )
     if args.command == "catalog":
         return catalog(project, explain=args.explain, json_output=args.json_output)
     if args.command == "context":

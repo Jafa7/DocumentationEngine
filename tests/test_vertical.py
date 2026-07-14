@@ -438,7 +438,7 @@ def test_semantic_shard_tampering_falls_back_and_preserves_dependency(
     # back to direct Markdown, warns, and still reports the dropped dependency.
     assert context(tmp_path, "DOC-002", depth=1) == 0
     captured = capsys.readouterr()
-    assert "projection corrupt; using direct Markdown" in captured.err
+    assert "projection document shard invalid: DOC-002; using direct Markdown" in captured.err
     assert "## DOC-001 — README.md" in captured.out
     assert "DOC-002: depends_on README.md -> DOC-001" in captured.out
 
@@ -480,8 +480,32 @@ def test_manifest_source_hash_tampering_falls_back_to_markdown(
 
     assert context(tmp_path, "DOC-002", depth=1) == 0
     captured = capsys.readouterr()
-    assert "projection manifest mismatch; using direct Markdown" in captured.err
+    assert "projection corrupt; using direct Markdown" in captured.err
     assert "## DOC-001 — README.md" in captured.out
+
+
+def test_changes_does_not_trust_a_manifest_outside_its_generation_root(
+    tmp_path: Path, capsys
+) -> None:
+    vertical_project(tmp_path)
+    config = load_config(tmp_path)
+    generation = write_projection(config, build_projection(build_catalog(config), config))
+    manifest_path = (
+        tmp_path
+        / ".docsystem"
+        / "cache"
+        / "generations"
+        / generation
+        / "manifest.json"
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["documents"]["DOC-002"]["source_sha256"] = "0" * 64
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    assert changes(tmp_path, json_output=True) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "unavailable"
+    assert payload["changes"] == []
 
 
 def test_context_json_is_deterministic_and_machine_readable(
