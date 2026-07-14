@@ -87,6 +87,7 @@ The adapter is deliberately a wrapper, not a second implementation:
 | `metadata_inventory` | object | `docsystem metadata-inventory PROJECT [--field NAME --values] --json` |
 | `profile_check` | object | `docsystem profile-check PROJECT --json` |
 | `delivery_map` | object | `docsystem delivery-map PROJECT [--contract ID#anchor ...] --json` |
+| `change_plan` | object | `docsystem change-plan ID[#anchor] PROJECT [--reverse] [--transitive] [--with-delivery] --json` |
 | `criteria` | object | `docsystem criteria PROJECT --json` |
 | `workstream` | object | `docsystem workstream ID PROJECT --record RECORD --json` |
 | `intake` | object | `docsystem intake PROJECT --request REQUEST --json` |

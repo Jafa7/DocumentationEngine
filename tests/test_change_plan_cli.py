@@ -1,9 +1,16 @@
 import json
 from pathlib import Path
 
+from docsystem import mcp_server
 from docsystem.catalog import build_catalog
-from docsystem.cli import change_plan, index_projection, initialize
-from docsystem.config import load_config
+from docsystem.cli import (
+    agent_instructions,
+    build_parser,
+    change_plan,
+    index_projection,
+    initialize,
+)
+from docsystem.config import CONFIG_FILENAME, load_config
 from docsystem.projection import build_projection, cache_root, write_projection
 
 
@@ -52,6 +59,52 @@ def bootstrap_project(tmp_path: Path) -> Path:
         "---\nid: DOC-004\nrevision: 1\n---\n\n# Doc D\n\nBody.\n",
     )
     return tmp_path
+
+
+def configure_delivery(
+    project: Path, *, overlap: bool = False, invalid: bool = False
+) -> None:
+    config_path = project / CONFIG_FILENAME
+    config = config_path.read_text(encoding="utf-8").replace(
+        "[traceability]\n\n",
+        "[traceability]\n"
+        'metadata_field = "delivers"\n'
+        'document_types = ["roadmap"]\n'
+        'evidence_role = "completion"\n'
+        'terminal_statuses = ["completed"]\n\n',
+    )
+    config += """
+[profiles.delivery]
+document_types = ["roadmap"]
+[profiles.delivery.roles]
+completion = ["completion-evidence"]
+"""
+    config_path.write_text(config, encoding="utf-8")
+    target = "DOC-999#missing" if invalid else "DOC-002#setup"
+    _write(
+        project,
+        "roadmap/delivery-one.md",
+        "---\nid: RM-001\nrevision: 1\ntype: roadmap\nstatus: completed\n"
+        f"delivers: [{target}]\n---\n# Delivery one\n\n"
+        '<a id="completion-evidence"></a>\n## Completion\n\nHistorical evidence.\n',
+    )
+    index = project / "plan" / "roadmap" / "README.md"
+    index.write_text(
+        index.read_text(encoding="utf-8") + "[Delivery one](delivery-one.md)\n",
+        encoding="utf-8",
+    )
+    if overlap:
+        _write(
+            project,
+            "roadmap/delivery-two.md",
+            "---\nid: RM-002\nrevision: 1\ntype: roadmap\nstatus: active\n"
+            "delivers: [DOC-002#setup]\n---\n# Delivery two\n\n"
+            '<a id="completion-evidence"></a>\n## Completion\n\nActive evidence.\n',
+        )
+        index.write_text(
+            index.read_text(encoding="utf-8") + "[Delivery two](delivery-two.md)\n",
+            encoding="utf-8",
+        )
 
 
 def test_document_and_section_target_are_read_at_distance_zero(
@@ -307,6 +360,138 @@ def test_json_schema(tmp_path: Path, capsys) -> None:
     assert isinstance(payload["items"], list)
     assert isinstance(payload["boundaries"], list)
     assert set(payload["completeness"]) == {"authored", "observed", "generated"}
+
+
+def test_delivery_review_is_opt_in_and_default_output_stays_compatible(
+    tmp_path: Path, capsys
+) -> None:
+    bootstrap_project(tmp_path)
+    capsys.readouterr()
+    assert change_plan(tmp_path, "DOC-002#setup", json_output=True) == 0
+    baseline = capsys.readouterr().out
+
+    configure_delivery(tmp_path)
+    assert change_plan(tmp_path, "DOC-002#setup", json_output=True) == 0
+    default_output = capsys.readouterr().out
+    assert default_output == baseline
+    assert "delivery" not in json.loads(default_output)
+
+    args = build_parser().parse_args(
+        ["change-plan", "DOC-002#setup", "/project", "--with-delivery"]
+    )
+    assert args.with_delivery is True
+
+
+def test_delivery_review_owner_evidence_and_overlap_are_review_only(
+    tmp_path: Path, capsys
+) -> None:
+    bootstrap_project(tmp_path)
+    configure_delivery(tmp_path, overlap=True)
+    capsys.readouterr()
+
+    assert change_plan(
+        tmp_path, "DOC-002#setup", with_delivery=True, json_output=True
+    ) == 0
+    payload = json.loads(capsys.readouterr().out)
+    review = payload["delivery"]
+    assert review["configured"] is True
+    assert review["contract"] == "DOC-002#setup"
+    assert review["state"] == "overlap"
+    assert len(review["items"]) == 4
+    assert {item["role"] for item in review["items"]} == {"owner", "evidence"}
+    assert {item["disposition"] for item in review["items"]} == {"review"}
+    assert {item["owner_id"] for item in review["items"]} == {"RM-001", "RM-002"}
+    assert {item["delivery_disposition"] for item in review["items"]} == {
+        "active",
+        "delivered",
+    }
+
+    assert change_plan(tmp_path, "DOC-002#setup", with_delivery=True) == 0
+    rows = [line.split("\t") for line in capsys.readouterr().out.splitlines()]
+    delivery_rows = [row for row in rows if row[0].startswith("delivery")]
+    assert len(delivery_rows) == 5
+    assert all(len(row) == 11 for row in delivery_rows)
+    assert delivery_rows[0][-1] == "overlap"
+    assert {row[2] for row in delivery_rows[1:]} == {"review"}
+
+    assert agent_instructions(tmp_path) == 0
+    instructions = capsys.readouterr().out
+    assert "docsystem change-plan ID#anchor" in instructions
+    assert "--with-delivery --json" in instructions
+
+
+def test_delivery_review_reports_unowned_and_unconfigured(
+    tmp_path: Path, capsys
+) -> None:
+    bootstrap_project(tmp_path)
+    capsys.readouterr()
+
+    assert change_plan(
+        tmp_path, "DOC-001#intro", with_delivery=True, json_output=True
+    ) == 0
+    unconfigured = json.loads(capsys.readouterr().out)["delivery"]
+    assert unconfigured == {
+        "configured": False,
+        "contract": "DOC-001#intro",
+        "items": [],
+        "state": "unconfigured",
+    }
+
+    configure_delivery(tmp_path)
+    assert change_plan(
+        tmp_path, "DOC-001#intro", with_delivery=True, json_output=True
+    ) == 0
+    unowned = json.loads(capsys.readouterr().out)["delivery"]
+    assert unowned["configured"] is True
+    assert unowned["state"] == "unowned"
+    assert unowned["items"] == []
+
+
+def test_delivery_review_requires_exact_contract_and_valid_inventory(
+    tmp_path: Path, capsys
+) -> None:
+    bootstrap_project(tmp_path)
+    capsys.readouterr()
+    assert change_plan(tmp_path, "DOC-002", with_delivery=True) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "requires an exact ID#anchor" in captured.err
+
+    configure_delivery(tmp_path, invalid=True)
+    assert change_plan(
+        tmp_path, "DOC-002#setup", with_delivery=True, json_output=True
+    ) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "delivery unknown-source-document" in captured.err
+    assert "DOC-999" in captured.err
+
+
+def test_delivery_aware_plan_is_projection_equivalent_and_available_over_mcp(
+    tmp_path: Path, capsys
+) -> None:
+    bootstrap_project(tmp_path)
+    configure_delivery(tmp_path)
+    capsys.readouterr()
+
+    assert change_plan(
+        tmp_path, "DOC-002#setup", with_delivery=True, json_output=True
+    ) == 0
+    direct = capsys.readouterr().out
+    assert index_projection(tmp_path, write=True) == 0
+    capsys.readouterr()
+    assert change_plan(
+        tmp_path, "DOC-002#setup", with_delivery=True, json_output=True
+    ) == 0
+    projected = capsys.readouterr()
+    assert projected.out == direct
+    assert projected.err == ""
+
+    mcp_payload = mcp_server.change_plan(
+        "DOC-002#setup", str(tmp_path), with_delivery=True
+    )
+    assert mcp_payload["delivery"]["state"] == "owned"
+    assert mcp_server.change_plan in mcp_server._TOOLS
 
 
 def test_direct_and_projected_text_are_byte_identical(tmp_path: Path, capsys) -> None:

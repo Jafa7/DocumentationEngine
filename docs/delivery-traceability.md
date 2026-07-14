@@ -91,6 +91,12 @@ unrelated malformed claim can conceal ownership, so it blocks a completeness
 claim instead of being silently ignored. Full mode remains available for
 inventory and adoption work.
 
+For planning a change, `docsystem change-plan ID#anchor PROJECT --with-delivery
+--json` embeds the same targeted evidence as a separate
+review-only layer. Owner and evidence addresses never become mandatory reads,
+graph relations or write targets. Use standalone `delivery-map` when no graph
+change plan is needed.
+
 An absent or empty `[traceability]` table preserves existing behavior. The
 command never edits Markdown, resolves implementation state from source code,
 or authorizes a mechanical change. A later automation layer may use this map

@@ -43,9 +43,11 @@ from docsystem.catalog import (
 from docsystem.change_plan import (
     ChangePlan,
     Completeness,
+    DeliveryReview,
     InclusionReason,
     PlanItem,
     build_change_plan,
+    build_delivery_review,
 )
 from docsystem.config import (
     CONFIG_FILENAME,
@@ -5237,6 +5239,66 @@ def _change_plan_item_json(item: PlanItem) -> dict[str, object]:
     }
 
 
+def _delivery_review_json(review: DeliveryReview) -> dict[str, object]:
+    return {
+        "contract": review.contract.text,
+        "configured": review.configured,
+        "state": review.state,
+        "items": [
+            {
+                "address": item.address.text,
+                "role": item.role,
+                "disposition": item.disposition,
+                "owner_id": item.owner_id,
+                "owner_status": item.owner_status,
+                "delivery_disposition": item.delivery_disposition,
+            }
+            for item in review.items
+        ],
+    }
+
+
+def _delivery_review_rows(review: DeliveryReview) -> tuple[str, ...]:
+    authority = "authored" if review.configured else "none"
+    rows = [
+        "\t".join(
+            (
+                "delivery-state",
+                review.contract.text,
+                "-",
+                "delivery",
+                "ownership",
+                authority,
+                review.contract.text,
+                "0",
+                "target",
+                review.contract.text,
+                review.state,
+            )
+        )
+    ]
+    for item in review.items:
+        rows.append(
+            "\t".join(
+                (
+                    "delivery",
+                    item.address.text,
+                    item.disposition,
+                    "delivery",
+                    f"delivery-{item.role}",
+                    "authored",
+                    review.contract.text,
+                    "1",
+                    "direct",
+                    f"{review.contract.text} -> {item.address.text}",
+                    f"owner={item.owner_id};status={item.owner_status or '-'};"
+                    f"delivery={item.delivery_disposition}",
+                )
+            )
+        )
+    return tuple(rows)
+
+
 def _change_plan_direct(
     config: ProjectConfig, address: Address, *, reverse: bool, transitive: bool
 ) -> ChangePlan | None:
@@ -5361,6 +5423,7 @@ def change_plan(
     *,
     reverse: bool = False,
     transitive: bool = False,
+    with_delivery: bool = False,
     json_output: bool = False,
 ) -> int:
     try:
@@ -5373,6 +5436,38 @@ def change_plan(
     except ValueError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
+
+    delivery_review: DeliveryReview | None = None
+    if with_delivery:
+        if address.anchor is None:
+            print(
+                "ERROR: --with-delivery requires an exact ID#anchor address",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            delivery_catalog = build_catalog(config)
+            delivery_issues = _with_graph_issues(
+                validate_catalog(delivery_catalog, config), delivery_catalog, config
+            )
+            delivery_blockers = tuple(
+                issue
+                for issue in delivery_issues
+                if issue.severity != "warning"
+            )
+            if delivery_blockers:
+                _print_validation_issues(delivery_blockers, verbose_adoption=False)
+                return 1
+            delivery_report = evaluate_delivery(
+                delivery_catalog, config, contracts=(address.text,)
+            )
+        except (OSError, ValueError) as error:
+            print(f"ERROR: {error}", file=sys.stderr)
+            return 1
+        if delivery_report.violations:
+            _print_delivery_violations(delivery_report)
+            return 1
+        delivery_review = build_delivery_review(address, delivery_report)
 
     diagnostic: str | None = None
     plan: ChangePlan | None = None
@@ -5398,8 +5493,7 @@ def change_plan(
         print(f"NOTE: {diagnostic}", file=sys.stderr)
 
     if json_output:
-        _print_json(
-            {
+        payload: dict[str, object] = {
                 "address": address.text,
                 "reverse": reverse,
                 "transitive": transitive,
@@ -5413,7 +5507,9 @@ def change_plan(
                     "generated": plan.completeness.generated,
                 },
             }
-        )
+        if delivery_review is not None:
+            payload["delivery"] = _delivery_review_json(delivery_review)
+        _print_json(payload)
         return 0
     for item in plan.items:
         for row in _change_plan_item_rows(item):
@@ -5422,6 +5518,9 @@ def change_plan(
         print(_change_plan_boundary_row(boundary))
     for row in _change_plan_completeness_rows(plan.completeness):
         print(row)
+    if delivery_review is not None:
+        for row in _delivery_review_rows(delivery_review):
+            print(row)
     return 0
 
 
@@ -6457,10 +6556,11 @@ def _agent_instructions_text(selection: _Selection, config: ProjectConfig) -> st
         )
     if config.delivery_policy is not None:
         out.append(
-            "- Before changing an exact source contract, inspect bounded delivery "
-            f"ownership with `docsystem delivery-map {selection.selector} "
-            "--contract ID#anchor --json`; `unowned_contracts` means no configured "
-            "owner was found, not permission to infer or create one."
+            "- Before changing an exact source contract, build the combined "
+            f"review plan with `docsystem change-plan ID#anchor {selection.selector} "
+            "--with-delivery --json`; use `docsystem delivery-map PROJECT "
+            "--contract ID#anchor --json` when only ownership evidence is needed. "
+            "An unowned state is not permission to infer or create an owner."
         )
     out.append(
         "- If an additional read materially changes the plan, scope, decision, "
@@ -6628,6 +6728,11 @@ def build_parser() -> argparse.ArgumentParser:
     change_plan_parser.add_argument("project", nargs="?", type=Path, default=Path.cwd())
     change_plan_parser.add_argument("--reverse", action="store_true")
     change_plan_parser.add_argument("--transitive", action="store_true")
+    change_plan_parser.add_argument(
+        "--with-delivery",
+        action="store_true",
+        help="Add review-only owner/evidence for an exact source contract.",
+    )
     change_plan_parser.add_argument(
         "--json",
         action="store_true",
@@ -7202,6 +7307,7 @@ def main() -> int:
             args.address,
             reverse=args.reverse,
             transitive=args.transitive,
+            with_delivery=args.with_delivery,
             json_output=args.json_output,
         )
     if args.command == "maintenance":

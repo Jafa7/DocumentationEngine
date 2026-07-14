@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from docsystem.delivery import DeliveryReport
 from docsystem.graph import AUTHORED, GENERATED, Address, Boundary, TraversalResult
 
 # Dispositions. This milestone never produces anything beyond `read`/`review`:
@@ -85,6 +86,77 @@ class ChangePlan:
     items: tuple[PlanItem, ...]
     boundaries: tuple[Boundary, ...]
     completeness: Completeness
+
+
+@dataclass(frozen=True)
+class DeliveryReviewItem:
+    """One delivery owner or evidence address, always review-only."""
+
+    address: Address
+    role: str
+    disposition: str
+    owner_id: str
+    owner_status: str | None
+    delivery_disposition: str
+
+
+@dataclass(frozen=True)
+class DeliveryReview:
+    """Task-sized delivery evidence attached to an exact-contract plan."""
+
+    contract: Address
+    configured: bool
+    state: str
+    items: tuple[DeliveryReviewItem, ...]
+
+
+def build_delivery_review(
+    contract: Address, report: DeliveryReport
+) -> DeliveryReview:
+    """Translate a valid targeted report into immutable review-only evidence."""
+
+    items: list[DeliveryReviewItem] = []
+    for mapping in report.mappings:
+        items.extend(
+            (
+                DeliveryReviewItem(
+                    address=Address(mapping.owner_id),
+                    role="owner",
+                    disposition=REVIEW,
+                    owner_id=mapping.owner_id,
+                    owner_status=mapping.owner_status,
+                    delivery_disposition=mapping.disposition,
+                ),
+                DeliveryReviewItem(
+                    address=Address(*mapping.evidence.split("#", 1)),
+                    role="evidence",
+                    disposition=REVIEW,
+                    owner_id=mapping.owner_id,
+                    owner_status=mapping.owner_status,
+                    delivery_disposition=mapping.disposition,
+                ),
+            )
+        )
+    role_order = {"owner": 0, "evidence": 1}
+    ordered = tuple(
+        sorted(
+            items,
+            key=lambda item: (
+                item.owner_id,
+                role_order[item.role],
+                item.address.text,
+            ),
+        )
+    )
+    if not report.configured:
+        state = "unconfigured"
+    elif report.overlaps:
+        state = "overlap"
+    elif report.mappings:
+        state = "owned"
+    else:
+        state = "unowned"
+    return DeliveryReview(contract, report.configured, state, ordered)
 
 
 def _reason_sort_key(reason: InclusionReason) -> tuple[object, ...]:

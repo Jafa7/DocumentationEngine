@@ -233,6 +233,7 @@ docsystem change-plan DOC-001 .
 docsystem change-plan DOC-001#purpose . --reverse
 docsystem change-plan DOC-001 . --transitive
 docsystem change-plan DOC-001 . --json
+docsystem change-plan DOC-001#purpose . --with-delivery --json
 docsystem maintenance install-version . --check
 docsystem maintenance install-version . --preview
 docsystem maintenance install-version . --check --json
@@ -450,6 +451,11 @@ Completeness is reported per graph layer (`authored`, `observed`, `generated`)
 instead of one collapsing flag, and unresolved targets remain visible
 boundaries with their source address. There is no `--write`/`--apply`: like
 `references`, this command never edits Markdown.
+
+For an exact section, opt-in `--with-delivery` adds a separate review-only
+layer containing authored delivery owners and their evidence. The layer
+reports `owned`, `overlap`, `unowned` or `unconfigured`; it never promotes an
+owner or historical evidence to `read` or write authority.
 
 `maintenance TARGET PROJECT --check|--preview|--write` manages one
 project-declared `[[maintenance]]` target: a canonical

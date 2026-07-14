@@ -261,11 +261,20 @@ or promotes evidence into write authority.
 
 ## `change-plan` is a read/review plan, never write authority
 
-`docsystem change-plan ID[#anchor] PROJECT [--reverse] [--transitive] [--json]`
+`docsystem change-plan ID[#anchor] PROJECT [--reverse] [--transitive]
+[--with-delivery] [--json]`
 builds an explainable, read-only change plan on top of the same section/
 reference graph `references` inspects. It has no `--write`/`--apply` variant
 in this milestone: every item is either `read` or `review`, and no edge --
 however authored -- grants write permission by itself.
+
+For an exact section address, `--with-delivery` adds a separate delivery review
+layer without changing ordinary plan items. The layer reports `unconfigured`,
+`unowned`, `owned` or `overlap` and lists each owner document and exact evidence
+section with disposition `review`. Active and completed owners remain
+review-only; historical evidence is not refreshed or rewritten. Document-only
+targets are rejected because delivery contracts are section addresses. Invalid
+authored traceability blocks the combined plan with no partial stdout.
 
 The requested document or section is always a `read` item at distance 0. An
 authored `depends_on` edge from the target adds its direct or transitive
@@ -296,7 +305,9 @@ kind    address  disposition  scope  relation  authority  origin  distance  clas
 ```
 
 `kind` is `item` for one plan-item reason, `boundary` for a visible unresolved
-target, or `completeness` for one graph-layer state; a row's unused columns
+target, or `completeness` for one graph-layer state. With delivery enabled,
+`delivery-state` reports its classification and `delivery` reports review-only
+owner/evidence addresses; a row's unused columns
 are `-`. An `item` row's `scope` is `target` (the distance-0 request),
 `forward` or `reverse`; `class` is `target`, `direct` (distance 1) or
 `transitive`. A `boundary` row mirrors `references`: `address` carries the
@@ -307,7 +318,9 @@ object carrying `"schema_version": 1` plus `address`, `reverse`, `transitive`,
 `items` (one entry per address with `address`, `disposition` and a `reasons`
 list carrying `scope`, `relation`, `authority`, `origin`, `distance`, `direct`,
 `path` and `detail`), `boundaries` (same shape as `references`), and
-`completeness`.
+`completeness`. The optional JSON `delivery` object carries `contract`,
+`configured`, `state` and body-free `items`; it is absent without the flag so
+the default payload remains compatible.
 
 `completeness` never collapses to one boolean: `authored`, `observed` and
 `authored` and `observed` use `complete`, `bounded` (visible, every unresolved

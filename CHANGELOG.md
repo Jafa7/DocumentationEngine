@@ -34,6 +34,8 @@ All notable changes to Documentation Engine are documented in this file.
   completion evidence without reading or returning authored bodies.
 - Repeatable targeted delivery-contract lookup reports bounded mappings and
   explicit unowned contracts, with matching MCP and generated-agent guidance.
+- Opt-in delivery-aware change plans add owner and completion evidence as a
+  separate review-only layer, with default-output compatibility and MCP parity.
 
 ## [0.2.0] - 2026-07-13
 

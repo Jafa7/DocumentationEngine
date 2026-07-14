@@ -244,6 +244,28 @@ def delivery_map(
     return _json_tool(arguments, allow_failure_payload=True)
 
 
+def change_plan(
+    address: str,
+    project: str,
+    reverse: bool = False,
+    transitive: bool = False,
+    with_delivery: bool = False,
+    source: str | None = None,
+    workspace: str | None = None,
+) -> dict:
+    """Build a read/review change plan with optional delivery evidence."""
+
+    arguments = ["change-plan", address, project, "--json"]
+    if reverse:
+        arguments.append("--reverse")
+    if transitive:
+        arguments.append("--transitive")
+    if with_delivery:
+        arguments.append("--with-delivery")
+    arguments.extend(_selection_arguments(source, workspace))
+    return _json_tool(arguments)
+
+
 def criteria(
     project: str, source: str | None = None, workspace: str | None = None
 ) -> dict:
@@ -640,6 +662,7 @@ _TOOLS = (
     metadata_inventory,
     profile_check,
     delivery_map,
+    change_plan,
     criteria,
     workstream,
     intake,
