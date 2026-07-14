@@ -398,6 +398,15 @@ gate and does not replace the existing lightweight finish handoff. The engine
 does not execute workers, approve its own result, authenticate a declared
 reviewer or infer product semantics.
 
+Versioned `intake.criteria` provide a separate, read-only idea-placement
+policy. An AI agent translates a human idea into a bounded JSON request with
+stable candidate addresses and explicit semantic signals. The core validates
+that envelope and applies deterministic rules to select one existing owner,
+propose a draft/workstream, or block ambiguity. It does not run an LLM,
+authenticate the assertions, create source, or reserve the proposed stable ID.
+A catalog allocation guard lets a later authorized writer detect intervening
+catalog changes before acting.
+
 ## Product sequence
 
 1. Configuration contract, bootstrap and diagnostics.
@@ -420,3 +429,5 @@ reviewer or infer product semantics.
 12. Lossless compact content delivery with stable address/reason manifests.
 13. Provider-neutral bounded workstream criteria, corrective lineage and
     opt-in fail-closed finish evidence.
+14. Bounded semantic idea intake with versioned placement policy and no source
+    mutation.

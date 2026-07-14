@@ -25,6 +25,8 @@ link to that owner rather than repeat commands or policy.
   deduplication, inclusion reasons and diagnostics drill-down.
 - [Bounded workstream evidence](workstream-evidence.md) — versioned completion
   criteria, corrective lineage and fail-closed finish evidence.
+- [Deterministic idea intake](idea-intake.md) — place an agent-interpreted idea
+  through bounded evidence and versioned project policy without source writes.
 
 ## Integrations and project structure
 

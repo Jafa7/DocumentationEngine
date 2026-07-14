@@ -20,6 +20,7 @@ def test_default_config_loads(tmp_path: Path) -> None:
     assert config.projection_format == "sharded-json"
     assert config.context_views == ()
     assert config.workstream_criteria == ()
+    assert config.intake_criteria == ()
 
 
 def test_workstream_criteria_are_versioned_and_deterministically_ordered(
@@ -121,6 +122,111 @@ def test_invalid_workstream_criteria_are_rejected(
         "[workstreams]\n\n",
         body + "\n",
     )
+    (tmp_path / CONFIG_FILENAME).write_text(configured, encoding="utf-8")
+    with pytest.raises(ValueError, match=message):
+        load_config(tmp_path)
+
+
+def test_intake_criteria_normalize_project_owned_placements(
+    tmp_path: Path,
+) -> None:
+    configured = DEFAULT_CONFIG + """
+[[intake.criteria]]
+id = "idea-placement"
+revision = 1
+allowed_decisions = ["update-existing", "create-draft", "create-workstream"]
+max_candidates = 8
+safe_fallback = "blocked"
+draft = { area = "architecture", type = "architecture", identifier = "document", width = 3 }
+workstream = { area = "roadmap", type = "workstream", identifier = "roadmap", width = 3 }
+"""
+    (tmp_path / CONFIG_FILENAME).write_text(configured, encoding="utf-8")
+
+    criterion = load_config(tmp_path).intake_criteria[0]
+    assert criterion.reference == "idea-placement@1"
+    assert criterion.allowed_decisions == (
+        "update-existing",
+        "create-draft",
+        "create-workstream",
+    )
+    assert criterion.draft.area == "architecture"
+    assert criterion.draft.identifier == "document"
+    assert criterion.draft.width == 3
+    assert criterion.workstream.document_type == "workstream"
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        ("[[intake]]\n", "intake must be a table"),
+        ("[intake]\nunknown = true\n", "intake has unknown key"),
+        ("[intake]\ncriteria = {}\n", "must be a list of tables"),
+        (
+            "[[intake.criteria]]\n"
+            'id = "placement"\nrevision = 1\nallowed_decisions = ["invent"]\n'
+            'max_candidates = 1\nsafe_fallback = "blocked"\n'
+            'draft = { area = "architecture", type = "document", '
+            'identifier = "document", width = 3 }\n'
+            'workstream = { area = "roadmap", type = "workstream", '
+            'identifier = "roadmap", width = 3 }\n',
+            "allowed_decisions may contain only",
+        ),
+        (
+            "[[intake.criteria]]\n"
+            'id = "placement"\nrevision = 1\nallowed_decisions = ["create-draft"]\n'
+            'max_candidates = 0\nsafe_fallback = "blocked"\n'
+            'draft = { area = "architecture", type = "document", '
+            'identifier = "document", width = 3 }\n'
+            'workstream = { area = "roadmap", type = "workstream", '
+            'identifier = "roadmap", width = 3 }\n',
+            "max_candidates must be between 1 and 50",
+        ),
+        (
+            "[[intake.criteria]]\n"
+            'id = "placement"\nrevision = 1\nallowed_decisions = ["create-draft"]\n'
+            'max_candidates = 1\nsafe_fallback = "continue"\n'
+            'draft = { area = "architecture", type = "document", '
+            'identifier = "document", width = 3 }\n'
+            'workstream = { area = "roadmap", type = "workstream", '
+            'identifier = "roadmap", width = 3 }\n',
+            "safe_fallback must be 'blocked'",
+        ),
+        (
+            "[[intake.criteria]]\n"
+            'id = "placement"\nrevision = 1\nallowed_decisions = ["create-draft"]\n'
+            'max_candidates = 1\nsafe_fallback = "blocked"\n'
+            'draft = { area = "missing", type = "document", '
+            'identifier = "document", width = 3 }\n'
+            'workstream = { area = "roadmap", type = "workstream", '
+            'identifier = "roadmap", width = 3 }\n',
+            "area must name a configured area",
+        ),
+        (
+            "[[intake.criteria]]\n"
+            'id = "placement"\nrevision = 1\nallowed_decisions = ["create-draft"]\n'
+            'max_candidates = 1\nsafe_fallback = "blocked"\n'
+            'draft = { area = "architecture", type = "document", '
+            'identifier = "missing", width = 3 }\n'
+            'workstream = { area = "roadmap", type = "workstream", '
+            'identifier = "roadmap", width = 3 }\n',
+            "identifier must name a configured identifier role",
+        ),
+        (
+            "[[intake.criteria]]\n"
+            'id = "placement"\nrevision = 1\nallowed_decisions = ["create-draft"]\n'
+            'max_candidates = 1\nsafe_fallback = "blocked"\n'
+            'draft = { area = "architecture", type = "document", '
+            'identifier = "document", width = 0 }\n'
+            'workstream = { area = "roadmap", type = "workstream", '
+            'identifier = "roadmap", width = 3 }\n',
+            "width must be between 1 and 12",
+        ),
+    ],
+)
+def test_invalid_intake_criteria_are_rejected(
+    tmp_path: Path, body: str, message: str
+) -> None:
+    configured = DEFAULT_CONFIG.replace("[intake]\n\n", body + "\n")
     (tmp_path / CONFIG_FILENAME).write_text(configured, encoding="utf-8")
     with pytest.raises(ValueError, match=message):
         load_config(tmp_path)

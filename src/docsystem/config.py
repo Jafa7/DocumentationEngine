@@ -21,6 +21,9 @@ WORKSTREAM_CRITERION_ID_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 WORKSTREAM_EVIDENCE_FIELDS = frozenset(
     {"changes", "checks", "review", "omissions", "risks", "returns"}
 )
+INTAKE_DECISIONS = frozenset(
+    {"update-existing", "create-draft", "create-workstream"}
+)
 CONTEXT_VIEW_RELATIONS = frozenset(
     {"derived_from", "depends_on", "validated_against", "related", "supersedes"}
 )
@@ -62,6 +65,8 @@ required_metadata = []
 report_orphans = false
 
 [workstreams]
+
+[intake]
 
 [projection]
 format = "sharded-json"
@@ -153,6 +158,33 @@ class WorkstreamCriterion:
 
 
 @dataclass(frozen=True)
+class IntakePlacement:
+    """Project-owned placement for one new-document intake outcome."""
+
+    area: str
+    document_type: str
+    identifier: str
+    width: int
+
+
+@dataclass(frozen=True)
+class IntakeCriterion:
+    """One versioned policy for deterministic idea placement."""
+
+    criterion_id: str
+    revision: int
+    allowed_decisions: tuple[str, ...]
+    max_candidates: int
+    safe_fallback: str
+    draft: IntakePlacement
+    workstream: IntakePlacement
+
+    @property
+    def reference(self) -> str:
+        return f"{self.criterion_id}@{self.revision}"
+
+
+@dataclass(frozen=True)
 class ProjectConfig:
     project_root: Path
     documentation_root: Path
@@ -170,6 +202,7 @@ class ProjectConfig:
     maintenance_targets: tuple[MaintenanceTarget, ...] = ()
     context_views: tuple[ContextView, ...] = ()
     workstream_criteria: tuple[WorkstreamCriterion, ...] = ()
+    intake_criteria: tuple[IntakeCriterion, ...] = ()
 
 
 def _relative_path(value: object, field: str) -> PurePosixPath:
@@ -560,6 +593,143 @@ def _workstream_criteria(raw: object) -> tuple[WorkstreamCriterion, ...]:
     return tuple(sorted(result, key=lambda item: (item.criterion_id, item.revision)))
 
 
+def _intake_placement(
+    raw: object,
+    field: str,
+    areas: dict[str, PurePosixPath],
+    identifiers: dict[str, str],
+) -> IntakePlacement:
+    if not isinstance(raw, dict):
+        raise ValueError(f"{field} must be a table")
+    required = {"area", "type", "identifier", "width"}
+    missing = required - set(raw)
+    unknown = set(raw) - required
+    if missing:
+        raise ValueError(
+            f"{field} is missing required key(s): {', '.join(sorted(missing))}"
+        )
+    if unknown:
+        raise ValueError(
+            f"{field} has unknown key(s): {', '.join(sorted(unknown))}"
+        )
+    area = raw["area"]
+    if not isinstance(area, str) or area not in areas:
+        raise ValueError(f"{field}.area must name a configured area")
+    document_type = raw["type"]
+    if not isinstance(document_type, str) or not document_type.strip():
+        raise ValueError(f"{field}.type must be a non-empty string")
+    identifier = raw["identifier"]
+    if not isinstance(identifier, str) or identifier not in identifiers:
+        raise ValueError(
+            f"{field}.identifier must name a configured identifier role"
+        )
+    width = raw["width"]
+    if (
+        not isinstance(width, int)
+        or isinstance(width, bool)
+        or not 1 <= width <= 12
+    ):
+        raise ValueError(f"{field}.width must be between 1 and 12")
+    return IntakePlacement(area, document_type.strip(), identifier, width)
+
+
+def _intake_criteria(
+    raw: object,
+    areas: dict[str, PurePosixPath],
+    identifiers: dict[str, str],
+) -> tuple[IntakeCriterion, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, dict):
+        raise ValueError("intake must be a table")
+    unknown = set(raw) - {"criteria"}
+    if unknown:
+        raise ValueError(
+            "intake has unknown key(s): " + ", ".join(sorted(unknown))
+        )
+    criteria = raw.get("criteria", [])
+    if not isinstance(criteria, list):
+        raise ValueError("intake.criteria must be a list of tables")
+    required = {
+        "id",
+        "revision",
+        "allowed_decisions",
+        "max_candidates",
+        "safe_fallback",
+        "draft",
+        "workstream",
+    }
+    result: list[IntakeCriterion] = []
+    seen: set[tuple[str, int]] = set()
+    for index, entry in enumerate(criteria):
+        field = f"intake.criteria[{index}]"
+        if not isinstance(entry, dict):
+            raise ValueError(f"{field} must be a table")
+        missing = required - set(entry)
+        unknown_entry = set(entry) - required
+        if missing:
+            raise ValueError(
+                f"{field} is missing required key(s): {', '.join(sorted(missing))}"
+            )
+        if unknown_entry:
+            raise ValueError(
+                f"{field} has unknown key(s): {', '.join(sorted(unknown_entry))}"
+            )
+        criterion_id = entry["id"]
+        if not isinstance(criterion_id, str) or not WORKSTREAM_CRITERION_ID_PATTERN.fullmatch(
+            criterion_id
+        ):
+            raise ValueError(f"{field}.id has an invalid criterion ID")
+        revision = entry["revision"]
+        if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
+            raise ValueError(f"{field}.revision must be a positive integer")
+        key = (criterion_id, revision)
+        if key in seen:
+            raise ValueError(f"intake criterion is duplicated: {criterion_id}@{revision}")
+        seen.add(key)
+        decisions = entry["allowed_decisions"]
+        if not isinstance(decisions, list) or any(
+            not isinstance(item, str) or item not in INTAKE_DECISIONS
+            for item in decisions
+        ):
+            raise ValueError(
+                f"{field}.allowed_decisions may contain only: "
+                + ", ".join(sorted(INTAKE_DECISIONS))
+            )
+        if not decisions:
+            raise ValueError(f"{field}.allowed_decisions must not be empty")
+        if len(set(decisions)) != len(decisions):
+            raise ValueError(f"{field}.allowed_decisions must be unique")
+        max_candidates = entry["max_candidates"]
+        if (
+            not isinstance(max_candidates, int)
+            or isinstance(max_candidates, bool)
+            or not 1 <= max_candidates <= 50
+        ):
+            raise ValueError(f"{field}.max_candidates must be between 1 and 50")
+        if entry["safe_fallback"] != "blocked":
+            raise ValueError(f"{field}.safe_fallback must be 'blocked'")
+        result.append(
+            IntakeCriterion(
+                criterion_id=criterion_id,
+                revision=revision,
+                allowed_decisions=tuple(decisions),
+                max_candidates=max_candidates,
+                safe_fallback="blocked",
+                draft=_intake_placement(
+                    entry["draft"], f"{field}.draft", areas, identifiers
+                ),
+                workstream=_intake_placement(
+                    entry["workstream"],
+                    f"{field}.workstream",
+                    areas,
+                    identifiers,
+                ),
+            )
+        )
+    return tuple(sorted(result, key=lambda item: (item.criterion_id, item.revision)))
+
+
 def _maintenance_id(value: object, field: str, prefixes: frozenset[str]) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{field} must be a stable document ID")
@@ -720,6 +890,9 @@ def load_config(project_root: Path) -> ProjectConfig:
     context_views = _context_views(raw.get("context"))
     graph_health_policy = _graph_health_policy(raw.get("graph_health"))
     workstream_criteria = _workstream_criteria(raw.get("workstreams"))
+    intake_criteria = _intake_criteria(
+        raw.get("intake"), normalized_areas, normalized_identifiers
+    )
 
     projection_format = projection.get("format")
     if projection_format != "sharded-json":
@@ -745,4 +918,5 @@ def load_config(project_root: Path) -> ProjectConfig:
         maintenance_targets=maintenance_targets,
         context_views=context_views,
         workstream_criteria=workstream_criteria,
+        intake_criteria=intake_criteria,
     )

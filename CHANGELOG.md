@@ -10,6 +10,8 @@ All notable changes to Documentation Engine are documented in this file.
 - Read-only `criteria` and `workstream` commands for deterministic lifecycle,
   correction and bounded evidence validation.
 - Optional `finish --workstream-record` gate and matching read-only MCP tools.
+- Versioned idea-intake placement policy, bounded request validation and the
+  read-only `intake` CLI/MCP command with explainable blocked decisions.
 
 ## [0.2.0] - 2026-07-13
 

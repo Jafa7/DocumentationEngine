@@ -1,0 +1,22 @@
+{
+  "assumptions": [
+    "DOC-010 remains the canonical owner."
+  ],
+  "candidates": [
+    {
+      "address": "DOC-010#ownership",
+      "authority": "owner"
+    }
+  ],
+  "criterion": "idea-placement@1",
+  "idea_id": "IDEA-001",
+  "outcome": "Add a bounded capability for placing new ideas.",
+  "schema_version": 1,
+  "signals": {
+    "authority_conflict": false,
+    "existing_owner_sufficient": true,
+    "incompatible_outcomes": false,
+    "independent_lifecycle": false
+  },
+  "source": "human-idea:current-task"
+}

@@ -218,6 +218,25 @@ def workstream(
     return _json_tool(arguments)
 
 
+def intake(
+    project: str,
+    request: str,
+    source: str | None = None,
+    workspace: str | None = None,
+) -> dict:
+    """Evaluate a bounded semantic request without creating a document."""
+
+    arguments = [
+        "intake",
+        project,
+        "--request",
+        request,
+        "--json",
+        *_selection_arguments(source, workspace),
+    ]
+    return _json_tool(arguments)
+
+
 def finish_handoff(
     project: str,
     document_id: str,
@@ -490,6 +509,7 @@ _TOOLS = (
     changes,
     criteria,
     workstream,
+    intake,
     finish_handoff,
     context,
     read_document,

@@ -84,6 +84,15 @@ uses a bounded record, validate it with `docsystem workstream ID PROJECT
 make the record pass; correction lineage is evidence. See
 [bounded workstream evidence](workstream-evidence.md).
 
+When a human supplies a new idea, the agent may prepare a bounded intake
+request after inspecting plausible stable document or section owners. It must
+not claim that Documentation Engine inferred the idea: candidate authority,
+semantic signals and assumptions remain agent assertions. Run `docsystem
+intake PROJECT --request REQUEST --json`, respect an explainable `blocked`
+result, and treat a proposed ID/path as non-reserved. Before any separately
+authorized document creation, evaluate again and require the same
+`allocation_guard`. See [deterministic idea intake](idea-intake.md).
+
 When installing or adopting Documentation Engine for a project that will keep
 important state outside git, the agent must ask the user where backups should
 be stored and then write that choice only to local ignored policy, such as

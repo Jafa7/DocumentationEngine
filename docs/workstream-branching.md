@@ -102,3 +102,9 @@ For long-running or higher-risk branches, the optional
 lifecycle transitions, corrective attempts, checks, independent review and the
 final return without requiring chat memory. Small tasks can keep using this
 lightweight mandate alone.
+
+Before creating a new branch mandate, a project may use
+[deterministic idea intake](idea-intake.md) to determine whether an existing
+document already owns the outcome, an ordinary draft is sufficient, or a
+separate workstream lifecycle is justified. Intake proposes placement; it
+does not create the mandate.

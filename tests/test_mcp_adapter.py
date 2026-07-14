@@ -219,6 +219,17 @@ def test_workstream_tools_delegate_to_read_only_json_cli(
         "--json",
     ]
 
+    assert mcp_server.intake(
+        "/project", "/tmp/intake.json"
+    ) == {"schema_version": 1}
+    assert calls.pop() == [
+        "intake",
+        "/project",
+        "--request",
+        "/tmp/intake.json",
+        "--json",
+    ]
+
     assert mcp_server.finish_handoff(
         "/project",
         "DOC-002",

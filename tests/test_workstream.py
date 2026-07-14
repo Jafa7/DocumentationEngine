@@ -152,6 +152,7 @@ def test_criteria_and_completed_workstream_outputs_are_deterministic(
 
     assert criteria_registry(tmp_path, json_output=True) == 0
     criteria = json.loads(capsys.readouterr().out)
+    assert criteria["intake"] == []
     assert criteria["criteria"] == [
         {
             "id": "verified-delivery",

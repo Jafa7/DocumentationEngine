@@ -39,6 +39,8 @@ from docsystem.config import (
     CONFIG_FILENAME,
     DEFAULT_CONFIG,
     ContextView,
+    IntakeCriterion,
+    IntakePlacement,
     ProjectConfig,
     WorkstreamCriterion,
     is_historical_snapshot,
@@ -65,6 +67,13 @@ from docsystem.health import (
     evaluate_graph_health,
     facts_from_catalog,
     facts_from_projection,
+)
+from docsystem.intake import (
+    IntakeError,
+    IntakeEvaluation,
+    IntakeRequest,
+    evaluate_request,
+    load_request,
 )
 from docsystem.journal import (
     FileEdit,
@@ -3300,7 +3309,11 @@ def criteria_registry(project_root: Path, *, json_output: bool = False) -> int:
                 "criteria": [
                     _criterion_json(criterion)
                     for criterion in config.workstream_criteria
-                ]
+                ],
+                "intake": [
+                    _intake_criterion_json(criterion)
+                    for criterion in config.intake_criteria
+                ],
             }
         )
         return 0
@@ -3310,6 +3323,12 @@ def criteria_registry(project_root: Path, *, json_output: bool = False) -> int:
             f"{criterion.safe_fallback}\t"
             f"{','.join(criterion.required_sections) or '-'}\t"
             f"{','.join(criterion.required_evidence)}"
+        )
+    for criterion in config.intake_criteria:
+        print(
+            f"intake\t{criterion.reference}\t{criterion.max_candidates}\t"
+            f"{criterion.safe_fallback}\t"
+            f"{','.join(criterion.allowed_decisions)}"
         )
     return 0
 
@@ -3463,6 +3482,176 @@ def workstream_status(
         f"resolved: {evaluation.resolved_findings}"
     )
     print(f"- Ready to finish: {'yes' if evaluation.ready_to_finish else 'no'}")
+    return 0
+
+
+def _intake_criterion_json(criterion: IntakeCriterion) -> dict[str, object]:
+    def placement(value: IntakePlacement) -> dict[str, object]:
+        return {
+            "area": value.area,
+            "type": value.document_type,
+            "identifier": value.identifier,
+            "width": value.width,
+        }
+
+    return {
+        "id": criterion.criterion_id,
+        "revision": criterion.revision,
+        "reference": criterion.reference,
+        "allowed_decisions": list(criterion.allowed_decisions),
+        "max_candidates": criterion.max_candidates,
+        "safe_fallback": criterion.safe_fallback,
+        "draft": placement(criterion.draft),
+        "workstream": placement(criterion.workstream),
+    }
+
+
+def _intake_criterion_by_reference(
+    config: ProjectConfig, reference: str
+) -> IntakeCriterion:
+    matches = [
+        criterion
+        for criterion in config.intake_criteria
+        if criterion.reference == reference
+    ]
+    if not matches:
+        raise IntakeError(f"intake criterion not found: {reference}")
+    return matches[0]
+
+
+def _catalog_allocation_guard(catalog_value: MarkdownCatalog) -> str:
+    rows = [
+        f"{document.metadata.document_id}@{document.metadata.revision}:"
+        f"{document.path.as_posix()}"
+        for document in catalog_value.documents
+        if document.metadata is not None
+    ]
+    return hashlib.sha256("\n".join(sorted(rows)).encode()).hexdigest()
+
+
+def _intake_new_target(
+    config: ProjectConfig,
+    catalog_value: MarkdownCatalog,
+    placement: IntakePlacement,
+) -> dict[str, object]:
+    prefix = config.identifiers[placement.identifier]
+    used_numbers = [
+        int(document.metadata.document_id.rsplit("-", 1)[1])
+        for document in catalog_value.documents
+        if document.metadata is not None
+        and document.metadata.document_id.startswith(f"{prefix}-")
+    ]
+    used_paths = {membership.path for membership in catalog_value.memberships}
+    number = max(used_numbers, default=0) + 1
+    while True:
+        document_id = f"{prefix}-{number:0{placement.width}d}"
+        path = config.areas[placement.area] / f"{document_id.lower()}.md"
+        if path not in used_paths:
+            return {
+                "id": document_id,
+                "area": placement.area,
+                "type": placement.document_type,
+                "identifier": placement.identifier,
+                "width": placement.width,
+                "path": path.as_posix(),
+            }
+        number += 1
+
+
+def _intake_payload(
+    config: ProjectConfig,
+    catalog_value: MarkdownCatalog,
+    request: IntakeRequest,
+    criterion: IntakeCriterion,
+    evaluation: IntakeEvaluation,
+) -> dict[str, object]:
+    target: dict[str, object] | None = None
+    if evaluation.decision == "update-existing":
+        owner = next(
+            candidate
+            for candidate in request.candidates
+            if candidate.authority == "owner"
+        )
+        target = {"address": owner.address}
+    elif evaluation.decision == "create-draft":
+        target = _intake_new_target(config, catalog_value, criterion.draft)
+    elif evaluation.decision == "create-workstream":
+        target = _intake_new_target(config, catalog_value, criterion.workstream)
+    return {
+        "idea_id": request.idea_id,
+        "criterion": criterion.reference,
+        "request_sha256": request.request_sha256,
+        "outcome_sha256": hashlib.sha256(request.outcome.encode()).hexdigest(),
+        "source": request.source,
+        "decision": evaluation.decision,
+        "blocked": evaluation.blocked,
+        "reasons": list(evaluation.reasons),
+        "requested_decision": evaluation.requested_decision,
+        "candidates": [
+            {"address": item.address, "authority": item.authority}
+            for item in request.candidates
+        ],
+        "assumptions": list(request.assumptions),
+        "target": target,
+        "allocation_guard": _catalog_allocation_guard(catalog_value),
+    }
+
+
+def idea_intake(
+    project_root: Path,
+    *,
+    request_path: Path,
+    json_output: bool = False,
+) -> int:
+    """Evaluate one bounded semantic request without writing a document."""
+
+    try:
+        config = load_config(project_root)
+        catalog_value = build_catalog(config)
+        blocking = [
+            issue
+            for issue in validate_catalog(catalog_value, config)
+            if issue.severity != "warning"
+        ]
+        if blocking:
+            first = blocking[0]
+            raise IntakeError(
+                f"catalog validation blocks idea intake: "
+                f"{first.path.as_posix()}: {first.message}"
+            )
+        request = load_request(request_path)
+        criterion = _intake_criterion_by_reference(config, request.criterion)
+        evaluation = evaluate_request(request, criterion)
+        for index, candidate in enumerate(request.candidates):
+            _validate_evidence_address(
+                catalog_value,
+                candidate.address,
+                field=f"candidates[{index}].address",
+            )
+        payload = _intake_payload(
+            config, catalog_value, request, criterion, evaluation
+        )
+    except (OSError, ValueError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    if json_output:
+        _print_json(payload)
+        return 0
+    print(f"idea\t{request.idea_id}")
+    print(f"criterion\t{criterion.reference}")
+    print(f"decision\t{evaluation.decision}")
+    print(f"blocked\t{str(evaluation.blocked).lower()}")
+    for reason in evaluation.reasons:
+        print(f"reason\t{reason}")
+    for candidate in request.candidates:
+        print(f"candidate\t{candidate.authority}\t{candidate.address}")
+    target = payload["target"]
+    if isinstance(target, dict):
+        for name, value in sorted(target.items()):
+            print(f"target\t{name}\t{value}")
+    for assumption in request.assumptions:
+        print(f"assumption\t{assumption}")
+    print(f"allocation_guard\t{payload['allocation_guard']}")
     return 0
 
 
@@ -5140,6 +5329,19 @@ def show_config(project_root: Path) -> int:
             f"max_attempts:{criterion.max_attempts},"
             f"fallback:{criterion.safe_fallback}"
         )
+    for criterion in config.intake_criteria:
+        print(
+            f"intake.criterion.{criterion.reference}="
+            f"decisions:{','.join(criterion.allowed_decisions)},"
+            f"max_candidates:{criterion.max_candidates},"
+            f"fallback:{criterion.safe_fallback},"
+            f"draft:{criterion.draft.area}/{criterion.draft.document_type}/"
+            f"{criterion.draft.identifier}/width:{criterion.draft.width},"
+            f"workstream:{criterion.workstream.area}/"
+            f"{criterion.workstream.document_type}/"
+            f"{criterion.workstream.identifier}/width:"
+            f"{criterion.workstream.width}"
+        )
     print(f"projection.format={config.projection_format}")
     print(f"projection.keep_generations={config.keep_generations}")
     return 0
@@ -5181,6 +5383,17 @@ def _agent_instructions_text(selection: _Selection, config: ProjectConfig) -> st
                 f"fallback {criterion.safe_fallback}, evidence "
                 f"{','.join(criterion.required_evidence)}"
             )
+    if config.intake_criteria:
+        out.append("")
+        out.append("Configured semantic intake criteria:")
+        out.append("")
+        for criterion in config.intake_criteria:
+            out.append(
+                f"- {criterion.reference}: "
+                f"{','.join(criterion.allowed_decisions)}, max "
+                f"{criterion.max_candidates} candidate(s), fallback "
+                f"{criterion.safe_fallback}"
+            )
     out.append("")
     out.append("Agent rules:")
     out.append("")
@@ -5216,6 +5429,12 @@ def _agent_instructions_text(selection: _Selection, config: ProjectConfig) -> st
             "- For governed workstreams, inspect `docsystem criteria PROJECT "
             "--json`, validate the bounded record with `docsystem workstream`, "
             "and never claim completion unless `ready_to_finish` is true."
+        )
+    if config.intake_criteria:
+        out.append(
+            "- Convert a new human idea into a bounded request, run `docsystem "
+            "intake PROJECT --request REQUEST --json`, and follow only its "
+            "explicit decision; a blocked result requires owner input."
         )
     if config.context_views:
         out.append(
@@ -5545,6 +5764,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print a deterministic JSON object instead of Markdown.",
     )
 
+    intake_parser = subparsers.add_parser(
+        "intake",
+        help="Evaluate a bounded semantic idea request without writing source.",
+    )
+    intake_parser.add_argument(
+        "project", nargs="?", type=Path, default=Path.cwd()
+    )
+    intake_parser.add_argument(
+        "--request",
+        required=True,
+        type=Path,
+        dest="request_path",
+        help="Read-only path to the bounded JSON idea-intake request.",
+    )
+    intake_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print a deterministic JSON decision instead of tab-separated text.",
+    )
+
     migration_report_parser = subparsers.add_parser(
         "migration-report", help="Report legacy relation adoption mappings."
     )
@@ -5747,6 +5987,7 @@ def build_parser() -> argparse.ArgumentParser:
         graph_health_parser,
         criteria_parser,
         workstream_parser,
+        intake_parser,
         migration_report_parser,
         migrate_parser,
         readiness_parser,
@@ -5854,6 +6095,12 @@ def main() -> int:
             project,
             args.document_id,
             record_path=args.record_path,
+            json_output=args.json_output,
+        )
+    if args.command == "intake":
+        return idea_intake(
+            project,
+            request_path=args.request_path,
             json_output=args.json_output,
         )
     if args.command == "migration-report":

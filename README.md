@@ -254,6 +254,7 @@ docsystem criteria .
 docsystem criteria . --json
 docsystem workstream WS-001 . --record workstream-record.json
 docsystem workstream WS-001 . --record workstream-record.json --json
+docsystem intake . --request idea-intake-request.json --json
 docsystem migration-report .
 docsystem migration-report . --json
 docsystem readiness .
@@ -491,6 +492,14 @@ requires configured check/review/change/omission/risk/return evidence and
 fails without a handoff when the completion claim is incomplete. See
 [bounded workstream evidence](docs/workstream-evidence.md).
 
+`intake` evaluates a bounded, agent-prepared semantic request against a
+versioned project criterion. It deterministically selects one existing owner,
+proposes an ordinary draft or workstream, or returns an explainable blocked
+decision. The command is read-only: a proposed ID/path is not reserved and no
+Markdown is created. The engine validates addresses and policy but does not
+pretend to infer the human idea or verify an agent's semantic claims. See
+[deterministic idea intake](docs/idea-intake.md).
+
 `report draft` produces a privacy-safe GitHub issue body for adopter
 runtime reports, adoption findings, core bugs or documentation pattern
 requests; it is read-only and leaves expected/actual/requested-action fields
@@ -520,7 +529,8 @@ is missing, so the pasted snippet can never drift from
 `docs/setup-guide.md` Step 7 by hand-copying.
 
 `readiness`, `migration-report`, `catalog --explain`, `changes`, `context`,
-`criteria`, `workstream` and `agent-instructions` accept `--json` and print one
+`criteria`, `workstream`, `intake` and `agent-instructions` accept `--json` and
+print one
 deterministic JSON value
 (sorted keys, stable field names) instead of text, carrying the same
 information the text form prints plus what it sends to stderr, so a machine

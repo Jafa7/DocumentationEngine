@@ -196,6 +196,12 @@ direction is `forward`, `reverse` or `both`; delivery is `outline` or
 exactly `["authored"]`; this prevents a project from assuming observed or
 generated edges are semantic context authority before that layer is supported.
 
+Projects that want deterministic placement of agent-interpreted ideas may add
+a versioned `[intake]` policy after the base catalog is stable. The canonical
+configuration and trust boundary are in
+[deterministic idea intake](idea-intake.md); intake remains disabled when no
+criterion is configured.
+
 For an existing tree that still uses relative path relations, add the
 compatibility bridge only after understanding the migration boundary:
 
