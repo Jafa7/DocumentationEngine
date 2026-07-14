@@ -63,8 +63,14 @@ Expected git mode for `scripts/installed_cli_smoke.sh` is `100755`.
 - Delegate only concrete, bounded work where an AI worker adds value. Use a
   deterministic script or check runner for mechanical work and test execution.
 - Before dispatch, confirm that the project binding targets the current host
-  chat, select an appropriate enabled worker profile, and write the complete
-  task contract to `.orchestrator/prompts/<task-id>.md`.
+  chat, classify the task as structural, focused or full, select an appropriate
+  enabled worker profile, and write both the complete task contract and a
+  `WORKER_TASK_INTENT` JSON file below `.orchestrator/prompts/`.
+- Set `intent.verification` before dispatch and pass the intent with
+  `worker run --intent-file`. The declared verification level is authoritative:
+  generic or copied task prose must not broaden it. If scope changes enough to
+  require another level, stop and dispatch corrected intent rather than
+  silently changing the gate.
 - Dispatch once with a stable task id. Do not spend model turns polling worker
   state and do not dispatch a duplicate merely because a wait timed out.
 - For a bounded wait that fits the active Codex turn, prefer one direct
