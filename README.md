@@ -241,6 +241,7 @@ docsystem maintenance install-version . --write --expect-source-hash SHA256 --wo
 docsystem maintenance-recover 20260714T100000Z-WS-001 .
 docsystem context DOC-001 . --depth 1
 docsystem context DOC-001 . --depth 1 --json
+docsystem context DOC-001 . --compact --json
 docsystem context DOC-001 . --outline
 docsystem context DOC-001 . --outline --json
 docsystem context DOC-001 . --view task --json
@@ -554,6 +555,19 @@ prefix, including YAML front matter. `context --outline` prints the same
 document set (`--depth` and `--include-related` still apply) with those
 section size tables instead of navigation excerpts or content — a cheap
 "map first, fetch second" packet.
+`context --compact` is the lossless content-delivery form for agents. It merges
+overlapping navigation, parent-section and child-section line ranges, so each
+source range appears once. Every requested address remains in
+`content_manifest` with its reasons, source line range, carrier fragment and
+delivery classification; `content_fragments` contains the original Markdown
+and its SHA-256. Document-level `inclusion_reasons` preserve every graph path
+that selected the document. Compact text aggregates repeated nonblocking
+adoption/view diagnostics and points to `--json`, which retains every row;
+stale/historical pins and unresolved boundaries remain individual. Compact
+delivery does not summarize content, impose a token budget or restrict later
+reads, and it cannot combine with outline delivery. Compact JSON assumes the
+outline-first workflow and omits the repeated full `sections` size map; it
+remains available through `--outline` or `read --list`.
 When `--view NAME` is selected, JSON adds `purpose_view` and deterministic
 `view_omissions`; text packets show the same policy and omission rows. Reverse
 view inclusions are labeled `reverse:RELATION`, so downstream context cannot be

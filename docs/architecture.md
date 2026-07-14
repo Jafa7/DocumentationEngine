@@ -167,6 +167,13 @@ the referenced generation is an older retained one rather than the current
 pointer. `--since` and `--assume-known` are mutually exclusive, and neither
 combines with `--outline`.
 
+`context --compact` is a presentation projection over the same selected
+documents. It unions overlapping navigation and explicit section line ranges,
+emits disjoint original-Markdown fragments, and preserves every requested
+address/reason mapping in a separate manifest. It performs no semantic
+similarity matching or summarization. Direct and verified-projection paths
+share the same line-range algorithm and therefore remain byte-identical.
+
 ## Markdown catalog and navigation
 
 The catalog classifies every Markdown file below the documentation root.

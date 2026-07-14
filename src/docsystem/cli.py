@@ -8,7 +8,7 @@ import json
 import os
 import re
 import sys
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -762,6 +762,18 @@ _Views = dict[str, _DocumentView]
 _Incoming = dict[str, tuple[_EdgeView, ...]]
 
 
+@dataclass(frozen=True, order=True)
+class _ContextInclusionReason:
+    """One exact reason a document entered a context selection."""
+
+    via_id: str
+    direction: str
+    relation: str
+
+
+_ContextReasons = dict[str, set[_ContextInclusionReason]]
+
+
 def _freshness_rows(
     config,
     views: _Views,
@@ -800,8 +812,11 @@ def _context_selection(
     *,
     depth: int,
     include_related: bool,
-) -> dict[str, set[str]]:
+) -> tuple[dict[str, set[str]], _ContextReasons]:
     included: dict[str, set[str]] = {document_id: {"target"}}
+    reasons: _ContextReasons = {
+        document_id: {_ContextInclusionReason(document_id, "self", "target")}
+    }
     queue = deque([(document_id, 0)])
     expanded: set[str] = set()
     allowed = {"derived_from", "depends_on", "validated_against"}
@@ -816,8 +831,11 @@ def _context_selection(
             if edge.relation not in allowed:
                 continue
             included.setdefault(edge.peer_id, set()).add(edge.relation)
+            reasons.setdefault(edge.peer_id, set()).add(
+                _ContextInclusionReason(source_id, "forward", edge.relation)
+            )
             queue.append((edge.peer_id, current_depth + 1))
-    return included
+    return included, reasons
 
 
 def _purpose_context_selection(
@@ -825,10 +843,17 @@ def _purpose_context_selection(
     incoming: _Incoming,
     document_id: str,
     purpose_view: ContextView,
-) -> tuple[dict[str, set[str]], tuple[_ContextViewOmission, ...]]:
+) -> tuple[
+    dict[str, set[str]],
+    _ContextReasons,
+    tuple[_ContextViewOmission, ...],
+]:
     """Traverse one authored view while preserving every filtered/stopped edge."""
 
     included: dict[str, set[str]] = {document_id: {"target"}}
+    reasons: _ContextReasons = {
+        document_id: {_ContextInclusionReason(document_id, "self", "target")}
+    }
     queue = deque([(document_id, 0)])
     expanded: set[str] = set()
     omissions: set[_ContextViewOmission] = set()
@@ -883,18 +908,25 @@ def _purpose_context_selection(
                 else f"reverse:{edge.relation}"
             )
             included.setdefault(edge.peer_id, set()).add(reason)
+            reasons.setdefault(edge.peer_id, set()).add(
+                _ContextInclusionReason(source_id, direction, edge.relation)
+            )
             queue.append((edge.peer_id, current_depth + 1))
-    return included, tuple(
-        sorted(
-            omissions,
-            key=lambda item: (
-                item.source_id,
-                item.direction,
-                item.relation,
-                item.peer_id,
-                item.reason,
-            ),
-        )
+    return (
+        included,
+        reasons,
+        tuple(
+            sorted(
+                omissions,
+                key=lambda item: (
+                    item.source_id,
+                    item.direction,
+                    item.relation,
+                    item.peer_id,
+                    item.reason,
+                ),
+            )
+        ),
     )
 
 
@@ -1336,6 +1368,136 @@ def _packet_sections(
     return explicit_anchors, set(extra), omitted
 
 
+@dataclass(frozen=True)
+class _ContentRequest:
+    address: str
+    start_line: int
+    end_line: int
+    reasons: tuple[str, ...]
+
+
+def _inclusion_reason_text(reason: _ContextInclusionReason) -> str:
+    if reason.direction == "self":
+        return "target"
+    if reason.direction == "explicit":
+        return f"explicit include from {reason.via_id}"
+    prefix = "reverse:" if reason.direction == "reverse" else ""
+    return f"{prefix}{reason.relation} from {reason.via_id}"
+
+
+def _navigation_end_line(
+    view: _DocumentView, extend_through: tuple[str, ...]
+) -> int:
+    matching = [
+        section
+        for section in view.sections
+        if section.level == 2 and section.anchor in extend_through
+    ]
+    if matching:
+        return max(section.end_line for section in matching)
+    first_h2 = next((section for section in view.sections if section.level == 2), None)
+    if first_h2 is None:
+        return len(view.content.splitlines())
+    return first_h2.start_line - 1
+
+
+def _compact_content_delivery(
+    config: ProjectConfig,
+    view: _DocumentView,
+    inclusion_reasons: set[_ContextInclusionReason],
+    explicit_anchors: list[str],
+    changed_set: set[str],
+    anchor_reasons: dict[str, set[str]],
+    plan: _DocPlan | None,
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    """Return merged source ranges plus an address-to-range manifest.
+
+    Requests may overlap (navigation with an extended H2, or a parent section
+    with its child). Their union is emitted as non-overlapping source ranges;
+    every requested stable address remains in the manifest and points to the
+    one merged fragment that carries its exact bytes.
+    """
+
+    requests: list[_ContentRequest] = []
+    if plan is None or not plan.omit_navigation:
+        end_line = _navigation_end_line(view, config.navigation_extend_through)
+        if end_line > 0:
+            requests.append(
+                _ContentRequest(
+                    view.document_id,
+                    1,
+                    end_line,
+                    tuple(
+                        sorted(_inclusion_reason_text(item) for item in inclusion_reasons)
+                    ),
+                )
+            )
+    sections = {section.anchor: section for section in view.sections}
+    for anchor in explicit_anchors:
+        section = sections[anchor]
+        reasons = set(anchor_reasons.get(anchor, ()))
+        if anchor in changed_set:
+            generation = plan.generation_short if plan is not None else None
+            reasons.add(f"changed since {generation or 'selected generation'}")
+        if not reasons:
+            reasons.add("explicit section")
+        requests.append(
+            _ContentRequest(
+                f"{view.document_id}#{anchor}",
+                section.start_line,
+                section.end_line,
+                tuple(sorted(reasons)),
+            )
+        )
+    requests.sort(key=lambda item: (item.start_line, item.end_line, item.address))
+
+    ranges: list[tuple[int, int]] = []
+    for request in requests:
+        if not ranges or request.start_line > ranges[-1][1] + 1:
+            ranges.append((request.start_line, request.end_line))
+        else:
+            ranges[-1] = (ranges[-1][0], max(ranges[-1][1], request.end_line))
+
+    lines = view.content.splitlines()
+    fragments: list[dict[str, object]] = []
+    for start_line, end_line in ranges:
+        content = "\n".join(lines[start_line - 1 : end_line])
+        fragment_id = f"{view.document_id}:{start_line}-{end_line}"
+        fragments.append(
+            {
+                "id": fragment_id,
+                "start_line": start_line,
+                "end_line": end_line,
+                "sha256": hashlib.sha256(content.encode()).hexdigest(),
+                "content": content,
+            }
+        )
+
+    manifest: list[dict[str, object]] = []
+    for request in sorted(requests, key=lambda item: item.address):
+        fragment = next(
+            item
+            for item in fragments
+            if int(item["start_line"]) <= request.start_line
+            and int(item["end_line"]) >= request.end_line
+        )
+        direct = (
+            int(fragment["start_line"]) == request.start_line
+            and int(fragment["end_line"]) == request.end_line
+        )
+        manifest.append(
+            {
+                "address": request.address,
+                "start_line": request.start_line,
+                "end_line": request.end_line,
+                "reasons": list(request.reasons),
+                "fragment_id": fragment["id"],
+                "delivery": "direct" if direct else "covered-by-fragment",
+            }
+        )
+    return fragments, manifest
+
+
 def _coverage_line(
     plan: _DocPlan | None, explicit_anchors: list[str], omitted: list[str]
 ) -> str:
@@ -1406,6 +1568,9 @@ def _emit_context_json(
     assume_known_used: bool = False,
     purpose_view: ContextView | None = None,
     view_omissions: tuple[_ContextViewOmission, ...] = (),
+    compact: bool = False,
+    inclusion_reasons: _ContextReasons | None = None,
+    anchor_reasons: dict[str, dict[str, set[str]]] | None = None,
 ) -> int:
     """Print the context packet as one structured JSON object.
 
@@ -1422,37 +1587,67 @@ def _emit_context_json(
     documents: list[dict[str, object]] = []
     explicit_count = 0
     omitted_count = 0
+    source_fragment_count = 0
+    source_fragment_bytes = 0
+    inclusion_reasons = inclusion_reasons or {}
+    anchor_reasons = anchor_reasons or {}
     for selected_id in ordered:
         view = views[selected_id]
         plan = plans.get(selected_id)
-        explicit_anchors, _, omitted = _packet_sections(
+        explicit_anchors, changed_set, omitted = _packet_sections(
             config, view, selected_anchors[selected_id], plan
         )
-        explicit_sections = []
-        for selected_anchor in explicit_anchors:
-            section = next(
-                item for item in view.sections if item.anchor == selected_anchor
-            )
-            explicit_sections.append(
-                {
-                    "anchor": selected_anchor,
-                    "content": extract_section(view.content, section).rstrip(),
-                }
-            )
-        explicit_count += len(explicit_sections)
+        explicit_sections: list[dict[str, str]] = []
+        if not compact:
+            for selected_anchor in explicit_anchors:
+                section = next(
+                    item for item in view.sections if item.anchor == selected_anchor
+                )
+                explicit_sections.append(
+                    {
+                        "anchor": selected_anchor,
+                        "content": extract_section(view.content, section).rstrip(),
+                    }
+                )
+        explicit_count += len(explicit_anchors)
         omitted_count += len(omitted)
         entry: dict[str, object] = {
             "id": selected_id,
             "path": view.path.as_posix(),
             "revision": view.revision,
             "relations": sorted(included[selected_id]),
-            "explicit_sections": explicit_sections,
             "omitted_h2": omitted,
-            "sections": _section_size_maps(view),
         }
+        if compact:
+            fragments, manifest = _compact_content_delivery(
+                config,
+                view,
+                inclusion_reasons.get(selected_id, set()),
+                explicit_anchors,
+                changed_set,
+                anchor_reasons.get(selected_id, {}),
+                plan,
+            )
+            entry["inclusion_reasons"] = [
+                {
+                    "via_id": reason.via_id,
+                    "direction": reason.direction,
+                    "relation": reason.relation,
+                }
+                for reason in sorted(inclusion_reasons.get(selected_id, set()))
+            ]
+            entry["content_fragments"] = fragments
+            entry["content_manifest"] = manifest
+            source_fragment_count += len(fragments)
+            source_fragment_bytes += sum(
+                len(str(fragment["content"]).encode()) for fragment in fragments
+            )
+        else:
+            entry["explicit_sections"] = explicit_sections
+            entry["sections"] = _section_size_maps(view)
         if plan is not None and plan.omit_navigation:
             entry["content_omitted"] = plan.content_omitted
-        else:
+        elif not compact:
             entry["navigation"] = extract_navigation(
                 view.content,
                 view.sections,
@@ -1477,6 +1672,9 @@ def _emit_context_json(
     }
     if assume_known_used:
         stats["assumed_known_omitted"] = assumed_known_omitted
+    if compact:
+        stats["source_fragments"] = source_fragment_count
+        stats["source_fragment_bytes"] = source_fragment_bytes
     payload: dict[str, object] = {
         "target": document_id,
         "depth": depth,
@@ -1491,6 +1689,8 @@ def _emit_context_json(
         ),
         "stats": stats,
     }
+    if compact:
+        payload["compact"] = True
     if assume_known_used:
         payload["assume_known_mismatches"] = mismatches or []
     if purpose_view is not None:
@@ -1661,6 +1861,172 @@ def _context_diagnostic_notes(
     return sorted(set(notes))
 
 
+def _context_compact_diagnostic_notes(
+    config: ProjectConfig,
+    views: _Views,
+    ordered: list[str],
+    document_id: str,
+    *,
+    include_related: bool,
+    extra_notes: list[str] | None = None,
+    view_omissions: tuple[_ContextViewOmission, ...] = (),
+) -> list[str]:
+    """Return blocker-first notes with lossless JSON drill-down summaries."""
+
+    notes = list(dict.fromkeys(extra_notes or []))
+    freshness = _freshness_rows(config, views, ordered)
+    for row in freshness:
+        mode = (
+            "historical snapshot"
+            if row["classification"] == "historical snapshot"
+            else "STALE"
+        )
+        notes.append(
+            f"{row['source_id']}: {row['target_id']}@{row['pinned_revision']}, "
+            f"current {row['current_revision']} — {mode}"
+        )
+
+    boundaries = _context_boundaries_json(views, ordered)
+    for row in boundaries:
+        notes.append(
+            f"{row['source_id']}: unresolved/resource {row['relation']} "
+            f"{row['value']} ({row['reason']})"
+        )
+    if not freshness and not boundaries:
+        notes.append("No stale pins or unresolved/resource boundaries.")
+
+    if not include_related:
+        related = list(views[document_id].related_values)
+        if related:
+            notes.append("Related omitted: " + ", ".join(related))
+
+    migration_counts = Counter(
+        row["relation"] for row in _context_migrations_json(views, ordered)
+    )
+    for relation, count in sorted(migration_counts.items()):
+        notes.append(
+            f"Adoption mappings: {count} {relation}; full rows: rerun with --json."
+        )
+
+    omission_counts = Counter(
+        (item.direction, item.relation, item.reason) for item in view_omissions
+    )
+    for (direction, relation, reason), count in sorted(omission_counts.items()):
+        notes.append(
+            f"View omissions: {count} {direction} {relation} ({reason}); "
+            "full rows: rerun with --json."
+        )
+    return notes
+
+
+def _emit_context_compact_text(
+    config: ProjectConfig,
+    views: _Views,
+    inclusion_reasons: _ContextReasons,
+    selected_anchors: dict[str, list[str]],
+    anchor_reasons: dict[str, dict[str, set[str]]],
+    ordered: list[str],
+    document_id: str,
+    *,
+    depth: int,
+    include_related: bool,
+    plans: dict[str, _DocPlan],
+    extra_notes: list[str],
+    assumed_known_omitted: int,
+    assume_known_used: bool,
+    purpose_view: ContextView | None = None,
+    view_omissions: tuple[_ContextViewOmission, ...] = (),
+) -> int:
+    out = [f"# Compact context packet: {document_id}", ""]
+    out.append(f"- Dependency depth: {depth}")
+    out.append(f"- Related traversal: {'included' if include_related else 'omitted'}")
+    if purpose_view is not None:
+        out.append(
+            f"- Purpose view: {purpose_view.name} (tier {purpose_view.tier}, "
+            f"{purpose_view.direction}, authored)"
+        )
+    explicit_count = 0
+    omitted_count = 0
+    fragment_count = 0
+    fragment_bytes = 0
+    for selected_id in ordered:
+        view = views[selected_id]
+        plan = plans.get(selected_id)
+        explicit_anchors, changed_set, omitted = _packet_sections(
+            config, view, selected_anchors[selected_id], plan
+        )
+        fragments, manifest = _compact_content_delivery(
+            config,
+            view,
+            inclusion_reasons.get(selected_id, set()),
+            explicit_anchors,
+            changed_set,
+            anchor_reasons.get(selected_id, {}),
+            plan,
+        )
+        explicit_count += len(explicit_anchors)
+        omitted_count += len(omitted)
+        fragment_count += len(fragments)
+        fragment_bytes += sum(
+            len(str(fragment["content"]).encode()) for fragment in fragments
+        )
+        out.extend(["", f"## {selected_id} — {view.path.as_posix()}", ""])
+        reason_text = sorted(
+            _inclusion_reason_text(item)
+            for item in inclusion_reasons.get(selected_id, set())
+        )
+        out.append("Inclusion: " + ("; ".join(reason_text) or "explicit") + ".")
+        for fragment in fragments:
+            out.extend(
+                [
+                    "",
+                    f"### Source fragment `{fragment['id']}`",
+                    "",
+                    str(fragment["content"]),
+                ]
+            )
+        if manifest:
+            out.extend(["", "Address manifest:"])
+            for row in manifest:
+                out.append(
+                    f"- `{row['address']}` -> `{row['fragment_id']}` "
+                    f"({row['delivery']}; {', '.join(row['reasons'])})"
+                )
+        out.extend(["", _coverage_line(plan, explicit_anchors, omitted)])
+
+    out.extend(["", "## Diagnostics and boundaries", ""])
+    for note in _context_compact_diagnostic_notes(
+        config,
+        views,
+        ordered,
+        document_id,
+        include_related=include_related,
+        extra_notes=extra_notes,
+        view_omissions=view_omissions,
+    ):
+        out.append(f"- {note}")
+    if purpose_view is None:
+        out.append("- Expand with --depth, --include-related, or --include ID#anchor.")
+    else:
+        out.append(
+            "- Expand with --include ID#anchor, another configured view, or an "
+            "explicit/full read."
+        )
+    body = "\n".join(out) + "\n"
+    sys.stdout.write(body)
+    print()
+    print("## Packet stats")
+    print()
+    print(f"- Included documents: {len(ordered)}")
+    print(f"- Explicit section addresses: {explicit_count}")
+    print(f"- Source fragments: {fragment_count}")
+    print(f"- Source fragment bytes: {fragment_bytes}")
+    print(f"- Omitted H2 sections: {omitted_count}")
+    if assume_known_used:
+        print(f"- Content omitted (assumed known): {assumed_known_omitted}")
+    return 0
+
+
 def _emit_context_outline_text(
     config,
     views: _Views,
@@ -1749,6 +2115,7 @@ def context(
     assume_known: list[str] | None = None,
     since: str | None = None,
     view_name: str | None = None,
+    compact: bool = False,
 ) -> int:
     if view_name is not None and any(
         item is not None for item in (depth, include_related, outline)
@@ -1809,6 +2176,8 @@ def context(
                     "cannot combine --outline with --anchor or --include"
                 )
             raise ValueError("cannot combine outline delivery with --anchor or --include")
+        if outline and compact:
+            raise ValueError("cannot combine outline delivery with --compact")
         if outline and (assume_known or since is not None):
             if purpose_view is None:
                 raise ValueError(
@@ -1833,17 +2202,22 @@ def context(
         elif document_id not in views:
             raise ValueError(f"document ID not found: {document_id}")
         if purpose_view is None:
-            included = _context_selection(
+            included, inclusion_reasons = _context_selection(
                 views,
                 document_id,
                 depth=depth,
                 include_related=include_related,
             )
         else:
-            included, view_omissions = _purpose_context_selection(
+            included, inclusion_reasons, view_omissions = _purpose_context_selection(
                 views, incoming, document_id, purpose_view
             )
         forced: dict[str, list[str]] = {}
+        anchor_reasons: dict[str, dict[str, set[str]]] = {}
+        if anchor is not None:
+            anchor_reasons.setdefault(document_id, {}).setdefault(anchor, set()).add(
+                "target anchor"
+            )
         for raw in includes or []:
             selected_id, selected_anchor = _selection(raw)
             if catalog_value is not None:
@@ -1851,8 +2225,14 @@ def context(
             elif selected_id not in views:
                 raise ValueError(f"document ID not found: {selected_id}")
             included.setdefault(selected_id, set()).add("explicit")
+            inclusion_reasons.setdefault(selected_id, set()).add(
+                _ContextInclusionReason(document_id, "explicit", "explicit")
+            )
             if selected_anchor:
                 forced.setdefault(selected_id, []).append(selected_anchor)
+                anchor_reasons.setdefault(selected_id, {}).setdefault(
+                    selected_anchor, set()
+                ).add("explicit include")
         for assumed_id in assumed:
             # A declared document is validated even when it does not enter the
             # packet, so a stale declaration fails closed instead of silently
@@ -1972,6 +2352,27 @@ def context(
             include_related=include_related,
             plans=plans,
             mismatches=mismatches,
+            assumed_known_omitted=assumed_known_omitted,
+            assume_known_used=bool(assume_known),
+            purpose_view=purpose_view,
+            view_omissions=view_omissions,
+            compact=compact,
+            inclusion_reasons=inclusion_reasons,
+            anchor_reasons=anchor_reasons,
+        )
+    if compact:
+        return _emit_context_compact_text(
+            config,
+            views,
+            inclusion_reasons,
+            selected_anchors,
+            anchor_reasons,
+            ordered,
+            document_id,
+            depth=depth,
+            include_related=include_related,
+            plans=plans,
+            extra_notes=extra_notes,
             assumed_known_omitted=assumed_known_omitted,
             assume_known_used=bool(assume_known),
             purpose_view=purpose_view,
@@ -2906,7 +3307,7 @@ def finish(
             find_document(catalog_value, document_id)
         elif document_id not in views:
             raise ValueError(f"document ID not found: {document_id}")
-        included = _context_selection(
+        included, _ = _context_selection(
             views,
             document_id,
             depth=depth,
@@ -4530,6 +4931,11 @@ def _agent_instructions_text(selection: _Selection, config: ProjectConfig) -> st
         "section is irrelevant."
     )
     out.append(
+        "- Prefer `docsystem context ID PROJECT --compact --json` when fetching "
+        "content: it emits each overlapping source range once while preserving "
+        "every stable address, inclusion reason and omission in the manifest."
+    )
+    out.append(
         "- Use `docsystem graph-health PROJECT --json` for broad planning or "
         "graph diagnosis, not as mandatory overhead for every edit; metrics are "
         "facts and configured signals remain advisory."
@@ -4776,6 +5182,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Print section size maps instead of content; combine with --json "
             "for the structured form. Cannot combine with --anchor or --include."
+        ),
+    )
+    context_parser.add_argument(
+        "--compact",
+        action="store_true",
+        help=(
+            "Emit merged non-overlapping source fragments plus an address/reason "
+            "manifest. Cannot combine with outline delivery."
         ),
     )
     context_parser.add_argument(
@@ -5104,6 +5518,7 @@ def main() -> int:
             assume_known=args.assume_known,
             since=args.since,
             view_name=args.view_name,
+            compact=args.compact,
         )
     if args.command == "impact":
         return impact(project, args.document_id)

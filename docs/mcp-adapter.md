@@ -47,6 +47,9 @@ The adapter is deliberately a wrapper, not a second implementation:
   The CLI rejects combining `since` with `assume_known`, or either with
   `outline`, so those
   tool calls raise like any other non-zero exit;
+- the `context` tool takes `compact: bool = False`, mapping to `--compact`.
+  Compact packets merge overlapping source ranges and retain address/reason
+  mappings; `compact` cannot combine with outline delivery;
 - text tools (`read_document`, `impact`) return the CLI's stdout unchanged for
   compatibility. Structured packet variants (`read_document_packet`,
   `impact_packet`) return the same stdout under `text` and add `diagnostics`

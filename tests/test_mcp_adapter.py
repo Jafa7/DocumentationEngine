@@ -257,6 +257,15 @@ def test_context_outline_reports_section_size_maps_without_content(
 
     with pytest.raises(RuntimeError, match="cannot combine --outline"):
         mcp_server.context(str(project), "DOC-002", outline=True, anchor="details")
+    with pytest.raises(ValueError, match="compact cannot combine with outline"):
+        mcp_server.context(str(project), "DOC-002", outline=True, compact=True)
+
+    compact = mcp_server.context(
+        str(project), "DOC-002", anchor="details", compact=True
+    )
+    assert compact["compact"] is True
+    assert "content_fragments" in compact["documents"][0]
+    assert "navigation" not in compact["documents"][0]
 
 
 def test_context_tool_supports_authored_purpose_views(tmp_path: Path) -> None:

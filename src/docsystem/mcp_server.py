@@ -212,6 +212,7 @@ def context(
     source: str | None = None,
     workspace: str | None = None,
     view: str | None = None,
+    compact: bool = False,
 ) -> dict:
     """Build a deterministic, inspectable context packet for a document.
 
@@ -231,7 +232,9 @@ def context(
     against a retained projection generation with `since` (full hash or
     unique >=12-char prefix): unchanged documents are omitted and changed
     ones carry only their changed sections. `since` cannot combine with
-    `assume_known`, and neither combines with `outline`. If the CLI serves
+    `assume_known`, and neither combines with `outline`. Set `compact` to merge
+    overlapping navigation/section ranges and return an address/reason
+    manifest; it cannot combine with outline delivery. If the CLI serves
     the packet by falling back from a stale or corrupt projection to direct
     Markdown, the fallback warning is surfaced under `diagnostics`. `source`
     and `workspace` select a registered workspace source instead of `project`.
@@ -241,6 +244,8 @@ def context(
         raise ValueError(
             "view cannot combine with depth, include_related or outline"
         )
+    if outline and compact:
+        raise ValueError("compact cannot combine with outline")
     arguments = ["context", document_id, project, "--json"]
     if view is not None:
         arguments.extend(["--view", view])
@@ -254,6 +259,8 @@ def context(
         arguments.extend(["--include", item])
     if outline:
         arguments.append("--outline")
+    if compact:
+        arguments.append("--compact")
     for item in assume_known or []:
         arguments.extend(["--assume-known", item])
     if since is not None:

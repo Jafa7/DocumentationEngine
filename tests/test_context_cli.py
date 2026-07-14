@@ -824,7 +824,6 @@ def test_context_outline_rejects_anchor_and_include_with_no_partial_stdout(
         captured.err
         == "ERROR: cannot combine --outline with --anchor or --include\n"
     )
-
     assert (
         context(tmp_path, "DOC-002", outline=True, includes=["DOC-001#index-details"])
         == 1
@@ -836,6 +835,189 @@ def test_context_outline_rejects_anchor_and_include_with_no_partial_stdout(
         == "ERROR: cannot combine --outline with --anchor or --include\n"
     )
 
+
+def test_compact_context_deduplicates_parent_child_and_aggregates_reasons(
+    tmp_path: Path, capsys
+) -> None:
+    configured_documents(tmp_path)
+
+    assert context(
+        tmp_path,
+        "DOC-002",
+        depth=1,
+        anchor="selected-section",
+        includes=["DOC-002#nested", "DOC-002#nested"],
+        compact=True,
+        json_output=True,
+    ) == 0
+    direct = capsys.readouterr()
+    payload = json.loads(direct.out)
+    assert payload["compact"] is True
+    target = payload["documents"][0]
+    assert "navigation" not in target
+    assert "explicit_sections" not in target
+    assert "sections" not in target
+    assert len(target["content_fragments"]) == 1
+    assert target["content_fragments"][0]["content"].count("Nested text.") == 1
+    manifest = {row["address"]: row for row in target["content_manifest"]}
+    assert set(manifest) == {
+        "DOC-002",
+        "DOC-002#nested",
+        "DOC-002#selected-section",
+    }
+    assert manifest["DOC-002#nested"]["delivery"] == "covered-by-fragment"
+    assert manifest["DOC-002#nested"]["reasons"] == ["explicit include"]
+    dependency = payload["documents"][1]
+    assert dependency["inclusion_reasons"] == [
+        {"via_id": "DOC-002", "direction": "forward", "relation": "depends_on"},
+        {
+            "via_id": "DOC-002",
+            "direction": "forward",
+            "relation": "validated_against",
+        },
+    ]
+
+    assert index_projection(tmp_path, write=True) == 0
+    capsys.readouterr()
+    assert context(
+        tmp_path,
+        "DOC-002",
+        depth=1,
+        anchor="selected-section",
+        includes=["DOC-002#nested", "DOC-002#nested"],
+        compact=True,
+        json_output=True,
+    ) == 0
+    projected = capsys.readouterr()
+    assert projected.out == direct.out
+    assert projected.err == ""
+
+
+def test_compact_context_text_aggregates_view_diagnostics_with_json_drilldown(
+    tmp_path: Path, capsys
+) -> None:
+    configured_context_views(tmp_path)
+
+    assert context(tmp_path, "DOC-002", view_name="boundary", compact=True) == 0
+    text = capsys.readouterr().out
+    assert "# Compact context packet: DOC-002" in text
+    assert "View omissions: 1 forward depends_on (depth-limit)" in text
+    assert "View omissions: 1 forward validated_against (relation-filter)" in text
+    assert "full rows: rerun with --json" in text
+    assert "DOC-001 (depth-limit)" not in text
+
+    assert context(
+        tmp_path,
+        "DOC-002",
+        view_name="boundary",
+        compact=True,
+        json_output=True,
+    ) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert len(payload["view_omissions"]) == 2
+    assert payload["view_omissions"][0]["peer_id"] == "DOC-001"
+
+
+def test_compact_context_rejects_outline_delivery_without_partial_stdout(
+    tmp_path: Path, capsys
+) -> None:
+    configured_documents(tmp_path)
+
+    assert context(tmp_path, "DOC-002", outline=True, compact=True) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.endswith(
+        "ERROR: cannot combine outline delivery with --compact\n"
+    )
+
+    args = build_parser().parse_args(["context", "DOC-002", "--compact"])
+    assert args.compact is True
+
+
+def test_compact_context_preserves_same_relation_paths_from_multiple_documents(
+    tmp_path: Path, capsys
+) -> None:
+    configured_documents(tmp_path)
+    area = tmp_path / "plan" / "architecture"
+    readme = area / "README.md"
+    readme.write_text(
+        readme.read_text(encoding="utf-8").replace(
+            "revision: 3", "revision: 3\ndepends_on: [DOC-004]"
+        )
+        + "\n[Third](third.md)\n[Fourth](fourth.md)\n",
+        encoding="utf-8",
+    )
+    context_path = area / "context.md"
+    context_path.write_text(
+        context_path.read_text(encoding="utf-8").replace(
+            "depends_on: [DOC-001]", "depends_on: [DOC-001, DOC-003]"
+        ),
+        encoding="utf-8",
+    )
+    (area / "third.md").write_text(
+        "---\nid: DOC-003\nrevision: 1\ndepends_on: [DOC-004]\n---\n# Third\n",
+        encoding="utf-8",
+    )
+    (area / "fourth.md").write_text(
+        "---\nid: DOC-004\nrevision: 1\n---\n# Fourth\n",
+        encoding="utf-8",
+    )
+
+    assert context(
+        tmp_path, "DOC-002", depth=2, compact=True, json_output=True
+    ) == 0
+    payload = json.loads(capsys.readouterr().out)
+    fourth = next(item for item in payload["documents"] if item["id"] == "DOC-004")
+    assert fourth["inclusion_reasons"] == [
+        {"via_id": "DOC-001", "direction": "forward", "relation": "depends_on"},
+        {"via_id": "DOC-003", "direction": "forward", "relation": "depends_on"},
+    ]
+
+
+def test_compact_context_keeps_attention_rows_and_summarizes_adoption_noise(
+    tmp_path: Path, capsys
+) -> None:
+    configured_documents(tmp_path)
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            'legacy_paths = "strict"', 'legacy_paths = "resolve-with-warning"'
+        ),
+        encoding="utf-8",
+    )
+    context_path = tmp_path / "plan" / "architecture" / "context.md"
+    context_path.write_text(
+        context_path.read_text(encoding="utf-8")
+        .replace("depends_on: [DOC-001]", "depends_on: [README.md]")
+        .replace(
+            "validated_against: [DOC-001@3]",
+            "validated_against: [DOC-001@2]\n"
+            "derived_from: [https://example.com/source]",
+        ),
+        encoding="utf-8",
+    )
+
+    assert context(tmp_path, "DOC-002", compact=True) == 0
+    text = capsys.readouterr().out
+    assert "DOC-002: DOC-001@2, current 3 — STALE" in text
+    assert (
+        "DOC-002: unresolved/resource derived_from "
+        "https://example.com/source (external URL)" in text
+    )
+    assert "Adoption mappings: 1 depends_on; full rows: rerun with --json." in text
+    assert "depends_on README.md -> DOC-001" not in text
+
+    assert context(tmp_path, "DOC-002", compact=True, json_output=True) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["migrations"] == [
+        {
+            "source_id": "DOC-002",
+            "relation": "depends_on",
+            "value": "README.md",
+            "target_id": "DOC-001",
+        }
+    ]
+    assert payload["boundaries"][0]["value"] == "https://example.com/source"
 
 def test_context_json_preserves_navigation_and_adds_typed_revision(
     tmp_path: Path, capsys

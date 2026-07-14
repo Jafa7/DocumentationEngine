@@ -21,6 +21,8 @@ link to that owner rather than repeat commands or policy.
   quality guard and limitations.
 - [Graph health](graph-health.md) — deterministic graph inventory and optional
   project-authored advisory thresholds.
+- [Compact context delivery](context-delivery.md) — lossless range
+  deduplication, inclusion reasons and diagnostics drill-down.
 
 ## Integrations and project structure
 

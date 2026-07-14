@@ -393,6 +393,21 @@ or `--include`, since it never returns content. `context --json` (without
 navigation and explicit sections, so a client already fetching content does
 not need a separate outline call just to learn section sizes.
 
+After choosing content, prefer `docsystem context ID PROJECT --compact --json`.
+Compact delivery merges overlapping navigation/parent/child source ranges and
+emits each resulting range once. The client must inspect `content_manifest`:
+it preserves every requested stable address, all inclusion reasons and the
+fragment carrying its original Markdown bytes. A `covered-by-fragment` entry
+means a wider merged range already contains the address; it does not mean the
+section was summarized or discarded. `inclusion_reasons`, omissions,
+boundaries and freshness rows remain explicit. Compact text may aggregate
+repeated nonblocking adoption/view rows, but identifies `--json` as the full
+deterministic drill-down; stale/historical pins and unresolved boundaries stay
+individual. `--compact` cannot combine with outline delivery and never limits
+subsequent `read` or context expansion. Because the agent already chose content
+after the outline step, compact JSON omits the repeated full `sections` size
+map; request `--outline` or `read --list` again only when that map is needed.
+
 ## Declared cache and delta briefings must stay honest
 
 A recurring agent can shrink packets further, but only in ways the engine can

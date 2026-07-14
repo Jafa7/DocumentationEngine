@@ -220,6 +220,9 @@ def test_agent_instructions_snapshot_reflects_custom_config(
         "- Without a configured view, expand context with `--depth`, "
         "`--include` or `--include-related` instead of assuming an omitted "
         "document or section is irrelevant.\n"
+        "- Prefer `docsystem context ID PROJECT --compact --json` when fetching "
+        "content: it emits each overlapping source range once while preserving "
+        "every stable address, inclusion reason and omission in the manifest.\n"
         "- Use `docsystem graph-health PROJECT --json` for broad planning or "
         "graph diagnosis, not as mandatory overhead for every edit; metrics "
         "are facts and configured signals remain advisory.\n"
@@ -278,6 +281,7 @@ layers = ["authored"]
     assert "Prefer the lowest configured `docsystem context --view NAME` tier" in output
     assert "inspect every `view_omissions` row" in output
     assert "Without a configured view, expand context" in output
+    assert "Prefer `docsystem context ID PROJECT --compact --json`" in output
     assert "Use `docsystem graph-health PROJECT --json` for broad planning" in output
 
     assert show_config(tmp_path) == 0
