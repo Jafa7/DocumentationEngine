@@ -426,6 +426,18 @@ def validate_metadata(
         metadata = document.metadata
         if metadata is None:
             continue
+        for reference in metadata.federated_references:
+            issues.append(
+                ValidationIssue(
+                    document.path,
+                    f"metadata.{reference.relation} federated reference "
+                    f"{reference.target!r} requires a workspace federation query",
+                    severity="warning",
+                    affects_graph=True,
+                    target_id=reference.target,
+                    category="federation-boundary",
+                )
+            )
         for reference in metadata.references:
             if reference.target_id == metadata.document_id:
                 issues.append(

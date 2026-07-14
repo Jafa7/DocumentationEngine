@@ -628,3 +628,18 @@ navigation. Keep `validated_against` pins at the revisions actually reviewed.
 If completed roadmap pins are historical evidence, configure a narrow
 `relations.snapshot_rules` type/status match instead of rewriting revisions or
 silencing active-roadmap freshness warnings.
+
+## Federated workspace reads
+
+When a task depends on more than one registered workspace source, use
+`docsystem federation catalog/context/impact` and qualified
+`source::ID[#anchor]` addresses. Do not run separate single-source queries and
+claim that their union is a complete cross-project graph. A qualified metadata
+relation is an explicit boundary in single-source mode and becomes an edge
+only after the federation resolves its named source and target ID.
+
+Federated context preserves source Markdown, lists omitted H2 anchors and
+allows exact qualified `--include` expansion. Treat unavailable sources,
+invalid catalogs and unresolved qualified relations as hard completeness
+failures. A read-only federated result grants no write permission; any future
+change must be authorized and journaled independently by the owning source.

@@ -24,10 +24,11 @@ from docsystem.graph import (
     build_reference_graph,
 )
 
-# Version 3 binds every document, reverse, reference, and reverse-reference
-# shard hash into the immutable generation identity.  Version 2 generations
-# therefore fail closed as incompatible and are rebuilt by `index --write`.
-SCHEMA_VERSION = 3
+# Version 4 preserves qualified-relation boundaries in single-source shards.
+# Older generations fail closed as incompatible and are rebuilt by
+# `index --write`; version 3 already bound every shard hash into the immutable
+# generation identity.
+SCHEMA_VERSION = 4
 
 # The observed-reference graph shard payload has its own version, while its
 # hashes and presence remain part of the generation identity.
@@ -159,6 +160,11 @@ def build_projection(
             for reference in document.metadata.references
             if reference.relation == "related"
         )
+        related_values.extend(
+            reference.target
+            for reference in document.metadata.federated_references
+            if reference.relation == "related"
+        )
         documents[document.metadata.document_id] = {
             "path": document.path.as_posix(),
             "revision": document.metadata.revision,
@@ -193,6 +199,14 @@ def build_projection(
                 }
                 for item in catalog.relation_boundaries
                 if item.source_id == document.metadata.document_id
+            ]
+            + [
+                {
+                    "relation": reference.relation,
+                    "value": reference.target,
+                    "reason": "requires workspace federation",
+                }
+                for reference in document.metadata.federated_references
             ],
             "migrations": migrations_by_source.get(
                 document.metadata.document_id, []

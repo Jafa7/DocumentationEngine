@@ -5,9 +5,10 @@ each command. A local documentation workspace can register several independent
 project profiles and let a caller select one by a stable source name instead
 of repeating a machine-specific absolute path.
 
-This feature is source selection, not federation. One command still sees one
-ordinary catalog, dependency graph and projection. It does not merge IDs,
-relations or context across sources.
+Ordinary `--source` use is source selection: one command sees one catalog,
+dependency graph and projection. The separate read-only
+[`federation` commands](federation.md) can build a qualified graph across all
+registered sources without changing this single-source behavior.
 
 ## Ownership model
 
@@ -136,21 +137,20 @@ required approval and backup local-only authored state first.
 The read-only MCP tools accept optional `source` and `workspace` parameters.
 They forward the same CLI flags and preserve the old invocation exactly when
 both are omitted. `workspace_list` exposes the body-free registry listing.
-MCP does not expose workspace creation, synchronization, migration or source
-mutation.
+MCP exposes the same read-only federated catalog/dependency/context/impact
+queries. It does not expose workspace creation, synchronization, migration or
+source mutation.
 
 ## Deliberate non-goals
 
 This milestone does not provide:
 
-- qualified cross-project document IDs;
-- cross-source dependency edges or aggregate context;
 - a workspace-level projection;
 - remote/network sources, authentication or authorization;
 - concurrent-write locking;
 - Git synchronization, import, copy or deletion;
 - a documentation web server or UI.
 
-Those capabilities require one atomic federation design. Until then, a caller
-that needs another project selects that source in a separate command and must
-not infer a complete cross-project graph.
+Write federation, projection and remote-service capabilities require separate
+bounded designs. Read-only federation is direct-Markdown and fails closed
+unless every registered source is available and valid.

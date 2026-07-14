@@ -313,6 +313,85 @@ def test_workstream_tools_delegate_to_read_only_json_cli(
     ]
 
 
+def test_federation_tools_delegate_to_read_only_json_cli(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def invoke(arguments, *, allow_failure_payload=False):
+        calls.append(arguments)
+        return '{"schema_version": 1}', ""
+
+    monkeypatch.setattr(mcp_server, "_invoke", invoke)
+
+    assert mcp_server.federation_catalog("/project", "/workspace") == {
+        "schema_version": 1
+    }
+    assert calls.pop() == [
+        "federation",
+        "catalog",
+        "/project",
+        "--json",
+        "--workspace",
+        "/workspace",
+    ]
+
+    assert mcp_server.federation_dependencies(
+        "/project", "alpha::DOC-001", reverse=True
+    ) == {"schema_version": 1}
+    assert calls.pop() == [
+        "federation",
+        "dependencies",
+        "alpha::DOC-001",
+        "/project",
+        "--json",
+        "--reverse",
+    ]
+
+    assert mcp_server.federation_context(
+        "/project",
+        "alpha::DOC-001",
+        depth=2,
+        include_related=True,
+        include=["beta::DOC-002#details"],
+    ) == {"schema_version": 1}
+    assert calls.pop() == [
+        "federation",
+        "context",
+        "alpha::DOC-001",
+        "/project",
+        "--depth",
+        "2",
+        "--json",
+        "--include-related",
+        "--include",
+        "beta::DOC-002#details",
+    ]
+
+    assert mcp_server.federation_references(
+        "/project", "alpha::DOC-001#details", transitive=True
+    ) == {"schema_version": 1}
+    assert calls.pop() == [
+        "federation",
+        "references",
+        "alpha::DOC-001#details",
+        "/project",
+        "--json",
+        "--transitive",
+    ]
+
+    assert mcp_server.federation_impact("/project", "beta::DOC-002") == {
+        "schema_version": 1
+    }
+    assert calls.pop() == [
+        "federation",
+        "impact",
+        "beta::DOC-002",
+        "/project",
+        "--json",
+    ]
+
+
 def test_cli_errors_surface_as_exceptions(tmp_path: Path) -> None:
     project = adapter_project(tmp_path)
 

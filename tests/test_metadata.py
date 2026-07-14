@@ -80,6 +80,34 @@ def test_missing_and_malformed_front_matter_remain_in_catalog(tmp_path: Path) ->
     assert any(message.startswith("invalid YAML front matter") for message in messages)
 
 
+def test_qualified_relations_are_preserved_outside_the_local_graph(
+    tmp_path: Path,
+) -> None:
+    area = configured_project(tmp_path)
+    write_document(
+        area / "README.md",
+        """\
+id: DOC-001
+revision: 1
+depends_on: [shared::GUIDE-002]
+validated_against: [shared::GUIDE-003@4]
+""",
+    )
+
+    catalog = build_catalog(load_config(tmp_path))
+    metadata = catalog.documents[0].metadata
+    assert metadata is not None
+    assert [
+        (item.relation, item.target, item.expected_revision)
+        for item in metadata.federated_references
+    ] == [
+        ("depends_on", "shared::GUIDE-002", None),
+        ("validated_against", "shared::GUIDE-003", 4),
+    ]
+    assert metadata.legacy_references == ()
+    assert build_dependency_graph(catalog).edges == ()
+
+
 def test_duplicate_top_level_and_nested_yaml_keys_are_rejected(tmp_path: Path) -> None:
     area = configured_project(tmp_path)
     (area / "README.md").write_text(
@@ -168,7 +196,10 @@ validated_against: [DOC-001@1, DOC-001@1, DOC-001@0, invalid]
     assert any("DOC-001@1 is stale" in message for message in messages)
     assert "metadata.validated_against contains duplicate reference DOC-001@1" in messages
     assert "metadata.validated_against revisions must be positive" in messages
-    assert "metadata.validated_against entries must use ID@revision" in messages
+    assert (
+        "metadata.validated_against entries must use ID@revision or "
+        "source::ID@revision"
+    ) in messages
 
 
 def test_stale_pin_is_a_non_blocking_diagnostic(tmp_path: Path) -> None:

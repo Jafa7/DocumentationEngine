@@ -313,9 +313,11 @@ from the nearest parent index. `doctor` includes membership, navigation and
 metadata validation.
 
 Every cataloged Markdown document starts with YAML front matter containing a
-stable `id` and positive `revision`. Semantic relations use stable IDs:
+stable `id` and positive `revision`. Semantic relations use local stable IDs:
 `derived_from`, `depends_on`, `related` and `supersedes` contain ID lists;
-`validated_against` contains `ID@revision` freshness pins. Unknown fields are
+`validated_against` contains `ID@revision` freshness pins. A registered
+multi-catalog workspace may additionally author quoted `source::ID` and
+`source::ID@revision` targets for [federated reads](docs/federation.md). Unknown fields are
 preserved for project-specific policy. Duplicate YAML mapping keys are invalid
 at every nesting level.
 
@@ -720,6 +722,24 @@ for how an AI client should safely drive this CLI.
 Projects that keep private documentation or local configuration outside git
 should also define a local backup command; see
 [local state safety](docs/local-state-safety.md).
+
+For several independent catalogs, register them in a local workspace and use
+qualified `source::ID[#anchor]` reads:
+
+```bash
+docsystem federation catalog . --workspace /path/to/workspace --json
+docsystem federation context project-a::DOC-001 . \
+  --workspace /path/to/workspace --depth 1 --json
+docsystem federation references project-a::DOC-001#purpose . \
+  --workspace /path/to/workspace --transitive --json
+docsystem federation impact shared-guides::GUIDE-004 . \
+  --workspace /path/to/workspace --json
+```
+
+Cross-source relations stay in Markdown as authored `"source::ID"` metadata.
+Federated queries require every registered source to be available and valid,
+preserve task-sized source text with visible omissions, and never grant write
+authority. See [read-only multi-catalog federation](docs/federation.md).
 
 ## Deliberate project-local boundaries
 

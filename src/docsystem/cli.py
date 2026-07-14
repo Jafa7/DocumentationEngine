@@ -68,6 +68,17 @@ from docsystem.execution import (
     seal_packet,
     validate_execution_result,
 )
+from docsystem.federation import (
+    FederationError,
+    build_federated_catalog,
+    parse_qualified_address,
+)
+from docsystem.federation import (
+    context_selection as federated_context_selection,
+)
+from docsystem.federation import (
+    document_payload as federated_document_payload,
+)
 from docsystem.graph import (
     Address,
     Boundary,
@@ -504,6 +515,544 @@ def workspace_doctor(
             file=sys.stderr,
         )
     return 1 if unavailable else 0
+
+
+def _load_federation(project_root: Path, workspace_option: Path | None):
+    workspace = resolve_workspace(
+        workspace_option=workspace_option,
+        project_root=project_root,
+    )
+    return build_federated_catalog(workspace)
+
+
+def federation_catalog(
+    project_root: Path,
+    *,
+    workspace_option: Path | None = None,
+    json_output: bool = False,
+) -> int:
+    """List every qualified document in a complete read-only federation."""
+
+    try:
+        catalog_value = _load_federation(project_root, workspace_option)
+    except (FederationError, WorkspaceError, ValueError) as error:
+        for line in str(error).splitlines():
+            print(f"ERROR: {line}", file=sys.stderr)
+        return 1
+    rows = [
+        {
+            "address": document.address.document,
+            "visibility": document.visibility,
+            "role": document.role,
+            "path": document.path,
+            "revision": document.revision,
+            "type": document.document_type,
+            "status": document.status,
+        }
+        for document in catalog_value.documents
+    ]
+    if json_output:
+        _print_json(
+            {
+                "schema_version": JSON_SCHEMA_VERSION,
+                "documents": rows,
+                "edge_count": len(catalog_value.edges),
+                "boundary_count": len(catalog_value.boundaries),
+                "migration_count": len(catalog_value.migrations),
+                "complete": True,
+            }
+        )
+        return 0
+    for row in rows:
+        print(
+            f"{row['address']}\t{row['visibility']}\t{row['role']}\t"
+            f"{row['path']}\tr{row['revision']}"
+        )
+    return 0
+
+
+def federation_dependencies(
+    project_root: Path,
+    address: str,
+    *,
+    workspace_option: Path | None = None,
+    reverse: bool = False,
+    json_output: bool = False,
+) -> int:
+    """Return complete qualified forward or reverse semantic edges."""
+
+    try:
+        catalog_value = _load_federation(project_root, workspace_option)
+        target = parse_qualified_address(address)
+        if target.anchor is not None:
+            raise FederationError("federated dependencies require a document address")
+        catalog_value.find(target)
+        edges = (
+            catalog_value.incoming(target)
+            if reverse
+            else catalog_value.outgoing(target)
+        )
+        boundaries = (
+            ()
+            if reverse
+            else tuple(
+                item
+                for item in catalog_value.boundaries
+                if item.source.document == target.document
+            )
+        )
+        migrations = (
+            ()
+            if reverse
+            else tuple(
+                item
+                for item in catalog_value.migrations
+                if item.source.document == target.document
+            )
+        )
+    except (FederationError, WorkspaceError, ValueError) as error:
+        for line in str(error).splitlines():
+            print(f"ERROR: {line}", file=sys.stderr)
+        return 1
+    rows = [
+        {
+            "relation": edge.relation,
+            "source": edge.source.document,
+            "target": edge.target.document,
+            "expected_revision": edge.expected_revision,
+        }
+        for edge in edges
+    ]
+    if json_output:
+        _print_json(
+            {
+                "schema_version": JSON_SCHEMA_VERSION,
+                "address": target.document,
+                "direction": "reverse" if reverse else "forward",
+                "edges": rows,
+                "boundaries": [
+                    {
+                        "source": item.source.document,
+                        "relation": item.relation,
+                        "value": item.raw_target,
+                        "reason": item.reason,
+                    }
+                    for item in boundaries
+                ],
+                "migrations": [
+                    {
+                        "source": item.source.document,
+                        "relation": item.relation,
+                        "value": item.value,
+                        "target": item.target.document,
+                    }
+                    for item in migrations
+                ],
+                "complete": True,
+            }
+        )
+        return 0
+    for row in rows:
+        pin = (
+            f"@{row['expected_revision']}"
+            if row["expected_revision"] is not None
+            else ""
+        )
+        peer = row["source"] if reverse else row["target"]
+        print(f"{row['relation']}\t{peer}{pin}")
+    for item in boundaries:
+        print(
+            f"boundary\t{item.relation}\t{item.raw_target}\t{item.reason}"
+        )
+    for item in migrations:
+        print(
+            f"migration\t{item.relation}\t{item.value}\t{item.target.document}"
+        )
+    return 0
+
+
+def federation_references(
+    project_root: Path,
+    address: str,
+    *,
+    workspace_option: Path | None = None,
+    reverse: bool = False,
+    transitive: bool = False,
+    json_output: bool = False,
+) -> int:
+    """Traverse the qualified authored/observed/generated section graph."""
+
+    try:
+        catalog_value = _load_federation(project_root, workspace_option)
+        target = parse_qualified_address(address)
+        catalog_value.find(target)
+        queue = deque([(target, 0, (target.text,))])
+        expanded: set[str] = set()
+        rows = []
+        boundaries = []
+        seen_results: set[tuple[str, str, str, str]] = set()
+        while queue:
+            current, distance, path = queue.popleft()
+            if current.text in expanded:
+                continue
+            expanded.add(current.text)
+            candidates = [
+                edge
+                for edge in catalog_value.reference_edges
+                if (
+                    edge.target.text == current.text
+                    if reverse
+                    else edge.source.text == current.text
+                )
+            ]
+            for edge in candidates:
+                peer = edge.source if reverse else edge.target
+                key = (edge.relation, edge.authority, edge.origin, peer.text)
+                if key in seen_results:
+                    continue
+                seen_results.add(key)
+                next_path = (*path, peer.text)
+                rows.append(
+                    {
+                        "relation": edge.relation,
+                        "authority": edge.authority,
+                        "origin": edge.origin,
+                        "address": peer.text,
+                        "distance": distance + 1,
+                        "direct": distance == 0,
+                        "path": list(next_path),
+                        "reason": edge.reason,
+                        "pin": edge.pin,
+                    }
+                )
+                if transitive and peer.text not in expanded:
+                    queue.append((peer, distance + 1, next_path))
+            if not reverse:
+                boundaries.extend(
+                    {
+                        "source": item.source.text,
+                        "value": item.raw_target,
+                        "category": item.category,
+                        "reason": item.reason,
+                    }
+                    for item in catalog_value.reference_boundaries
+                    if item.source.text == current.text
+                )
+            if not transitive:
+                break
+        rows.sort(
+            key=lambda item: (
+                item["distance"],
+                item["relation"],
+                item["authority"],
+                item["address"],
+            )
+        )
+        boundaries.sort(
+            key=lambda item: (item["source"], item["category"], item["value"])
+        )
+    except (FederationError, WorkspaceError, ValueError) as error:
+        for line in str(error).splitlines():
+            print(f"ERROR: {line}", file=sys.stderr)
+        return 1
+    if json_output:
+        _print_json(
+            {
+                "schema_version": JSON_SCHEMA_VERSION,
+                "address": target.text,
+                "direction": "reverse" if reverse else "forward",
+                "transitive": transitive,
+                "results": rows,
+                "boundaries": boundaries,
+                "complete": True,
+            }
+        )
+        return 0
+    for row in rows:
+        print(
+            f"edge\t{row['relation']}\t{row['authority']}\t{row['origin']}\t"
+            f"{row['distance']}\t{'direct' if row['direct'] else 'transitive'}\t"
+            f"{row['address']}\t{' -> '.join(row['path'])}\t{row['reason'] or '-'}"
+        )
+    for item in boundaries:
+        print(
+            f"boundary\t-\t-\t-\t-\t-\t{item['value']}\t{item['source']}\t"
+            f"{item['category']}: {item['reason']}"
+        )
+    return 0
+
+
+def federation_context(
+    project_root: Path,
+    address: str,
+    *,
+    workspace_option: Path | None = None,
+    depth: int = 1,
+    include_related: bool = False,
+    includes: tuple[str, ...] = (),
+    json_output: bool = False,
+) -> int:
+    """Build a body-preserving task-sized packet across workspace sources."""
+
+    try:
+        if depth < 0:
+            raise FederationError("federated context depth must be non-negative")
+        catalog_value = _load_federation(project_root, workspace_option)
+        target = parse_qualified_address(address)
+        explicit = tuple(parse_qualified_address(item) for item in includes)
+        selected = federated_context_selection(
+            catalog_value,
+            target,
+            depth=depth,
+            include_related=include_related,
+            includes=explicit,
+        )
+        documents = [
+            federated_document_payload(document, relations, anchors)
+            for document, relations, anchors in selected
+        ]
+        selected_addresses = {document.address.document for document, _, _ in selected}
+        traversed_relations = {"derived_from", "depends_on", "validated_against"}
+        if include_related:
+            traversed_relations.update({"related", "supersedes"})
+        omitted_relations = []
+        for edge in catalog_value.edges:
+            if (
+                edge.source.document not in selected_addresses
+                or edge.target.document in selected_addresses
+            ):
+                continue
+            reason = (
+                "related-filter"
+                if edge.relation in {"related", "supersedes"}
+                and not include_related
+                else "depth-or-explicit-boundary"
+                if edge.relation in traversed_relations
+                else "relation-filter"
+            )
+            omitted_relations.append(
+                {
+                    "source": edge.source.document,
+                    "relation": edge.relation,
+                    "target": edge.target.document,
+                    "reason": reason,
+                }
+            )
+        boundaries = [
+            {
+                "source": item.source.document,
+                "relation": item.relation,
+                "value": item.raw_target,
+                "reason": item.reason,
+            }
+            for item in catalog_value.boundaries
+            if item.source.document in selected_addresses
+        ]
+        migrations = [
+            {
+                "source": item.source.document,
+                "relation": item.relation,
+                "value": item.value,
+                "target": item.target.document,
+            }
+            for item in catalog_value.migrations
+            if item.source.document in selected_addresses
+        ]
+        freshness = []
+        for edge in catalog_value.edges:
+            if (
+                edge.source.document not in selected_addresses
+                or edge.expected_revision is None
+            ):
+                continue
+            source_document = catalog_value.by_address[edge.source.document]
+            current = catalog_value.by_address[edge.target.document].revision
+            freshness.append(
+                {
+                    "source": edge.source.document,
+                    "target": edge.target.document,
+                    "pinned_revision": edge.expected_revision,
+                    "current_revision": current,
+                    "classification": (
+                        "historical snapshot"
+                        if source_document.historical_snapshot
+                        else "current"
+                        if edge.expected_revision == current
+                        else "stale"
+                    ),
+                }
+            )
+    except (FederationError, WorkspaceError, ValueError) as error:
+        for line in str(error).splitlines():
+            print(f"ERROR: {line}", file=sys.stderr)
+        return 1
+    if json_output:
+        _print_json(
+            {
+                "schema_version": JSON_SCHEMA_VERSION,
+                "target": target.text,
+                "depth": depth,
+                "related_included": include_related,
+                "documents": documents,
+                "freshness": freshness,
+                "omitted_relations": omitted_relations,
+                "boundaries": boundaries,
+                "migrations": migrations,
+                "complete": True,
+                "projection": "direct-markdown",
+            }
+        )
+        return 0
+    out = [f"# Federated context packet: {target.text}", ""]
+    out.extend(
+        [
+            f"- Dependency depth: {depth}",
+            f"- Related traversal: {'included' if include_related else 'omitted'}",
+            "- Graph completeness: complete across all registered sources",
+            "- Source mode: direct Markdown",
+        ]
+    )
+    for item in freshness:
+        out.append(
+            "- Revision pin "
+            f"{item['source']} -> {item['target']} "
+            f"@{item['pinned_revision']}: {item['classification']} "
+            f"(current {item['current_revision']})."
+        )
+    for item in omitted_relations:
+        out.append(
+            "- Omitted relation "
+            f"{item['source']} --{item['relation']}--> {item['target']}: "
+            f"{item['reason']}."
+        )
+    for item in boundaries:
+        out.append(
+            "- Boundary "
+            f"{item['source']}.{item['relation']}={item['value']!r}: "
+            f"{item['reason']}."
+        )
+    for item in migrations:
+        out.append(
+            "- Legacy relation "
+            f"{item['source']}.{item['relation']}={item['value']!r} "
+            f"resolves to {item['target']}."
+        )
+    for document in documents:
+        out.extend(
+            [
+                "",
+                f"## {document['address']} — {document['path']}",
+                "",
+                f"Relations: {', '.join(document['relations'])}.",
+                "",
+                str(document["navigation"]),
+            ]
+        )
+        for section in document["explicit_sections"]:
+            out.extend(
+                [
+                    "",
+                    f"### Explicit section `{section['anchor']}`",
+                    "",
+                    str(section["content"]),
+                ]
+            )
+        omitted = document["omitted_h2"]
+        out.extend(
+            [
+                "",
+                "Coverage: omitted H2 "
+                + (", ".join(f"`{item}`" for item in omitted) if omitted else "none")
+                + ".",
+            ]
+        )
+    out.extend(
+        [
+            "",
+            "## Diagnostics and boundaries",
+            "",
+            (
+                "- No unresolved resource/external boundaries."
+                if not boundaries
+                else f"- Visible resource/external boundaries: {len(boundaries)}."
+            ),
+            "- Every omitted section remains available through its qualified address.",
+            "- Expand with --depth, --include-related or --include source::ID#anchor.",
+        ]
+    )
+    sys.stdout.write("\n".join(out).rstrip() + "\n")
+    return 0
+
+
+def federation_impact(
+    project_root: Path,
+    address: str,
+    *,
+    workspace_option: Path | None = None,
+    json_output: bool = False,
+) -> int:
+    """Return deterministic reverse metadata impact across all sources."""
+
+    try:
+        catalog_value = _load_federation(project_root, workspace_option)
+        target = parse_qualified_address(address)
+        if target.anchor is not None:
+            raise FederationError("federated impact requires a document address")
+        target_document = catalog_value.find(target)
+        edges = catalog_value.incoming(target)
+    except (FederationError, WorkspaceError, ValueError) as error:
+        for line in str(error).splitlines():
+            print(f"ERROR: {line}", file=sys.stderr)
+        return 1
+    rows = []
+    for edge in edges:
+        if edge.relation == "related":
+            classification = "related navigation"
+        elif edge.relation == "validated_against":
+            source_document = catalog_value.by_address[edge.source.document]
+            classification = (
+                "historical snapshot"
+                if source_document.historical_snapshot
+                else "freshness pin (current)"
+                if edge.expected_revision == target_document.revision
+                else "freshness pin (stale)"
+            )
+        elif edge.relation == "supersedes":
+            classification = "lineage"
+        else:
+            classification = "semantic"
+        rows.append(
+            {
+                "downstream": edge.source.document,
+                "relation": edge.relation,
+                "expected_revision": edge.expected_revision,
+                "classification": classification,
+            }
+        )
+    if json_output:
+        _print_json(
+            {
+                "schema_version": JSON_SCHEMA_VERSION,
+                "target": target.document,
+                "revision": target_document.revision,
+                "edges": rows,
+                "complete": True,
+            }
+        )
+        return 0
+    print(f"# Federated impact analysis: {target.document}")
+    print()
+    print("| Downstream | Relation | Pin | Classification |")
+    print("|---|---|---|---|")
+    for row in rows:
+        pin = row["expected_revision"] if row["expected_revision"] else "—"
+        print(
+            f"| `{row['downstream']}` | {row['relation']} | {pin} | "
+            f"{row['classification']} |"
+        )
+    if not rows:
+        print("| — | — | — | no reverse metadata dependencies |")
+    return 0
 
 
 def initialize(project_root: Path) -> int:
@@ -1355,6 +1904,14 @@ def _views_from_catalog(catalog_value: MarkdownCatalog) -> tuple[_Views, _Incomi
         if metadata is None:
             continue
         document_id = metadata.document_id
+        boundaries.setdefault(document_id, []).extend(
+            (
+                reference.relation,
+                reference.target,
+                "requires workspace federation",
+            )
+            for reference in metadata.federated_references
+        )
         related_values = [
             value
             for relation, value in metadata.legacy_references
@@ -1363,6 +1920,11 @@ def _views_from_catalog(catalog_value: MarkdownCatalog) -> tuple[_Views, _Incomi
         related_values.extend(
             reference.target_id
             for reference in metadata.references
+            if reference.relation == "related"
+        )
+        related_values.extend(
+            reference.target
+            for reference in metadata.federated_references
             if reference.relation == "related"
         )
         views[document_id] = _DocumentView(
@@ -7262,6 +7824,89 @@ def build_parser() -> argparse.ArgumentParser:
             help="Print a deterministic JSON object instead of tab-separated text.",
         )
 
+    federation_parser = subparsers.add_parser(
+        "federation",
+        help="Query one complete read-only graph across all workspace sources.",
+    )
+    federation_subparsers = federation_parser.add_subparsers(
+        dest="federation_command", required=True
+    )
+
+    def add_federation_common(command_parser: argparse.ArgumentParser) -> None:
+        command_parser.add_argument(
+            "--workspace",
+            metavar="PATH",
+            type=Path,
+            help=(
+                "Workspace root holding workspace.toml. Overrides "
+                "DOCSYSTEM_WORKSPACE and .docsystem.local.toml."
+            ),
+        )
+        command_parser.add_argument(
+            "--json",
+            action="store_true",
+            dest="json_output",
+            help="Print deterministic structured JSON.",
+        )
+
+    federation_catalog_parser = federation_subparsers.add_parser(
+        "catalog", help="List every workspace-qualified document."
+    )
+    federation_catalog_parser.add_argument(
+        "project", nargs="?", type=Path, default=Path.cwd()
+    )
+    add_federation_common(federation_catalog_parser)
+
+    federation_dependencies_parser = federation_subparsers.add_parser(
+        "dependencies", help="List qualified forward or reverse semantic edges."
+    )
+    federation_dependencies_parser.add_argument("address", metavar="SOURCE::ID")
+    federation_dependencies_parser.add_argument(
+        "project", nargs="?", type=Path, default=Path.cwd()
+    )
+    federation_dependencies_parser.add_argument("--reverse", action="store_true")
+    add_federation_common(federation_dependencies_parser)
+
+    federation_context_parser = federation_subparsers.add_parser(
+        "context", help="Build a task-sized context packet across sources."
+    )
+    federation_context_parser.add_argument(
+        "address", metavar="SOURCE::ID[#ANCHOR]"
+    )
+    federation_context_parser.add_argument(
+        "project", nargs="?", type=Path, default=Path.cwd()
+    )
+    federation_context_parser.add_argument("--depth", type=int, default=1)
+    federation_context_parser.add_argument(
+        "--include-related", action="store_true"
+    )
+    federation_context_parser.add_argument(
+        "--include", action="append", default=[], metavar="SOURCE::ID[#ANCHOR]"
+    )
+    add_federation_common(federation_context_parser)
+
+    federation_references_parser = federation_subparsers.add_parser(
+        "references", help="Traverse qualified section/reference graph edges."
+    )
+    federation_references_parser.add_argument(
+        "address", metavar="SOURCE::ID[#ANCHOR]"
+    )
+    federation_references_parser.add_argument(
+        "project", nargs="?", type=Path, default=Path.cwd()
+    )
+    federation_references_parser.add_argument("--reverse", action="store_true")
+    federation_references_parser.add_argument("--transitive", action="store_true")
+    add_federation_common(federation_references_parser)
+
+    federation_impact_parser = federation_subparsers.add_parser(
+        "impact", help="Show complete reverse metadata impact across sources."
+    )
+    federation_impact_parser.add_argument("address", metavar="SOURCE::ID")
+    federation_impact_parser.add_argument(
+        "project", nargs="?", type=Path, default=Path.cwd()
+    )
+    add_federation_common(federation_impact_parser)
+
     for command_parser in (
         read_parser,
         dependencies_parser,
@@ -7312,6 +7957,51 @@ def main() -> int:
                 json_output=args.json_output,
             )
         raise AssertionError(f"unknown workspace command: {args.workspace_command}")
+
+    if args.command == "federation":
+        if args.federation_command == "catalog":
+            return federation_catalog(
+                args.project,
+                workspace_option=args.workspace,
+                json_output=args.json_output,
+            )
+        if args.federation_command == "dependencies":
+            return federation_dependencies(
+                args.project,
+                args.address,
+                workspace_option=args.workspace,
+                reverse=args.reverse,
+                json_output=args.json_output,
+            )
+        if args.federation_command == "context":
+            return federation_context(
+                args.project,
+                args.address,
+                workspace_option=args.workspace,
+                depth=args.depth,
+                include_related=args.include_related,
+                includes=tuple(args.include),
+                json_output=args.json_output,
+            )
+        if args.federation_command == "references":
+            return federation_references(
+                args.project,
+                args.address,
+                workspace_option=args.workspace,
+                reverse=args.reverse,
+                transitive=args.transitive,
+                json_output=args.json_output,
+            )
+        if args.federation_command == "impact":
+            return federation_impact(
+                args.project,
+                args.address,
+                workspace_option=args.workspace,
+                json_output=args.json_output,
+            )
+        raise AssertionError(
+            f"unknown federation command: {args.federation_command}"
+        )
 
     selection = _resolve_selection(args)
     if selection is None:

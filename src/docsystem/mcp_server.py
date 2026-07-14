@@ -462,6 +462,89 @@ def workspace_list(project: str, workspace: str | None = None) -> dict:
     return _json_tool(arguments)
 
 
+def federation_catalog(project: str, workspace: str | None = None) -> dict:
+    """List qualified documents in the complete local workspace federation."""
+
+    arguments = ["federation", "catalog", project, "--json"]
+    if workspace is not None:
+        arguments.extend(["--workspace", workspace])
+    return _json_tool(arguments)
+
+
+def federation_dependencies(
+    project: str,
+    address: str,
+    reverse: bool = False,
+    workspace: str | None = None,
+) -> dict:
+    """Return complete qualified forward or reverse semantic edges."""
+
+    arguments = ["federation", "dependencies", address, project, "--json"]
+    if reverse:
+        arguments.append("--reverse")
+    if workspace is not None:
+        arguments.extend(["--workspace", workspace])
+    return _json_tool(arguments)
+
+
+def federation_context(
+    project: str,
+    address: str,
+    depth: int = 1,
+    include_related: bool = False,
+    include: list[str] | None = None,
+    workspace: str | None = None,
+) -> dict:
+    """Build a task-sized, body-preserving packet across workspace sources."""
+
+    arguments = [
+        "federation",
+        "context",
+        address,
+        project,
+        "--depth",
+        str(depth),
+        "--json",
+    ]
+    if include_related:
+        arguments.append("--include-related")
+    for item in include or []:
+        arguments.extend(["--include", item])
+    if workspace is not None:
+        arguments.extend(["--workspace", workspace])
+    return _json_tool(arguments)
+
+
+def federation_references(
+    project: str,
+    address: str,
+    reverse: bool = False,
+    transitive: bool = False,
+    workspace: str | None = None,
+) -> dict:
+    """Traverse qualified authored, observed and generated graph edges."""
+
+    arguments = ["federation", "references", address, project, "--json"]
+    if reverse:
+        arguments.append("--reverse")
+    if transitive:
+        arguments.append("--transitive")
+    if workspace is not None:
+        arguments.extend(["--workspace", workspace])
+    return _json_tool(arguments)
+
+
+def federation_impact(
+    project: str, address: str, workspace: str | None = None
+) -> dict:
+    """Return complete reverse impact across all registered sources."""
+
+    arguments = ["federation", "impact", address, project, "--json"]
+    if workspace is not None:
+        arguments.extend(["--workspace", workspace])
+    return _json_tool(arguments)
+
+
 def context(
     project: str,
     document_id: str,
@@ -709,6 +792,11 @@ _TOOLS = (
     impact_packet,
     agent_instructions,
     workspace_list,
+    federation_catalog,
+    federation_dependencies,
+    federation_context,
+    federation_references,
+    federation_impact,
 )
 
 

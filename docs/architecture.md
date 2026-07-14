@@ -64,11 +64,15 @@ Project policy may configure:
 - legacy path-relation migration and historical snapshot document types;
 - provider adapters.
 
-A local workspace registry is an outer selection layer, not another project
-configuration table. It maps a stable source name to one contained project
-root, after which the existing configuration, catalog, graph and projection
-contracts apply unchanged. It deliberately does not aggregate multiple
-sources; see [workspace source selection](workspace-sources.md).
+A local workspace registry maps stable source names to contained project
+roots. Ordinary source selection applies one project's configuration, catalog,
+graph and projection unchanged. The separate read-only federation layer
+qualifies identities as `source::ID[#anchor]`, resolves authored qualified
+metadata relations, qualifies each source's observed/generated section graph
+and builds complete direct-Markdown context/impact/reference queries across all
+available sources. It never merges ownership or grants write authority;
+see [workspace source selection](workspace-sources.md) and
+[multi-catalog federation](federation.md).
 
 ## Scalable projection
 
@@ -200,7 +204,9 @@ core behavior. Duplicate keys are rejected recursively so identity and policy
 data cannot be silently overwritten by YAML parsing.
 
 Semantic relations use stable IDs so file moves do not rewrite the dependency
-graph. `validated_against` uses `ID@revision`; stale pins are reported without
+graph. Inside one catalog they use local `ID`; a workspace federation may use
+authored `source::ID` targets without merging ownership. `validated_against`
+uses `ID@revision` or qualified `source::ID@revision`; stale pins are reported without
 assuming whether a project treats the document as current truth or a historical
 snapshot. Human navigation continues to use ordinary relative Markdown links.
 Graph queries fail closed when invalid metadata prevents a complete answer;

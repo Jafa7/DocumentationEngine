@@ -104,6 +104,11 @@ The adapter is deliberately a wrapper, not a second implementation:
 | `impact_packet` | object | `docsystem impact ID PROJECT` |
 | `agent_instructions` | object | `docsystem agent-instructions PROJECT --json` |
 | `workspace_list` | object | `docsystem workspace list PROJECT --json` |
+| `federation_catalog` | object | `docsystem federation catalog PROJECT --json` |
+| `federation_dependencies` | object | `docsystem federation dependencies SOURCE::ID PROJECT --json` |
+| `federation_context` | object | `docsystem federation context SOURCE::ID[#ANCHOR] PROJECT --json` |
+| `federation_references` | object | `docsystem federation references SOURCE::ID[#ANCHOR] PROJECT --json` |
+| `federation_impact` | object | `docsystem federation impact SOURCE::ID PROJECT --json` |
 
 Every tool takes the project root explicitly; none relies on the server
 process working directory.
@@ -112,7 +117,8 @@ Project-oriented tools also accept optional `source` and `workspace`
 parameters for [workspace source selection](workspace-sources.md). They append
 the corresponding CLI flags only when provided, so existing MCP calls remain
 unchanged. `workspace_list` reports registry metadata without reading document
-bodies. The adapter does not federate sources or expose workspace mutations.
+bodies. The four federation tools use the complete read-only contract in
+[federation.md](federation.md); none exposes workspace mutations.
 
 The packet tools use this envelope:
 

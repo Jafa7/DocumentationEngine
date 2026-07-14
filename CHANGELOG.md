@@ -6,6 +6,13 @@ All notable changes to Documentation Engine are documented in this file.
 
 ### Added
 
+- Read-only multi-catalog federation with qualified `source::ID[#anchor]`
+  identities, authored cross-source relations, complete catalog/dependency/
+  reference/context/impact CLI queries and matching thin MCP tools.
+- Projection schema 4 preserves qualified relation boundaries on the
+  single-source direct and projected paths; older generations fall back safely
+  and can be rebuilt from Markdown.
+
 - Versioned, project-authored workstream completion criteria.
 - Read-only `criteria` and `workstream` commands for deterministic lifecycle,
   correction and bounded evidence validation.

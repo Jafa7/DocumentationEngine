@@ -48,6 +48,7 @@ BOUNDARY_CATEGORIES = frozenset(
         "unknown-document",
         "missing-anchor",
         "malformed",
+        "federated",
     }
 )
 
@@ -578,6 +579,15 @@ def build_reference_graph(
                         pin=reference.expected_revision,
                     )
                 )
+        for reference in document.metadata.federated_references:
+            boundaries.append(
+                Boundary(
+                    document_address,
+                    reference.target,
+                    "federated",
+                    "requires workspace federation",
+                )
+            )
         masked = _mask_fenced(document.content)
         for raw, line in _iter_raw_links(masked):
             result = _resolve_reference(document, raw, line, root, documents_by_path)

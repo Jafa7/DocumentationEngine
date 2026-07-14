@@ -15,6 +15,9 @@ from yaml.resolver import BaseResolver
 RELATION_FIELDS = ("derived_from", "depends_on", "related", "supersedes")
 PINNED_RELATION = "validated_against"
 DOCUMENT_ID_PATTERN = re.compile(r"^([A-Z][A-Z0-9]{1,15})-([0-9]+)$")
+QUALIFIED_DOCUMENT_PATTERN = re.compile(
+    r"^([a-z][a-z0-9-]{0,31})::([A-Z][A-Z0-9]{1,15}-[0-9]+)$"
+)
 
 
 @dataclass(frozen=True)
@@ -23,6 +26,15 @@ class MetadataReference:
 
     relation: str
     target_id: str
+    expected_revision: int | None = None
+
+
+@dataclass(frozen=True)
+class FederatedMetadataReference:
+    """An authored semantic reference whose target belongs to another source."""
+
+    relation: str
+    target: str
     expected_revision: int | None = None
 
 
@@ -38,6 +50,7 @@ class DocumentMetadata:
     additional_fields: tuple[tuple[str, object], ...]
     additional_field_types: tuple[tuple[str, str], ...] = ()
     legacy_references: tuple[tuple[str, str], ...] = ()
+    federated_references: tuple[FederatedMetadataReference, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -155,13 +168,18 @@ def _references(
     prefixes: frozenset[str],
     issues: list[str],
     graph_issues: list[str],
-) -> tuple[tuple[MetadataReference, ...], tuple[tuple[str, str], ...]]:
+) -> tuple[
+    tuple[MetadataReference, ...],
+    tuple[tuple[str, str], ...],
+    tuple[FederatedMetadataReference, ...],
+]:
     def report(message: str) -> None:
         issues.append(message)
         graph_issues.append(message)
 
     references: list[MetadataReference] = []
     legacy_references: list[tuple[str, str]] = []
+    federated_references: list[FederatedMetadataReference] = []
     for relation in RELATION_FIELDS:
         values = raw.get(relation, [])
         if not isinstance(values, list):
@@ -176,6 +194,17 @@ def _references(
                     )
                     continue
                 seen.add(value)
+            if isinstance(value, str) and QUALIFIED_DOCUMENT_PATTERN.fullmatch(value):
+                federated_references.append(
+                    FederatedMetadataReference(relation, value)
+                )
+                continue
+            if isinstance(value, str) and "::" in value:
+                report(
+                    f"metadata.{relation} entry {value!r} must use "
+                    "source::stable-ID syntax"
+                )
+                continue
             if not _valid_id(value, prefixes):
                 id_shaped = (
                     isinstance(value, str)
@@ -205,11 +234,21 @@ def _references(
         revisions_by_target: dict[str, set[int]] = {}
         for value in pins:
             if not isinstance(value, str) or "@" not in value:
-                report(f"metadata.{PINNED_RELATION} entries must use ID@revision")
+                report(
+                    f"metadata.{PINNED_RELATION} entries must use ID@revision "
+                    "or source::ID@revision"
+                )
                 continue
             target_id, revision_raw = value.rsplit("@", 1)
-            if not _valid_id(target_id, prefixes) or not revision_raw.isdigit():
-                report(f"metadata.{PINNED_RELATION} entries must use ID@revision")
+            qualified = QUALIFIED_DOCUMENT_PATTERN.fullmatch(target_id)
+            if (
+                not (_valid_id(target_id, prefixes) or qualified is not None)
+                or not revision_raw.isdigit()
+            ):
+                report(
+                    f"metadata.{PINNED_RELATION} entries must use ID@revision "
+                    "or source::ID@revision"
+                )
                 continue
             revision = int(revision_raw)
             if revision < 1:
@@ -234,10 +273,19 @@ def _references(
             if len(revisions) != 1:
                 continue
             revision = next(iter(revisions))
-            references.append(
-                MetadataReference(PINNED_RELATION, target_id, revision)
-            )
-    return tuple(references), tuple(legacy_references)
+            if QUALIFIED_DOCUMENT_PATTERN.fullmatch(target_id):
+                federated_references.append(
+                    FederatedMetadataReference(PINNED_RELATION, target_id, revision)
+                )
+            else:
+                references.append(
+                    MetadataReference(PINNED_RELATION, target_id, revision)
+                )
+    return (
+        tuple(references),
+        tuple(legacy_references),
+        tuple(federated_references),
+    )
 
 
 def parse_front_matter(
@@ -297,7 +345,9 @@ def parse_front_matter(
 
     document_type = _optional_string(raw, "type", issues)
     status = _optional_string(raw, "status", issues)
-    references, legacy_references = _references(raw, prefixes, issues, graph_issues)
+    references, legacy_references, federated_references = _references(
+        raw, prefixes, issues, graph_issues
+    )
     metadata: DocumentMetadata | None = None
     if _valid_id(document_id, prefixes) and isinstance(revision, int) and not isinstance(
         revision, bool
@@ -330,6 +380,7 @@ def parse_front_matter(
             additional_fields=additional,
             additional_field_types=additional_types,
             legacy_references=legacy_references,
+            federated_references=federated_references,
         )
     return FrontMatterResult(
         metadata,
