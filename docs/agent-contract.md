@@ -93,6 +93,15 @@ result, and treat a proposed ID/path as non-reserved. Before any separately
 authorized document creation, evaluate again and require the same
 `allocation_guard`. See [deterministic idea intake](idea-intake.md).
 
+Before executing an admitted workstream, prepare a bounded intent and run
+`docsystem admission ID PROJECT --request REQUEST --json`. Do not execute a
+`blocked` result. Treat the returned catalog guard as continuity evidence and
+re-evaluate if the catalog or mandate changed. Authorization entries are
+assertions that the calling runtime must authenticate; they are not permission
+tokens minted by Documentation Engine. The A0–A2 contract never authorizes
+commit, push, merge, release, authored deletion or scope expansion. See
+[bounded execution admission](execution-admission.md).
+
 When installing or adopting Documentation Engine for a project that will keep
 important state outside git, the agent must ask the user where backups should
 be stored and then write that choice only to local ignored policy, such as

@@ -12,6 +12,9 @@ All notable changes to Documentation Engine are documented in this file.
 - Optional `finish --workstream-record` gate and matching read-only MCP tools.
 - Versioned idea-intake placement policy, bounded request validation and the
   read-only `intake` CLI/MCP command with explainable blocked decisions.
+- Versioned A0–A2 execution-admission policy and read-only `admission` CLI/MCP
+  evaluation for bounded workstream targets, actions, risk and authorization
+  evidence.
 
 ## [0.2.0] - 2026-07-13
 

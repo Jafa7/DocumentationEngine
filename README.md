@@ -255,6 +255,7 @@ docsystem criteria . --json
 docsystem workstream WS-001 . --record workstream-record.json
 docsystem workstream WS-001 . --record workstream-record.json --json
 docsystem intake . --request idea-intake-request.json --json
+docsystem admission WS-001 . --request execution-admission-request.json --json
 docsystem migration-report .
 docsystem migration-report . --json
 docsystem readiness .
@@ -500,6 +501,14 @@ Markdown is created. The engine validates addresses and policy but does not
 pretend to infer the human idea or verify an agent's semantic claims. See
 [deterministic idea intake](docs/idea-intake.md).
 
+`admission` validates a bounded A0–A2 workstream intent before another agent or
+orchestrator executes it. Versioned project policy limits stable targets,
+local actions, risk, verification and required authorization evidence. It
+returns `admitted` or an explainable `blocked` result without running a worker
+or changing source. Commit, push, merge and release are deliberately outside
+this initial contract. See
+[bounded execution admission](docs/execution-admission.md).
+
 `report draft` produces a privacy-safe GitHub issue body for adopter
 runtime reports, adoption findings, core bugs or documentation pattern
 requests; it is read-only and leaves expected/actual/requested-action fields
@@ -529,8 +538,8 @@ is missing, so the pasted snippet can never drift from
 `docs/setup-guide.md` Step 7 by hand-copying.
 
 `readiness`, `migration-report`, `catalog --explain`, `changes`, `context`,
-`criteria`, `workstream`, `intake` and `agent-instructions` accept `--json` and
-print one
+`criteria`, `workstream`, `intake`, `admission` and `agent-instructions` accept
+`--json` and print one
 deterministic JSON value
 (sorted keys, stable field names) instead of text, carrying the same
 information the text form prints plus what it sends to stderr, so a machine

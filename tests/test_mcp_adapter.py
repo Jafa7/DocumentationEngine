@@ -230,6 +230,18 @@ def test_workstream_tools_delegate_to_read_only_json_cli(
         "--json",
     ]
 
+    assert mcp_server.admission(
+        "/project", "WS-001", "/tmp/admission.json"
+    ) == {"schema_version": 1}
+    assert calls.pop() == [
+        "admission",
+        "WS-001",
+        "/project",
+        "--request",
+        "/tmp/admission.json",
+        "--json",
+    ]
+
     assert mcp_server.finish_handoff(
         "/project",
         "DOC-002",

@@ -21,6 +21,7 @@ def test_default_config_loads(tmp_path: Path) -> None:
     assert config.context_views == ()
     assert config.workstream_criteria == ()
     assert config.intake_criteria == ()
+    assert config.admission_criteria == ()
 
 
 def test_workstream_criteria_are_versioned_and_deterministically_ordered(
@@ -228,6 +229,100 @@ def test_invalid_intake_criteria_are_rejected(
 ) -> None:
     configured = DEFAULT_CONFIG.replace("[intake]\n\n", body + "\n")
     (tmp_path / CONFIG_FILENAME).write_text(configured, encoding="utf-8")
+    with pytest.raises(ValueError, match=message):
+        load_config(tmp_path)
+
+
+def test_admission_criteria_normalize_bounded_a0_a2_policy(
+    tmp_path: Path,
+) -> None:
+    configured = DEFAULT_CONFIG + """
+[[admission.criteria]]
+id = "bounded-local"
+revision = 1
+max_autonomy = "A2"
+allowed_actions = ["inspect", "plan", "edit-local", "run-checks"]
+required_authorizations = ["edit-local"]
+allowed_verification = ["focused", "full"]
+max_risk = "medium"
+max_targets = 12
+required_sections = ["mandate", "boundaries", "review-gate"]
+safe_fallback = "blocked"
+"""
+    (tmp_path / CONFIG_FILENAME).write_text(configured, encoding="utf-8")
+
+    criterion = load_config(tmp_path).admission_criteria[0]
+    assert criterion.reference == "bounded-local@1"
+    assert criterion.max_autonomy == "A2"
+    assert criterion.allowed_actions == (
+        "inspect",
+        "plan",
+        "edit-local",
+        "run-checks",
+    )
+    assert criterion.required_authorizations == ("edit-local",)
+    assert criterion.allowed_verification == ("focused", "full")
+    assert criterion.required_sections == (
+        "mandate",
+        "boundaries",
+        "review-gate",
+    )
+
+
+@pytest.mark.parametrize(
+    ("replacement", "message"),
+    [
+        ('max_autonomy = "A4"', "max_autonomy must be A0, A1 or A2"),
+        (
+            'max_autonomy = "A1"',
+            "allowed_actions exceeds max_autonomy A1",
+        ),
+        (
+            'required_authorizations = ["run-checks"]',
+            "must be allowed actions",
+        ),
+        (
+            'allowed_actions = ["execute"]',
+            "allowed_actions may contain only",
+        ),
+        (
+            'allowed_verification = ["deep"]',
+            "allowed_verification may contain only",
+        ),
+        ('max_risk = "critical"', "max_risk must be low, medium or high"),
+        ("max_targets = 0", "max_targets must be between 1 and 100"),
+        ("required_sections = []", "required_sections must not be empty"),
+        (
+            'required_sections = ["Bad Anchor"]',
+            "must contain supported stable anchors",
+        ),
+        ('safe_fallback = "continue"', "safe_fallback must be 'blocked'"),
+    ],
+)
+def test_invalid_admission_criteria_are_rejected(
+    tmp_path: Path, replacement: str, message: str
+) -> None:
+    body = """
+[[admission.criteria]]
+id = "bounded-local"
+revision = 1
+max_autonomy = "A2"
+allowed_actions = ["inspect", "plan", "edit-local"]
+required_authorizations = ["edit-local"]
+allowed_verification = ["focused", "full"]
+max_risk = "medium"
+max_targets = 12
+required_sections = ["mandate", "boundaries", "review-gate"]
+safe_fallback = "blocked"
+"""
+    field = replacement.split(" =", 1)[0]
+    lines = [
+        replacement if line.startswith(f"{field} =") else line
+        for line in body.splitlines()
+    ]
+    (tmp_path / CONFIG_FILENAME).write_text(
+        DEFAULT_CONFIG + "\n".join(lines) + "\n", encoding="utf-8"
+    )
     with pytest.raises(ValueError, match=message):
         load_config(tmp_path)
 

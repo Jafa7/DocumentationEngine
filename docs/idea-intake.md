@@ -110,3 +110,8 @@ Do not paste private source bodies into the request. Use stable addresses,
 short assumptions and a bounded outcome statement. If the graph cannot
 support one unambiguous placement, choose evidence that produces `blocked`
 rather than inventing ownership.
+
+When intake leads to a separately governed workstream, create and review its
+mandate before passing a bounded intent to
+[execution admission](execution-admission.md). An intake proposal is not
+execution permission.

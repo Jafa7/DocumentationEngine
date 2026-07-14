@@ -407,6 +407,14 @@ authenticate the assertions, create source, or reserve the proposed stable ID.
 A catalog allocation guard lets a later authorized writer detect intervening
 catalog changes before acting.
 
+Versioned `admission.criteria` form the next read-only gate. A bounded intent
+links one `type: workstream` mandate to stable targets, A0–A2 actions, risk,
+verification and authorization evidence. The engine verifies catalog and
+mandate completeness and returns `admitted` or `blocked`; it never dispatches
+workers, authenticates the asserted authority or performs the admitted action.
+Deletion, privacy boundaries, permission expansion and external commitments
+remain escalation boundaries in this initial contract.
+
 ## Product sequence
 
 1. Configuration contract, bootstrap and diagnostics.
@@ -431,3 +439,5 @@ catalog changes before acting.
     opt-in fail-closed finish evidence.
 14. Bounded semantic idea intake with versioned placement policy and no source
     mutation.
+15. Provider-neutral bounded A0–A2 execution admission before external
+    orchestration or implementation.

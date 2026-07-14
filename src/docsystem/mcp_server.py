@@ -237,6 +237,27 @@ def intake(
     return _json_tool(arguments)
 
 
+def admission(
+    project: str,
+    document_id: str,
+    request: str,
+    source: str | None = None,
+    workspace: str | None = None,
+) -> dict:
+    """Evaluate a bounded A0-A2 intent without executing or modifying it."""
+
+    arguments = [
+        "admission",
+        document_id,
+        project,
+        "--request",
+        request,
+        "--json",
+        *_selection_arguments(source, workspace),
+    ]
+    return _json_tool(arguments)
+
+
 def finish_handoff(
     project: str,
     document_id: str,
@@ -510,6 +531,7 @@ _TOOLS = (
     criteria,
     workstream,
     intake,
+    admission,
     finish_handoff,
     context,
     read_document,

@@ -9,6 +9,10 @@ criteria authored by the project.
 This is an opt-in contract. Existing `finish` behavior is unchanged unless
 `--workstream-record` is supplied.
 
+For a pre-execution gate, first validate scope, risk and local permissions with
+[bounded execution admission](execution-admission.md). Admission does not
+predict completion; this document validates the evidence produced afterward.
+
 ## Project-authored criteria
 
 Declare one or more versions in `.docsystem.toml`:

@@ -202,6 +202,11 @@ configuration and trust boundary are in
 [deterministic idea intake](idea-intake.md); intake remains disabled when no
 criterion is configured.
 
+After a project has stable workstream mandates, it may separately enable the
+read-only [bounded execution admission](execution-admission.md) policy for
+A0–A2 intents. Do not copy an admission criterion until its actions, risk and
+authorization evidence match the adopting project's actual permissions.
+
 For an existing tree that still uses relative path relations, add the
 compatibility bridge only after understanding the migration boundary:
 

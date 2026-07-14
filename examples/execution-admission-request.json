@@ -1,0 +1,34 @@
+{
+  "actions": [
+    "inspect",
+    "plan",
+    "edit-local",
+    "run-checks"
+  ],
+  "assumptions": [
+    "The mandate remains authoritative."
+  ],
+  "authorizations": [
+    {
+      "action": "edit-local",
+      "authority": "project-owner",
+      "evidence": "user-current-task"
+    }
+  ],
+  "boundaries": {
+    "authored_deletion": false,
+    "external_commitment": false,
+    "permission_expansion": false,
+    "privacy_boundary": false
+  },
+  "criterion": "bounded-local@1",
+  "intake_request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "outcome": "Make one bounded local change.",
+  "risk": "medium",
+  "schema_version": 1,
+  "targets": [
+    "DOC-010#contract"
+  ],
+  "verification": "focused",
+  "workstream_id": "WS-001"
+}

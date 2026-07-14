@@ -27,6 +27,8 @@ link to that owner rather than repeat commands or policy.
   criteria, corrective lineage and fail-closed finish evidence.
 - [Deterministic idea intake](idea-intake.md) — place an agent-interpreted idea
   through bounded evidence and versioned project policy without source writes.
+- [Bounded execution admission](execution-admission.md) — validate A0–A2
+  workstream intent, scope, risk and evidence before an external executor acts.
 
 ## Integrations and project structure
 

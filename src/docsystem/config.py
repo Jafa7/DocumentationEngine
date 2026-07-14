@@ -24,6 +24,15 @@ WORKSTREAM_EVIDENCE_FIELDS = frozenset(
 INTAKE_DECISIONS = frozenset(
     {"update-existing", "create-draft", "create-workstream"}
 )
+ADMISSION_ACTION_LEVELS = {
+    "inspect": 0,
+    "plan": 1,
+    "edit-local": 2,
+    "run-checks": 2,
+}
+ADMISSION_AUTONOMY_LEVELS = {"A0": 0, "A1": 1, "A2": 2}
+ADMISSION_RISK_LEVELS = {"low": 0, "medium": 1, "high": 2}
+ADMISSION_VERIFICATION_LEVELS = frozenset({"structural", "focused", "full"})
 CONTEXT_VIEW_RELATIONS = frozenset(
     {"derived_from", "depends_on", "validated_against", "related", "supersedes"}
 )
@@ -67,6 +76,8 @@ report_orphans = false
 [workstreams]
 
 [intake]
+
+[admission]
 
 [projection]
 format = "sharded-json"
@@ -185,6 +196,26 @@ class IntakeCriterion:
 
 
 @dataclass(frozen=True)
+class AdmissionCriterion:
+    """One versioned policy for bounded A0-A2 execution admission."""
+
+    criterion_id: str
+    revision: int
+    max_autonomy: str
+    allowed_actions: tuple[str, ...]
+    required_authorizations: tuple[str, ...]
+    allowed_verification: tuple[str, ...]
+    max_risk: str
+    max_targets: int
+    required_sections: tuple[str, ...]
+    safe_fallback: str
+
+    @property
+    def reference(self) -> str:
+        return f"{self.criterion_id}@{self.revision}"
+
+
+@dataclass(frozen=True)
 class ProjectConfig:
     project_root: Path
     documentation_root: Path
@@ -203,6 +234,7 @@ class ProjectConfig:
     context_views: tuple[ContextView, ...] = ()
     workstream_criteria: tuple[WorkstreamCriterion, ...] = ()
     intake_criteria: tuple[IntakeCriterion, ...] = ()
+    admission_criteria: tuple[AdmissionCriterion, ...] = ()
 
 
 def _relative_path(value: object, field: str) -> PurePosixPath:
@@ -730,6 +762,160 @@ def _intake_criteria(
     return tuple(sorted(result, key=lambda item: (item.criterion_id, item.revision)))
 
 
+def _admission_criteria(raw: object) -> tuple[AdmissionCriterion, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, dict):
+        raise ValueError("admission must be a table")
+    unknown = set(raw) - {"criteria"}
+    if unknown:
+        raise ValueError(
+            "admission has unknown key(s): " + ", ".join(sorted(unknown))
+        )
+    criteria = raw.get("criteria", [])
+    if not isinstance(criteria, list):
+        raise ValueError("admission.criteria must be a list of tables")
+    required = {
+        "id",
+        "revision",
+        "max_autonomy",
+        "allowed_actions",
+        "required_authorizations",
+        "allowed_verification",
+        "max_risk",
+        "max_targets",
+        "required_sections",
+        "safe_fallback",
+    }
+    result: list[AdmissionCriterion] = []
+    seen: set[tuple[str, int]] = set()
+    for index, entry in enumerate(criteria):
+        field = f"admission.criteria[{index}]"
+        if not isinstance(entry, dict):
+            raise ValueError(f"{field} must be a table")
+        missing = required - set(entry)
+        unknown_entry = set(entry) - required
+        if missing:
+            raise ValueError(
+                f"{field} is missing required key(s): {', '.join(sorted(missing))}"
+            )
+        if unknown_entry:
+            raise ValueError(
+                f"{field} has unknown key(s): {', '.join(sorted(unknown_entry))}"
+            )
+        criterion_id = entry["id"]
+        if (
+            not isinstance(criterion_id, str)
+            or not WORKSTREAM_CRITERION_ID_PATTERN.fullmatch(criterion_id)
+        ):
+            raise ValueError(f"{field}.id has an invalid criterion ID")
+        revision = entry["revision"]
+        if (
+            not isinstance(revision, int)
+            or isinstance(revision, bool)
+            or revision < 1
+        ):
+            raise ValueError(f"{field}.revision must be a positive integer")
+        key = (criterion_id, revision)
+        if key in seen:
+            raise ValueError(
+                f"admission criterion is duplicated: {criterion_id}@{revision}"
+            )
+        seen.add(key)
+
+        max_autonomy = entry["max_autonomy"]
+        if max_autonomy not in ADMISSION_AUTONOMY_LEVELS:
+            raise ValueError(f"{field}.max_autonomy must be A0, A1 or A2")
+        actions = entry["allowed_actions"]
+        if not isinstance(actions, list) or any(
+            not isinstance(item, str) or item not in ADMISSION_ACTION_LEVELS
+            for item in actions
+        ):
+            raise ValueError(
+                f"{field}.allowed_actions may contain only: "
+                + ", ".join(sorted(ADMISSION_ACTION_LEVELS))
+            )
+        if not actions:
+            raise ValueError(f"{field}.allowed_actions must not be empty")
+        if len(set(actions)) != len(actions):
+            raise ValueError(f"{field}.allowed_actions must be unique")
+        if any(
+            ADMISSION_ACTION_LEVELS[action]
+            > ADMISSION_AUTONOMY_LEVELS[max_autonomy]
+            for action in actions
+        ):
+            raise ValueError(
+                f"{field}.allowed_actions exceeds max_autonomy {max_autonomy}"
+            )
+        authorizations = entry["required_authorizations"]
+        if not isinstance(authorizations, list) or any(
+            not isinstance(item, str) or item not in ADMISSION_ACTION_LEVELS
+            for item in authorizations
+        ):
+            raise ValueError(
+                f"{field}.required_authorizations may contain only admission actions"
+            )
+        if len(set(authorizations)) != len(authorizations):
+            raise ValueError(f"{field}.required_authorizations must be unique")
+        if not set(authorizations).issubset(actions):
+            raise ValueError(
+                f"{field}.required_authorizations must be allowed actions"
+            )
+        verification = entry["allowed_verification"]
+        if not isinstance(verification, list) or any(
+            not isinstance(item, str)
+            or item not in ADMISSION_VERIFICATION_LEVELS
+            for item in verification
+        ):
+            raise ValueError(
+                f"{field}.allowed_verification may contain only: "
+                + ", ".join(sorted(ADMISSION_VERIFICATION_LEVELS))
+            )
+        if not verification:
+            raise ValueError(f"{field}.allowed_verification must not be empty")
+        if len(set(verification)) != len(verification):
+            raise ValueError(f"{field}.allowed_verification must be unique")
+        max_risk = entry["max_risk"]
+        if max_risk not in ADMISSION_RISK_LEVELS:
+            raise ValueError(f"{field}.max_risk must be low, medium or high")
+        max_targets = entry["max_targets"]
+        if (
+            not isinstance(max_targets, int)
+            or isinstance(max_targets, bool)
+            or not 1 <= max_targets <= 100
+        ):
+            raise ValueError(f"{field}.max_targets must be between 1 and 100")
+        sections = entry["required_sections"]
+        if not isinstance(sections, list) or any(
+            not isinstance(item, str) or not is_valid_anchor(item)
+            for item in sections
+        ):
+            raise ValueError(
+                f"{field}.required_sections must contain supported stable anchors"
+            )
+        if not sections:
+            raise ValueError(f"{field}.required_sections must not be empty")
+        if len(set(sections)) != len(sections):
+            raise ValueError(f"{field}.required_sections must be unique")
+        if entry["safe_fallback"] != "blocked":
+            raise ValueError(f"{field}.safe_fallback must be 'blocked'")
+        result.append(
+            AdmissionCriterion(
+                criterion_id=criterion_id,
+                revision=revision,
+                max_autonomy=max_autonomy,
+                allowed_actions=tuple(actions),
+                required_authorizations=tuple(authorizations),
+                allowed_verification=tuple(verification),
+                max_risk=max_risk,
+                max_targets=max_targets,
+                required_sections=tuple(sections),
+                safe_fallback="blocked",
+            )
+        )
+    return tuple(sorted(result, key=lambda item: (item.criterion_id, item.revision)))
+
+
 def _maintenance_id(value: object, field: str, prefixes: frozenset[str]) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{field} must be a stable document ID")
@@ -893,6 +1079,7 @@ def load_config(project_root: Path) -> ProjectConfig:
     intake_criteria = _intake_criteria(
         raw.get("intake"), normalized_areas, normalized_identifiers
     )
+    admission_criteria = _admission_criteria(raw.get("admission"))
 
     projection_format = projection.get("format")
     if projection_format != "sharded-json":
@@ -919,4 +1106,5 @@ def load_config(project_root: Path) -> ProjectConfig:
         context_views=context_views,
         workstream_criteria=workstream_criteria,
         intake_criteria=intake_criteria,
+        admission_criteria=admission_criteria,
     )

@@ -14,6 +14,17 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
 from docsystem import __version__
+from docsystem.admission import (
+    AdmissionError,
+    AdmissionEvaluation,
+    AdmissionRequest,
+)
+from docsystem.admission import (
+    evaluate_request as evaluate_admission_request,
+)
+from docsystem.admission import (
+    load_request as load_admission_request,
+)
 from docsystem.catalog import (
     MarkdownCatalog,
     RelationBoundary,
@@ -38,6 +49,7 @@ from docsystem.change_plan import (
 from docsystem.config import (
     CONFIG_FILENAME,
     DEFAULT_CONFIG,
+    AdmissionCriterion,
     ContextView,
     IntakeCriterion,
     IntakePlacement,
@@ -72,8 +84,12 @@ from docsystem.intake import (
     IntakeError,
     IntakeEvaluation,
     IntakeRequest,
-    evaluate_request,
-    load_request,
+)
+from docsystem.intake import (
+    evaluate_request as evaluate_intake_request,
+)
+from docsystem.intake import (
+    load_request as load_intake_request,
 )
 from docsystem.journal import (
     FileEdit,
@@ -3296,7 +3312,7 @@ def _criterion_json(criterion: WorkstreamCriterion) -> dict[str, object]:
 
 
 def criteria_registry(project_root: Path, *, json_output: bool = False) -> int:
-    """Inspect project-authored, versioned workstream completion criteria."""
+    """Inspect project-authored workstream, intake and admission criteria."""
 
     try:
         config = load_config(project_root)
@@ -3314,6 +3330,10 @@ def criteria_registry(project_root: Path, *, json_output: bool = False) -> int:
                     _intake_criterion_json(criterion)
                     for criterion in config.intake_criteria
                 ],
+                "admission": [
+                    _admission_criterion_json(criterion)
+                    for criterion in config.admission_criteria
+                ],
             }
         )
         return 0
@@ -3329,6 +3349,11 @@ def criteria_registry(project_root: Path, *, json_output: bool = False) -> int:
             f"intake\t{criterion.reference}\t{criterion.max_candidates}\t"
             f"{criterion.safe_fallback}\t"
             f"{','.join(criterion.allowed_decisions)}"
+        )
+    for criterion in config.admission_criteria:
+        print(
+            f"admission\t{criterion.reference}\t{criterion.max_autonomy}\t"
+            f"{criterion.max_risk}\t{','.join(criterion.allowed_actions)}"
         )
     return 0
 
@@ -3619,9 +3644,9 @@ def idea_intake(
                 f"catalog validation blocks idea intake: "
                 f"{first.path.as_posix()}: {first.message}"
             )
-        request = load_request(request_path)
+        request = load_intake_request(request_path)
         criterion = _intake_criterion_by_reference(config, request.criterion)
-        evaluation = evaluate_request(request, criterion)
+        evaluation = evaluate_intake_request(request, criterion)
         for index, candidate in enumerate(request.candidates):
             _validate_evidence_address(
                 catalog_value,
@@ -3652,6 +3677,156 @@ def idea_intake(
     for assumption in request.assumptions:
         print(f"assumption\t{assumption}")
     print(f"allocation_guard\t{payload['allocation_guard']}")
+    return 0
+
+
+def _admission_criterion_json(
+    criterion: AdmissionCriterion,
+) -> dict[str, object]:
+    return {
+        "id": criterion.criterion_id,
+        "revision": criterion.revision,
+        "reference": criterion.reference,
+        "max_autonomy": criterion.max_autonomy,
+        "allowed_actions": list(criterion.allowed_actions),
+        "required_authorizations": list(criterion.required_authorizations),
+        "allowed_verification": list(criterion.allowed_verification),
+        "max_risk": criterion.max_risk,
+        "max_targets": criterion.max_targets,
+        "required_sections": list(criterion.required_sections),
+        "safe_fallback": criterion.safe_fallback,
+    }
+
+
+def _admission_criterion_by_reference(
+    config: ProjectConfig, reference: str
+) -> AdmissionCriterion:
+    matches = [
+        criterion
+        for criterion in config.admission_criteria
+        if criterion.reference == reference
+    ]
+    if not matches:
+        raise AdmissionError(f"admission criterion not found: {reference}")
+    return matches[0]
+
+
+def _admission_payload(
+    catalog_value: MarkdownCatalog,
+    request: AdmissionRequest,
+    criterion: AdmissionCriterion,
+    evaluation: AdmissionEvaluation,
+) -> dict[str, object]:
+    return {
+        "workstream_id": request.workstream_id,
+        "criterion": criterion.reference,
+        "intake_request_sha256": request.intake_request_sha256,
+        "request_sha256": request.request_sha256,
+        "outcome_sha256": hashlib.sha256(request.outcome.encode()).hexdigest(),
+        "decision": evaluation.decision,
+        "blocked": evaluation.blocked,
+        "reasons": list(evaluation.reasons),
+        "required_autonomy": evaluation.required_autonomy,
+        "actions": list(request.actions),
+        "targets": list(request.targets),
+        "risk": request.risk,
+        "verification": request.verification,
+        "boundaries": {
+            "authored_deletion": request.boundaries.authored_deletion,
+            "privacy_boundary": request.boundaries.privacy_boundary,
+            "permission_expansion": request.boundaries.permission_expansion,
+            "external_commitment": request.boundaries.external_commitment,
+        },
+        "authorizations": [
+            {
+                "action": item.action,
+                "authority": item.authority,
+                "evidence": item.evidence,
+            }
+            for item in request.authorizations
+        ],
+        "missing_authorizations": list(evaluation.missing_authorizations),
+        "assumptions": list(request.assumptions),
+        "catalog_guard": _catalog_allocation_guard(catalog_value),
+    }
+
+
+def execution_admission(
+    project_root: Path,
+    document_id: str,
+    *,
+    request_path: Path,
+    json_output: bool = False,
+) -> int:
+    """Evaluate one bounded A0-A2 intent without executing or writing it."""
+
+    try:
+        config = load_config(project_root)
+        catalog_value = build_catalog(config)
+        blocking = [
+            issue
+            for issue in validate_catalog(catalog_value, config)
+            if issue.severity != "warning"
+        ]
+        if blocking:
+            first = blocking[0]
+            raise AdmissionError(
+                f"catalog validation blocks execution admission: "
+                f"{first.path.as_posix()}: {first.message}"
+            )
+        request = load_admission_request(request_path)
+        if request.workstream_id != document_id:
+            raise AdmissionError(
+                f"request workstream_id {request.workstream_id!r} does not match "
+                f"{document_id!r}"
+            )
+        criterion = _admission_criterion_by_reference(config, request.criterion)
+        evaluation = evaluate_admission_request(request, criterion)
+        document = find_document(catalog_value, document_id)
+        if (
+            document.metadata is None
+            or document.metadata.document_type != "workstream"
+        ):
+            raise AdmissionError(
+                f"document {document_id} must declare metadata.type 'workstream'"
+            )
+        if document.metadata.status in {"completed", "cancelled", "failed"}:
+            raise AdmissionError(
+                f"workstream {document_id} has terminal status "
+                f"{document.metadata.status!r}"
+            )
+        anchors = {section.anchor for section in document.sections}
+        missing_sections = sorted(set(criterion.required_sections) - anchors)
+        if missing_sections:
+            raise AdmissionError(
+                f"workstream {document_id} is missing required section(s): "
+                + ", ".join(missing_sections)
+            )
+        for index, target in enumerate(request.targets):
+            _validate_evidence_address(
+                catalog_value, target, field=f"targets[{index}]"
+            )
+        payload = _admission_payload(
+            catalog_value, request, criterion, evaluation
+        )
+    except (OSError, ValueError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    if json_output:
+        _print_json(payload)
+        return 0
+    print(f"workstream\t{request.workstream_id}")
+    print(f"criterion\t{criterion.reference}")
+    print(f"decision\t{evaluation.decision}")
+    print(f"blocked\t{str(evaluation.blocked).lower()}")
+    print(f"required_autonomy\t{evaluation.required_autonomy}")
+    for reason in evaluation.reasons:
+        print(f"reason\t{reason}")
+    for action in request.actions:
+        print(f"action\t{action}")
+    for target in request.targets:
+        print(f"target\t{target}")
+    print(f"catalog_guard\t{payload['catalog_guard']}")
     return 0
 
 
@@ -5342,6 +5517,17 @@ def show_config(project_root: Path) -> int:
             f"{criterion.workstream.identifier}/width:"
             f"{criterion.workstream.width}"
         )
+    for criterion in config.admission_criteria:
+        print(
+            f"admission.criterion.{criterion.reference}="
+            f"autonomy:{criterion.max_autonomy},"
+            f"actions:{','.join(criterion.allowed_actions)},"
+            f"authorizations:{','.join(criterion.required_authorizations) or '-'},"
+            f"verification:{','.join(criterion.allowed_verification)},"
+            f"risk:{criterion.max_risk},targets:{criterion.max_targets},"
+            f"sections:{','.join(criterion.required_sections)},"
+            f"fallback:{criterion.safe_fallback}"
+        )
     print(f"projection.format={config.projection_format}")
     print(f"projection.keep_generations={config.keep_generations}")
     return 0
@@ -5394,6 +5580,17 @@ def _agent_instructions_text(selection: _Selection, config: ProjectConfig) -> st
                 f"{criterion.max_candidates} candidate(s), fallback "
                 f"{criterion.safe_fallback}"
             )
+    if config.admission_criteria:
+        out.append("")
+        out.append("Configured execution admission criteria:")
+        out.append("")
+        for criterion in config.admission_criteria:
+            out.append(
+                f"- {criterion.reference}: max {criterion.max_autonomy}, "
+                f"risk {criterion.max_risk}, actions "
+                f"{','.join(criterion.allowed_actions)}, fallback "
+                f"{criterion.safe_fallback}"
+            )
     out.append("")
     out.append("Agent rules:")
     out.append("")
@@ -5435,6 +5632,13 @@ def _agent_instructions_text(selection: _Selection, config: ProjectConfig) -> st
             "- Convert a new human idea into a bounded request, run `docsystem "
             "intake PROJECT --request REQUEST --json`, and follow only its "
             "explicit decision; a blocked result requires owner input."
+        )
+    if config.admission_criteria:
+        out.append(
+            "- Before implementation, validate the bounded workstream intent "
+            "with `docsystem admission ID PROJECT --request REQUEST --json`; "
+            "do not execute a blocked intent or treat authorization assertions "
+            "as authenticated identity."
         )
     if config.context_views:
         out.append(
@@ -5730,7 +5934,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     criteria_parser = subparsers.add_parser(
         "criteria",
-        help="List versioned, project-authored workstream completion criteria.",
+        help="List versioned workstream, intake and admission criteria.",
     )
     criteria_parser.add_argument(
         "project", nargs="?", type=Path, default=Path.cwd()
@@ -5779,6 +5983,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Read-only path to the bounded JSON idea-intake request.",
     )
     intake_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print a deterministic JSON decision instead of tab-separated text.",
+    )
+
+    admission_parser = subparsers.add_parser(
+        "admission",
+        help="Evaluate a bounded A0-A2 workstream intent without executing it.",
+    )
+    admission_parser.add_argument("document_id")
+    admission_parser.add_argument(
+        "project", nargs="?", type=Path, default=Path.cwd()
+    )
+    admission_parser.add_argument(
+        "--request",
+        required=True,
+        type=Path,
+        dest="request_path",
+        help="Read-only path to the bounded JSON execution intent.",
+    )
+    admission_parser.add_argument(
         "--json",
         action="store_true",
         dest="json_output",
@@ -5988,6 +6214,7 @@ def build_parser() -> argparse.ArgumentParser:
         criteria_parser,
         workstream_parser,
         intake_parser,
+        admission_parser,
         migration_report_parser,
         migrate_parser,
         readiness_parser,
@@ -6100,6 +6327,13 @@ def main() -> int:
     if args.command == "intake":
         return idea_intake(
             project,
+            request_path=args.request_path,
+            json_output=args.json_output,
+        )
+    if args.command == "admission":
+        return execution_admission(
+            project,
+            args.document_id,
             request_path=args.request_path,
             json_output=args.json_output,
         )
