@@ -227,6 +227,7 @@ def profile_check(
 
 def delivery_map(
     project: str,
+    contracts: list[str] | None = None,
     source: str | None = None,
     workspace: str | None = None,
 ) -> dict:
@@ -236,8 +237,10 @@ def delivery_map(
         "delivery-map",
         project,
         "--json",
-        *_selection_arguments(source, workspace),
     ]
+    for contract in contracts or []:
+        arguments.extend(("--contract", contract))
+    arguments.extend(_selection_arguments(source, workspace))
     return _json_tool(arguments, allow_failure_payload=True)
 
 

@@ -971,7 +971,7 @@ def profile_check(project_root: Path, *, json_output: bool = False) -> int:
 
 
 def _delivery_report_json(report: DeliveryReport) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "schema_version": 1,
         "configured": report.configured,
         "valid": report.valid,
@@ -1000,6 +1000,10 @@ def _delivery_report_json(report: DeliveryReport) -> dict[str, object]:
             for item in report.violations
         ],
     }
+    if report.requested_contracts:
+        payload["requested_contracts"] = list(report.requested_contracts)
+        payload["unowned_contracts"] = list(report.unowned_contracts)
+    return payload
 
 
 def _print_delivery_violations(report: DeliveryReport) -> None:
@@ -1014,6 +1018,8 @@ def _print_delivery_violations(report: DeliveryReport) -> None:
 def _emit_delivery_report_text(report: DeliveryReport) -> None:
     print(f"summary\tconfigured\t{'true' if report.configured else 'false'}")
     print(f"summary\tvalid\t{'true' if report.valid else 'false'}")
+    for source in report.requested_contracts:
+        print(f"requested\t{source}")
     for item in report.mappings:
         print(
             f"mapping\t{item.source}\towner={item.owner_id}\t"
@@ -1024,6 +1030,8 @@ def _emit_delivery_report_text(report: DeliveryReport) -> None:
         print(f"untracked\t{document_id}")
     for source in report.overlaps:
         print(f"overlap\t{source}")
+    for source in report.unowned_contracts:
+        print(f"unowned\t{source}")
     for item in report.violations:
         print(
             f"violation\t{item.document_id}\tcode={item.code}\t"
@@ -1031,7 +1039,12 @@ def _emit_delivery_report_text(report: DeliveryReport) -> None:
         )
 
 
-def delivery_map(project_root: Path, *, json_output: bool = False) -> int:
+def delivery_map(
+    project_root: Path,
+    *,
+    contracts: tuple[str, ...] = (),
+    json_output: bool = False,
+) -> int:
     """Build a reverse map from exact source contracts to delivery evidence."""
 
     try:
@@ -1044,7 +1057,7 @@ def delivery_map(project_root: Path, *, json_output: bool = False) -> int:
         if blocking:
             _print_validation_issues(blocking, verbose_adoption=False)
             return 1
-        report = evaluate_delivery(catalog_value, config)
+        report = evaluate_delivery(catalog_value, config, contracts=contracts)
     except (OSError, ValueError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
@@ -6228,6 +6241,15 @@ def show_config(project_root: Path) -> int:
             f"source_type:{rule.source_type or '-'},"
             f"source_status:{rule.source_status or '-'}"
         )
+    if config.delivery_policy is not None:
+        policy = config.delivery_policy
+        print(
+            "traceability="
+            f"field:{policy.metadata_field},"
+            f"types:{','.join(policy.document_types)},"
+            f"evidence_role:{policy.evidence_role},"
+            f"terminal_statuses:{','.join(policy.terminal_statuses)}"
+        )
     graph_health_values = (
         ("hub_in_degree", config.graph_health_policy.hub_in_degree),
         ("hub_out_degree", config.graph_health_policy.hub_out_degree),
@@ -6347,6 +6369,17 @@ def _agent_instructions_text(selection: _Selection, config: ProjectConfig) -> st
                 f"{','.join(criterion.allowed_actions)}, fallback "
                 f"{criterion.safe_fallback}"
             )
+    if config.delivery_policy is not None:
+        policy = config.delivery_policy
+        out.append("")
+        out.append("Configured delivery traceability:")
+        out.append("")
+        out.append(
+            f"- field {policy.metadata_field}; document types "
+            f"{','.join(policy.document_types)}; evidence role "
+            f"{policy.evidence_role}; terminal statuses "
+            f"{','.join(policy.terminal_statuses)}"
+        )
     out.append("")
     out.append("Agent rules:")
     out.append("")
@@ -6421,6 +6454,13 @@ def _agent_instructions_text(selection: _Selection, config: ProjectConfig) -> st
             "- Prefer the lowest configured `docsystem context --view NAME` tier "
             "that fits the task, inspect every `view_omissions` row, and expand "
             "on demand rather than treating a view as an access boundary."
+        )
+    if config.delivery_policy is not None:
+        out.append(
+            "- Before changing an exact source contract, inspect bounded delivery "
+            f"ownership with `docsystem delivery-map {selection.selector} "
+            "--contract ID#anchor --json`; `unowned_contracts` means no configured "
+            "owner was found, not permission to infer or create one."
         )
     out.append(
         "- If an additional read materially changes the plan, scope, decision, "
@@ -6759,6 +6799,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         dest="json_output",
         help="Print a deterministic JSON object instead of tab-separated text.",
+    )
+    delivery_map_parser.add_argument(
+        "--contract",
+        action="append",
+        dest="contracts",
+        default=[],
+        metavar="ID#ANCHOR",
+        help="Return mappings only for this exact source contract; repeatable.",
     )
 
     criteria_parser = subparsers.add_parser(
@@ -7204,7 +7252,9 @@ def main() -> int:
     if args.command == "profile-check":
         return profile_check(project, json_output=args.json_output)
     if args.command == "delivery-map":
-        return delivery_map(project, json_output=args.json_output)
+        return delivery_map(
+            project, contracts=tuple(args.contracts), json_output=args.json_output
+        )
     if args.command == "criteria":
         return criteria_registry(project, json_output=args.json_output)
     if args.command == "workstream":

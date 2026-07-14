@@ -32,6 +32,8 @@ All notable changes to Documentation Engine are documented in this file.
 - Optional delivery traceability metadata and read-only `delivery-map` CLI/MCP
   inspection connect exact source-section contracts to delivery ownership and
   completion evidence without reading or returning authored bodies.
+- Repeatable targeted delivery-contract lookup reports bounded mappings and
+  explicit unowned contracts, with matching MCP and generated-agent guidance.
 
 ## [0.2.0] - 2026-07-13
 

@@ -38,6 +38,8 @@ class DeliveryReport:
     untracked_documents: tuple[str, ...]
     overlaps: tuple[str, ...]
     violations: tuple[DeliveryViolation, ...]
+    requested_contracts: tuple[str, ...] = ()
+    unowned_contracts: tuple[str, ...] = ()
 
 
 def _violation(
@@ -123,17 +125,58 @@ def _source_address_issue(
     return None
 
 
-def evaluate_delivery(catalog: MarkdownCatalog, config: ProjectConfig) -> DeliveryReport:
+def _requested_contracts(
+    raw_contracts: tuple[str, ...], documents: dict[str, MarkdownDocument]
+) -> tuple[str, ...]:
+    if len(set(raw_contracts)) != len(raw_contracts):
+        raise ValueError("delivery contract requests must not contain duplicates")
+    normalized: list[str] = []
+    for raw in raw_contracts:
+        address = parse_address(raw)
+        if address.anchor is None:
+            raise ValueError(
+                f"delivery contract request must use an exact ID#anchor address: {raw!r}"
+            )
+        target = documents.get(address.document_id)
+        if target is None:
+            raise ValueError(
+                f"delivery contract request has unknown document: {address.document_id}"
+            )
+        if address.anchor not in {section.anchor for section in target.sections}:
+            raise ValueError(
+                f"delivery contract request has unknown anchor: {address.text}"
+            )
+        normalized.append(address.text)
+    return tuple(sorted(normalized))
+
+
+def evaluate_delivery(
+    catalog: MarkdownCatalog,
+    config: ProjectConfig,
+    *,
+    contracts: tuple[str, ...] = (),
+) -> DeliveryReport:
     """Build a deterministic body-free reverse delivery mapping."""
 
-    policy = config.delivery_policy
-    if policy is None:
-        return DeliveryReport(False, True, None, (), (), (), ())
     documents = {
         document.metadata.document_id: document
         for document in catalog.documents
         if document.metadata is not None
     }
+    requested = _requested_contracts(contracts, documents)
+    policy = config.delivery_policy
+    if policy is None:
+        return DeliveryReport(
+            False,
+            True,
+            None,
+            (),
+            (),
+            (),
+            (),
+            requested_contracts=requested,
+            unowned_contracts=requested,
+        )
     profiles_by_type = {
         document_type: profile
         for profile in config.document_profiles
@@ -233,11 +276,19 @@ def evaluate_delivery(catalog: MarkdownCatalog, config: ProjectConfig) -> Delive
                     disposition=disposition,
                 )
             )
-    ordered_mappings = tuple(
+    all_mappings = tuple(
         sorted(mappings, key=lambda item: (item.source, item.owner_id, item.evidence))
+    )
+    requested_set = set(requested)
+    ordered_mappings = (
+        tuple(item for item in all_mappings if item.source in requested_set)
+        if requested
+        else all_mappings
     )
     counts = Counter(item.source for item in ordered_mappings)
     overlaps = tuple(sorted(source for source, count in counts.items() if count > 1))
+    mapped_sources = {item.source for item in ordered_mappings}
+    unowned = tuple(source for source in requested if source not in mapped_sources)
     ordered_violations = tuple(
         sorted(
             violations,
@@ -249,7 +300,9 @@ def evaluate_delivery(catalog: MarkdownCatalog, config: ProjectConfig) -> Delive
         valid=not ordered_violations,
         metadata_field=policy.metadata_field,
         mappings=ordered_mappings,
-        untracked_documents=tuple(sorted(untracked)),
+        untracked_documents=() if requested else tuple(sorted(untracked)),
         overlaps=overlaps,
         violations=ordered_violations,
+        requested_contracts=requested,
+        unowned_contracts=unowned,
     )

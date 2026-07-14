@@ -5,7 +5,14 @@ from pathlib import Path
 import pytest
 
 from docsystem import mcp_server
-from docsystem.cli import build_parser, delivery_map, doctor, validate
+from docsystem.cli import (
+    agent_instructions,
+    build_parser,
+    delivery_map,
+    doctor,
+    show_config,
+    validate,
+)
 from docsystem.config import CONFIG_FILENAME, DEFAULT_CONFIG
 
 POLICY = """
@@ -84,6 +91,8 @@ def test_delivery_map_is_body_free_deterministic_and_gradual(
     assert payload["configured"] is True
     assert payload["valid"] is True
     assert payload["metadata_field"] == "delivers"
+    assert "requested_contracts" not in payload
+    assert "unowned_contracts" not in payload
     assert payload["untracked_documents"] == ["RM-003"]
     assert payload["overlaps"] == ["DOC-001#contract"]
     assert payload["mappings"] == [
@@ -112,6 +121,68 @@ def test_delivery_map_is_body_free_deterministic_and_gradual(
     assert after == before
     assert delivery_map(project, json_output=True) == 0
     assert capsys.readouterr().out == captured.out
+
+
+def test_targeted_delivery_map_is_bounded_and_reports_unowned(
+    tmp_path: Path, capsys
+) -> None:
+    project = _project(tmp_path)
+    contracts = ("DOC-001#architecture", "DOC-001#contract")
+
+    assert delivery_map(project, contracts=contracts, json_output=True) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["requested_contracts"] == [
+        "DOC-001#architecture",
+        "DOC-001#contract",
+    ]
+    assert payload["unowned_contracts"] == ["DOC-001#architecture"]
+    assert payload["untracked_documents"] == []
+    assert [row["owner_id"] for row in payload["mappings"]] == ["RM-001", "RM-002"]
+
+    assert delivery_map(project, contracts=contracts) == 0
+    output = capsys.readouterr().out
+    assert "requested\tDOC-001#architecture" in output
+    assert "unowned\tDOC-001#architecture" in output
+    assert "untracked\tRM-003" not in output
+
+
+@pytest.mark.parametrize(
+    ("contracts", "message"),
+    [
+        (("DOC-001",), "exact ID#anchor"),
+        (("DOC-999#contract",), "unknown document"),
+        (("DOC-001#missing",), "unknown anchor"),
+        (("DOC-001#contract", "DOC-001#contract"), "must not contain duplicates"),
+    ],
+)
+def test_targeted_delivery_map_rejects_invalid_requests_without_stdout(
+    tmp_path: Path, capsys, contracts: tuple[str, ...], message: str
+) -> None:
+    project = _project(tmp_path)
+    assert delivery_map(project, contracts=contracts, json_output=True) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert message in captured.err
+
+
+def test_targeted_delivery_map_still_reports_unrelated_authored_errors(
+    tmp_path: Path, capsys
+) -> None:
+    project = _project(tmp_path)
+    path = project / "plan" / "roadmap" / "three.md"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "status: active\n", "status: active\ndelivers: [DOC-999#missing]\n"
+        ),
+        encoding="utf-8",
+    )
+
+    assert delivery_map(
+        project, contracts=("DOC-001#contract",), json_output=True
+    ) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["valid"] is False
+    assert payload["violations"][0]["code"] == "unknown-source-document"
 
 
 @pytest.mark.parametrize(
@@ -181,11 +252,52 @@ def test_absent_policy_and_cli_mcp_contract(tmp_path: Path, capsys) -> None:
         "overlaps": [],
         "violations": [],
     }
+    assert delivery_map(
+        project, contracts=("DOC-001#contract",), json_output=True
+    ) == 0
+    targeted = json.loads(capsys.readouterr().out)
+    assert targeted["configured"] is False
+    assert targeted["requested_contracts"] == ["DOC-001#contract"]
+    assert targeted["unowned_contracts"] == ["DOC-001#contract"]
+    assert targeted["mappings"] == []
     args = build_parser().parse_args(
         ["delivery-map", "/project", "--json", "--source", "private"]
     )
     assert args.command == "delivery-map"
     assert args.workspace_source == "private"
-    payload = mcp_server.delivery_map(str(_project(tmp_path / "mcp")))
+    args = build_parser().parse_args(
+        [
+            "delivery-map",
+            "/project",
+            "--contract",
+            "DOC-001#contract",
+            "--contract",
+            "DOC-001#architecture",
+        ]
+    )
+    assert args.contracts == ["DOC-001#contract", "DOC-001#architecture"]
+    payload = mcp_server.delivery_map(
+        str(_project(tmp_path / "mcp")), contracts=["DOC-001#contract"]
+    )
     assert payload["overlaps"] == ["DOC-001#contract"]
+    assert payload["untracked_documents"] == []
     assert mcp_server.delivery_map in mcp_server._TOOLS
+
+
+def test_delivery_policy_is_visible_to_agents_without_authored_bodies(
+    tmp_path: Path, capsys
+) -> None:
+    project = _project(tmp_path)
+    assert show_config(project) == 0
+    normalized = capsys.readouterr().out
+    assert (
+        "traceability=field:delivers,types:roadmap,evidence_role:completion,"
+        "terminal_statuses:completed\n"
+    ) in normalized
+
+    assert agent_instructions(project) == 0
+    instructions = capsys.readouterr().out
+    assert "Configured delivery traceability:" in instructions
+    assert "docsystem delivery-map" in instructions
+    assert "--contract ID#anchor --json" in instructions
+    assert "Private body" not in instructions

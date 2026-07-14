@@ -64,6 +64,7 @@ is correct by itself.
 ```bash
 docsystem delivery-map .
 docsystem delivery-map . --json
+docsystem delivery-map . --contract DOC-019#profiles --json
 ```
 
 Output is deterministic and body-free. Each mapping contains the source
@@ -77,10 +78,24 @@ Configured delivery documents that omit the metadata field are listed as
 authored mappings and missing or ambiguous evidence roles make the report
 invalid and exit `1`. They also fail ordinary `validate` and `doctor`.
 
+`--contract ID#anchor` is repeatable and provides task-sized inspection. The
+requested addresses are normalized into deterministic order, output mappings
+are limited to those addresses, and unrelated `untracked_documents` are
+omitted. A valid requested contract with no configured mapping is returned in
+`unowned_contracts`; this is evidence that no owner was found, not permission
+to infer one. Document-only, duplicate, unknown-document and unknown-anchor
+requests fail with empty stdout and a precise stderr diagnostic.
+
+Targeted mode still validates the complete authored traceability inventory. An
+unrelated malformed claim can conceal ownership, so it blocks a completeness
+claim instead of being silently ignored. Full mode remains available for
+inventory and adoption work.
+
 An absent or empty `[traceability]` table preserves existing behavior. The
 command never edits Markdown, resolves implementation state from source code,
 or authorizes a mechanical change. A later automation layer may use this map
 to prepare a change plan, but authored policy and explicit review must define
 any write authority.
 
-The read-only MCP tool `delivery_map` exposes the same JSON contract.
+The read-only MCP tool `delivery_map` exposes the same JSON contract through
+its optional `contracts` list.

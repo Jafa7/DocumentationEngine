@@ -243,6 +243,22 @@ path produces byte-identical stdout for the same query. A fallback always
 prints exactly one `NOTE` diagnostic to stderr — an agent should treat that
 note as informational, not as a query failure.
 
+## Delivery ownership is task-sized evidence, not permission
+
+`docsystem delivery-map PROJECT --contract ID#anchor [--contract ...] --json`
+looks up project-authored delivery ownership for exact source sections. Prefer
+this bounded form before opening roadmap documents or the complete delivery
+inventory. It returns only matching owner/evidence rows plus explicit
+`unowned_contracts`; an unowned result does not authorize the agent to invent
+an owner, mapping or implementation status.
+
+Every request must name an existing canonical section address. Invalid
+requests fail with exit `1`, a precise stderr diagnostic and no stdout.
+Malformed authored traceability anywhere in the catalog also blocks targeted
+results because the engine cannot prove that a broken claim is unrelated.
+Neither full nor targeted delivery inspection reads bodies, modifies Markdown
+or promotes evidence into write authority.
+
 ## `change-plan` is a read/review plan, never write authority
 
 `docsystem change-plan ID[#anchor] PROJECT [--reverse] [--transitive] [--json]`
