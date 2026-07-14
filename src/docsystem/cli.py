@@ -99,6 +99,12 @@ from docsystem.intake import (
 from docsystem.intake import (
     load_request as load_intake_request,
 )
+from docsystem.inventory import (
+    FieldOccurrence,
+    MetadataInventory,
+    build_metadata_inventory,
+    field_occurrences,
+)
 from docsystem.journal import (
     FileEdit,
     FileGuard,
@@ -707,6 +713,146 @@ def graph_health(project_root: Path, *, json_output: bool = False) -> int:
         _print_json(_graph_health_json(report))
     else:
         _emit_graph_health_text(report)
+    return 0
+
+
+def _metadata_inventory_json(
+    report: MetadataInventory,
+    *,
+    field_name: str | None,
+    occurrences: tuple[FieldOccurrence, ...],
+    show_values: bool,
+) -> dict[str, object]:
+    fields = [
+        {
+            "name": item.name,
+            "category": item.category,
+            "present_documents": item.present_documents,
+            "missing_documents": item.missing_documents,
+            "observed_types": list(item.observed_types),
+            "document_types": list(item.document_types),
+            "type_conflict": item.type_conflict,
+        }
+        for item in report.fields
+        if field_name is None or item.name == field_name
+    ]
+    payload: dict[str, object] = {
+        "schema_version": 1,
+        "document_count": report.document_count,
+        "fields": fields,
+        "documents": [
+            {
+                "id": item.document_id,
+                "revision": item.revision,
+                "role": item.role,
+                "path": item.path,
+                "type": item.document_type,
+                "status": item.status,
+                "additional_fields": list(item.additional_fields),
+                "graph": {
+                    "incoming": item.incoming_edges,
+                    "outgoing": item.outgoing_edges,
+                    "boundaries": item.boundaries,
+                },
+            }
+            for item in report.documents
+        ],
+    }
+    if show_values:
+        payload["values"] = [
+            {
+                "id": item.document_id,
+                "path": item.path,
+                "type": item.value_type,
+                "value": item.value,
+            }
+            for item in occurrences
+        ]
+    return payload
+
+
+def _emit_metadata_inventory_text(
+    report: MetadataInventory,
+    *,
+    field_name: str | None,
+    occurrences: tuple[FieldOccurrence, ...],
+) -> None:
+    print(f"summary\tdocuments\t{report.document_count}")
+    for item in report.fields:
+        if field_name is not None and item.name != field_name:
+            continue
+        observed_types = ",".join(item.observed_types) or "-"
+        document_types = ",".join(item.document_types) or "-"
+        print(
+            f"field\t{item.name}\tcategory={item.category}\t"
+            f"present={item.present_documents}\tmissing={item.missing_documents}\t"
+            f"types={observed_types}\tdocument_types={document_types}\t"
+            f"conflict={'true' if item.type_conflict else 'false'}"
+        )
+    for item in report.documents:
+        additional = ",".join(item.additional_fields) or "-"
+        print(
+            f"document\t{item.document_id}\trevision={item.revision}\t"
+            f"role={item.role}\tpath={item.path}\t"
+            f"type={item.document_type or '-'}\tstatus={item.status or '-'}\t"
+            f"additional={additional}\tincoming={item.incoming_edges}\t"
+            f"outgoing={item.outgoing_edges}\tboundaries={item.boundaries}"
+        )
+    for item in occurrences:
+        value = json.dumps(item.value, ensure_ascii=False, sort_keys=True)
+        print(
+            f"value\t{item.document_id}\tpath={item.path}\t"
+            f"type={item.value_type}\tvalue={value}"
+        )
+
+
+def metadata_inventory(
+    project_root: Path,
+    *,
+    field_name: str | None = None,
+    show_values: bool = False,
+    json_output: bool = False,
+) -> int:
+    """Inspect metadata coverage and document-level graph facts without bodies."""
+
+    if show_values and field_name is None:
+        print("ERROR: --values requires --field", file=sys.stderr)
+        return 1
+    try:
+        config = load_config(project_root)
+        catalog_value = build_catalog(config)
+        issues = _with_graph_issues(
+            validate_catalog(catalog_value, config), catalog_value, config
+        )
+        blocking = tuple(issue for issue in issues if issue.severity != "warning")
+        if blocking:
+            _print_validation_issues(blocking, verbose_adoption=False)
+            return 1
+        report = build_metadata_inventory(catalog_value, config)
+        field_names = {item.name for item in report.fields}
+        if field_name is not None and field_name not in field_names:
+            raise ValueError(f"metadata field not found: {field_name}")
+        occurrences = (
+            field_occurrences(catalog_value, field_name)
+            if show_values and field_name is not None
+            else ()
+        )
+    except (OSError, ValueError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    if json_output:
+        _print_json(
+            _metadata_inventory_json(
+                report,
+                field_name=field_name,
+                occurrences=occurrences,
+                show_values=show_values,
+            )
+        )
+    else:
+        _emit_metadata_inventory_text(
+            report, field_name=field_name, occurrences=occurrences
+        )
     return 0
 
 
@@ -6363,6 +6509,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print a deterministic JSON object instead of Markdown.",
     )
 
+    metadata_inventory_parser = subparsers.add_parser(
+        "metadata-inventory",
+        help="Inspect metadata coverage and body-free document graph facts.",
+    )
+    metadata_inventory_parser.add_argument(
+        "project", nargs="?", type=Path, default=Path.cwd()
+    )
+    metadata_inventory_parser.add_argument(
+        "--field",
+        dest="field_name",
+        metavar="NAME",
+        help="Restrict the field summary to one observed metadata field.",
+    )
+    metadata_inventory_parser.add_argument(
+        "--values",
+        action="store_true",
+        help="Include values for the explicitly selected --field.",
+    )
+    metadata_inventory_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print a deterministic JSON object instead of tab-separated text.",
+    )
+
     criteria_parser = subparsers.add_parser(
         "criteria",
         help="List versioned workstream, intake and admission criteria.",
@@ -6687,6 +6858,7 @@ def build_parser() -> argparse.ArgumentParser:
         context_parser,
         impact_parser,
         graph_health_parser,
+        metadata_inventory_parser,
         criteria_parser,
         workstream_parser,
         intake_parser,
@@ -6793,6 +6965,13 @@ def main() -> int:
         return impact(project, args.document_id)
     if args.command == "graph-health":
         return graph_health(project, json_output=args.json_output)
+    if args.command == "metadata-inventory":
+        return metadata_inventory(
+            project,
+            field_name=args.field_name,
+            show_values=args.values,
+            json_output=args.json_output,
+        )
     if args.command == "criteria":
         return criteria_registry(project, json_output=args.json_output)
     if args.command == "workstream":

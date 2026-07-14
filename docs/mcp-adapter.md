@@ -69,6 +69,9 @@ The adapter is deliberately a wrapper, not a second implementation:
   versioned workstream policy, record validation and optional strict finish
   gate plus idea-placement and A0–A2 admission policy as the CLI. Request and
   record paths are local to the MCP server host.
+- `metadata_inventory` returns body-free field coverage and document graph
+  facts. Additional values remain hidden unless the caller supplies both one
+  `field` and `values: true`.
 
 ## Tools
 
@@ -78,6 +81,7 @@ The adapter is deliberately a wrapper, not a second implementation:
 | `catalog` | object | `docsystem catalog PROJECT [--explain] --json` |
 | `migration_report` | object | `docsystem migration-report PROJECT --json` |
 | `changes` | object | `docsystem changes PROJECT --json` |
+| `metadata_inventory` | object | `docsystem metadata-inventory PROJECT [--field NAME --values] --json` |
 | `criteria` | object | `docsystem criteria PROJECT --json` |
 | `workstream` | object | `docsystem workstream ID PROJECT --record RECORD --json` |
 | `intake` | object | `docsystem intake PROJECT --request REQUEST --json` |

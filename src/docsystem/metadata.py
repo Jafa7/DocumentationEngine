@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import date, datetime
 from typing import Any
 
 import yaml
@@ -35,6 +36,7 @@ class DocumentMetadata:
     status: str | None
     references: tuple[MetadataReference, ...]
     additional_fields: tuple[tuple[str, object], ...]
+    additional_field_types: tuple[tuple[str, str], ...] = ()
     legacy_references: tuple[tuple[str, str], ...] = ()
 
 
@@ -105,6 +107,30 @@ def _freeze(value: Any) -> object:
     if isinstance(value, set):
         return tuple(sorted((_freeze(item) for item in value), key=repr))
     return value
+
+
+def metadata_value_type(value: object) -> str:
+    """Return a stable, JSON-like type name for one authored YAML value."""
+
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, datetime):
+        return "datetime"
+    if isinstance(value, date):
+        return "date"
+    if isinstance(value, dict):
+        return "mapping"
+    if isinstance(value, (list, tuple, set)):
+        return "sequence"
+    return "other"
 
 
 def _valid_id(value: object, prefixes: frozenset[str]) -> bool:
@@ -289,6 +315,11 @@ def parse_front_matter(
             for key, value in sorted(raw.items())
             if key not in known
         )
+        additional_types = tuple(
+            (key, metadata_value_type(value))
+            for key, value in sorted(raw.items())
+            if key not in known
+        )
         assert isinstance(document_id, str)
         metadata = DocumentMetadata(
             document_id=document_id,
@@ -297,6 +328,7 @@ def parse_front_matter(
             status=status,
             references=references,
             additional_fields=additional,
+            additional_field_types=additional_types,
             legacy_references=legacy_references,
         )
     return FrontMatterResult(

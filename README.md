@@ -250,6 +250,8 @@ docsystem context DOC-001 . --since 0a1b2c3d4e5f
 docsystem impact DOC-001 .
 docsystem graph-health .
 docsystem graph-health . --json
+docsystem metadata-inventory .
+docsystem metadata-inventory . --field owner --values --json
 docsystem criteria .
 docsystem criteria . --json
 docsystem workstream WS-001 . --record workstream-record.json
@@ -382,6 +384,15 @@ identified as dead references. Signals are advisory and never grant write
 authority. A structurally ambiguous graph fails closed with no partial stdout.
 See [graph health](docs/graph-health.md) for the configuration and output
 contract.
+
+`metadata-inventory PROJECT [--json]` discovers the metadata vocabulary that
+the catalog actually uses and reports body-free per-document graph facts. By
+default it exposes field names, coverage and types but not additional metadata
+values or Markdown bodies. `--field NAME --values` is the explicit, bounded
+drill-down for one field. The result is observed evidence rather than schema
+authority, and invalid catalogs fail closed without partial stdout. See
+[metadata and graph inventory](docs/metadata-inventory.md) for the privacy and
+output contract.
 
 `references ID[#anchor] PROJECT` is a read-only inspection of the section and
 reference graph: authored metadata relations, observed Markdown links, and

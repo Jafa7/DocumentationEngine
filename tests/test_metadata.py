@@ -50,6 +50,7 @@ validated_against: [DOC-001@2]
     assert design.metadata is not None
     assert design.metadata.document_type == "canonical"
     assert design.metadata.additional_fields == (("owner", "documentation-team"),)
+    assert design.metadata.additional_field_types == (("owner", "string"),)
     assert validate_metadata(catalog) == ()
     assert [
         (edge.relation, edge.source_id, edge.target_id, edge.expected_revision)

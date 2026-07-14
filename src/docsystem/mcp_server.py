@@ -183,6 +183,28 @@ def changes(
     return _json_tool(arguments)
 
 
+def metadata_inventory(
+    project: str,
+    field: str | None = None,
+    values: bool = False,
+    source: str | None = None,
+    workspace: str | None = None,
+) -> dict:
+    """Inspect body-free metadata coverage and document-level graph facts.
+
+    Additional metadata values are private by default. Set both `field` and
+    `values` to request the values for one explicitly selected field.
+    """
+
+    arguments = ["metadata-inventory", project, "--json"]
+    if field is not None:
+        arguments.extend(["--field", field])
+    if values:
+        arguments.append("--values")
+    arguments.extend(_selection_arguments(source, workspace))
+    return _json_tool(arguments)
+
+
 def criteria(
     project: str, source: str | None = None, workspace: str | None = None
 ) -> dict:
@@ -576,6 +598,7 @@ _TOOLS = (
     catalog,
     migration_report,
     changes,
+    metadata_inventory,
     criteria,
     workstream,
     intake,

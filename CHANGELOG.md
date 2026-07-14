@@ -23,6 +23,9 @@ All notable changes to Documentation Engine are documented in this file.
 - Optional admission source scopes bind local pre-edit paths/hashes, while the
   read-only `execution-result` CLI/MCP contract validates structured returned
   changed-file evidence without claiming to observe external writes.
+- Read-only `metadata-inventory` CLI/MCP inspection reports observed metadata
+  coverage, YAML types and body-free per-document graph facts while hiding
+  additional values unless one field is explicitly requested.
 
 ## [0.2.0] - 2026-07-13
 
