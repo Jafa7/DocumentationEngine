@@ -34,6 +34,15 @@ class ExecutionResult:
     changed_files: tuple[ExecutionChangedFile, ...]
 
 
+@dataclass(frozen=True)
+class ExecutionResultEvaluation:
+    """Verified changed-file evidence for one immutable execution packet."""
+
+    workstream_id: str
+    packet_sha256: str
+    changed_files: tuple[ExecutionChangedFile, ...]
+
+
 def _canonical_bytes(payload: dict[str, object]) -> bytes:
     return json.dumps(
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
@@ -153,4 +162,121 @@ def load_execution_result(path: Path) -> ExecutionResult:
         workstream_id.strip(),
         packet_sha256,
         tuple(sorted(changed, key=lambda item: item.path)),
+    )
+
+
+def validate_execution_result(
+    project_root: Path,
+    document_id: str,
+    packet: dict[str, object],
+    result: ExecutionResult,
+) -> ExecutionResultEvaluation:
+    """Validate result lineage, bounded scope and current after-file hashes."""
+
+    if packet.get("kind") != "execution-handoff":
+        raise ExecutionPacketError(
+            "execution packet kind must be 'execution-handoff'"
+        )
+    if packet.get("workstream_id") != document_id:
+        raise ExecutionPacketError(
+            "execution packet workstream_id does not match the requested ID"
+        )
+    if result.workstream_id != document_id:
+        raise ExecutionPacketError(
+            "execution result workstream_id does not match the requested ID"
+        )
+    packet_sha256 = packet.get("packet_sha256")
+    if result.packet_sha256 != packet_sha256:
+        raise ExecutionPacketError(
+            "execution result does not reference the supplied packet"
+        )
+    raw_scope = packet.get("source_scope")
+    if not isinstance(raw_scope, list):
+        raise ExecutionPacketError(
+            "execution result validation requires a source-scoped admission"
+        )
+    baseline: dict[str, str | None] = {}
+    for index, raw in enumerate(raw_scope):
+        if not isinstance(raw, dict):
+            raise ExecutionPacketError(
+                f"execution packet source_scope[{index}] is invalid"
+            )
+        path = raw.get("path")
+        digest = raw.get("sha256")
+        if (
+            not isinstance(path, str)
+            or path in baseline
+            or (
+                digest is not None
+                and (
+                    not isinstance(digest, str)
+                    or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                )
+            )
+        ):
+            raise ExecutionPacketError(
+                f"execution packet source_scope[{index}] is invalid"
+            )
+        try:
+            normalized = normalize_source_path(
+                path, "execution packet source path"
+            )
+        except AdmissionError as error:
+            raise ExecutionPacketError(str(error)) from error
+        if normalized != path:
+            raise ExecutionPacketError(
+                f"execution packet source_scope[{index}] is invalid"
+            )
+        baseline[path] = digest
+    declared = {item.path: item.sha256 for item in result.changed_files}
+    outside = sorted(set(declared) - set(baseline))
+    if outside:
+        raise ExecutionPacketError(
+            "execution result contains out-of-scope path(s): "
+            + ", ".join(outside)
+        )
+    root = project_root.resolve()
+    current: dict[str, str | None] = {}
+    for path in baseline:
+        candidate = (root / path).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError as error:
+            raise ExecutionPacketError(
+                f"execution packet source path escapes project root: {path}"
+            ) from error
+        if candidate.exists() and not candidate.is_file():
+            raise ExecutionPacketError(
+                f"execution source path is not a file: {path}"
+            )
+        current[path] = (
+            hashlib.sha256(candidate.read_bytes()).hexdigest()
+            if candidate.is_file()
+            else None
+        )
+    actual = {path for path in baseline if current[path] != baseline[path]}
+    missing = sorted(actual - set(declared))
+    unchanged = sorted(set(declared) - actual)
+    if missing:
+        raise ExecutionPacketError(
+            "execution result omits changed scoped path(s): " + ", ".join(missing)
+        )
+    if unchanged:
+        raise ExecutionPacketError(
+            "execution result declares unchanged path(s): "
+            + ", ".join(unchanged)
+        )
+    mismatched = sorted(
+        path for path, digest in declared.items() if current[path] != digest
+    )
+    if mismatched:
+        raise ExecutionPacketError(
+            "execution result hash does not match current path(s): "
+            + ", ".join(mismatched)
+        )
+    assert isinstance(packet_sha256, str)
+    return ExecutionResultEvaluation(
+        workstream_id=document_id,
+        packet_sha256=packet_sha256,
+        changed_files=result.changed_files,
     )

@@ -18,7 +18,6 @@ from docsystem.admission import (
     AdmissionError,
     AdmissionEvaluation,
     AdmissionRequest,
-    normalize_source_path,
 )
 from docsystem.admission import (
     evaluate_request as evaluate_admission_request,
@@ -67,6 +66,7 @@ from docsystem.execution import (
     load_execution_result,
     load_packet,
     seal_packet,
+    validate_execution_result,
 )
 from docsystem.graph import (
     Address,
@@ -117,6 +117,7 @@ from docsystem.journal import (
     run_bounded_transaction,
     validate_workstream_id,
 )
+from docsystem.lifecycle import LifecycleEvaluation, evaluate_lifecycle
 from docsystem.maintenance import (
     CLEAN,
     CURRENT,
@@ -4484,108 +4485,18 @@ def execution_result(
     try:
         packet = load_packet(packet_path)
         result = load_execution_result(result_path)
-        if packet.get("workstream_id") != document_id:
-            raise ExecutionPacketError(
-                "execution packet workstream_id does not match the requested ID"
-            )
-        if result.workstream_id != document_id:
-            raise ExecutionPacketError(
-                "execution result workstream_id does not match the requested ID"
-            )
-        if result.packet_sha256 != packet["packet_sha256"]:
-            raise ExecutionPacketError(
-                "execution result does not reference the supplied packet"
-            )
-        raw_scope = packet.get("source_scope")
-        if not isinstance(raw_scope, list):
-            raise ExecutionPacketError("execution packet has no valid source_scope")
-        baseline: dict[str, str | None] = {}
-        for index, raw in enumerate(raw_scope):
-            if not isinstance(raw, dict):
-                raise ExecutionPacketError(
-                    f"execution packet source_scope[{index}] is invalid"
-                )
-            path = raw.get("path")
-            digest = raw.get("sha256")
-            if (
-                not isinstance(path, str)
-                or path in baseline
-                or (
-                    digest is not None
-                    and (
-                        not isinstance(digest, str)
-                        or re.fullmatch(r"[0-9a-f]{64}", digest) is None
-                    )
-                )
-            ):
-                raise ExecutionPacketError(
-                    f"execution packet source_scope[{index}] is invalid"
-                )
-            try:
-                normalized = normalize_source_path(path, "execution packet source path")
-            except AdmissionError as error:
-                raise ExecutionPacketError(str(error)) from error
-            if normalized != path:
-                raise ExecutionPacketError(
-                    f"execution packet source_scope[{index}] is invalid"
-                )
-            baseline[path] = digest
-        declared = {item.path: item.sha256 for item in result.changed_files}
-        outside = sorted(set(declared) - set(baseline))
-        if outside:
-            raise ExecutionPacketError(
-                "execution result contains out-of-scope path(s): "
-                + ", ".join(outside)
-            )
-        root = project_root.resolve()
-        current: dict[str, str | None] = {}
-        for path in baseline:
-            candidate = (root / path).resolve()
-            try:
-                candidate.relative_to(root)
-            except ValueError as error:
-                raise ExecutionPacketError(
-                    f"execution packet source path escapes project root: {path}"
-                ) from error
-            if candidate.exists() and not candidate.is_file():
-                raise ExecutionPacketError(
-                    f"execution source path is not a file: {path}"
-                )
-            current[path] = (
-                hashlib.sha256(candidate.read_bytes()).hexdigest()
-                if candidate.is_file()
-                else None
-            )
-        actual = {path for path in baseline if current[path] != baseline[path]}
-        missing = sorted(actual - set(declared))
-        unchanged = sorted(set(declared) - actual)
-        if missing:
-            raise ExecutionPacketError(
-                "execution result omits changed scoped path(s): "
-                + ", ".join(missing)
-            )
-        if unchanged:
-            raise ExecutionPacketError(
-                "execution result declares unchanged path(s): "
-                + ", ".join(unchanged)
-            )
-        mismatched = sorted(
-            path for path, digest in declared.items() if current[path] != digest
+        evaluation = validate_execution_result(
+            project_root, document_id, packet, result
         )
-        if mismatched:
-            raise ExecutionPacketError(
-                "execution result hash does not match current path(s): "
-                + ", ".join(mismatched)
-            )
     except (OSError, ValueError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
     payload = {
         "workstream_id": document_id,
-        "packet_sha256": packet["packet_sha256"],
+        "packet_sha256": evaluation.packet_sha256,
         "changed_files": [
             {"path": item.path, "sha256": item.sha256}
-            for item in result.changed_files
+            for item in evaluation.changed_files
         ],
         "declared_changes_within_scope": True,
         "inventory_authority": "caller-declared",
@@ -4594,10 +4505,104 @@ def execution_result(
         _print_json(payload)
         return 0
     print(f"workstream\t{document_id}")
-    print(f"packet_sha256\t{packet['packet_sha256']}")
-    print(f"changed_files\t{len(result.changed_files)}")
+    print(f"packet_sha256\t{evaluation.packet_sha256}")
+    print(f"changed_files\t{len(evaluation.changed_files)}")
     print("declared_changes_within_scope\ttrue")
     print("inventory_authority\tcaller-declared")
+    return 0
+
+
+def _lifecycle_evaluation_json(
+    evaluation: LifecycleEvaluation,
+) -> dict[str, object]:
+    return {
+        "schema_version": JSON_SCHEMA_VERSION,
+        "workstream_id": evaluation.workstream_id,
+        "admission": {
+            "criterion": evaluation.admission_criterion,
+            "intake_request_sha256": evaluation.intake_request_sha256,
+            "request_sha256": evaluation.admission_request_sha256,
+            "admitted": True,
+        },
+        "execution": {
+            "packet_sha256": evaluation.packet_sha256,
+            "changed_paths": list(evaluation.changed_paths),
+            "source_scope_complete": evaluation.source_scope_complete,
+        },
+        "workstream": {
+            "criterion": evaluation.workstream_criterion,
+            "attempts": evaluation.attempts,
+            "findings": evaluation.findings,
+            "resolved_findings": evaluation.resolved_findings,
+            "independent_review": evaluation.independent_review,
+        },
+        "coverage": {
+            "targets": list(evaluation.targets),
+            "targets_covered": evaluation.target_coverage,
+        },
+        "ready_to_finish": evaluation.ready_to_finish,
+        "authority": "evidence-validation-only",
+    }
+
+
+def lifecycle(
+    project_root: Path,
+    document_id: str,
+    *,
+    admission_path: Path,
+    packet_path: Path,
+    result_path: Path,
+    record_path: Path,
+    json_output: bool = False,
+) -> int:
+    """Validate one complete provider-neutral workstream evidence lineage."""
+
+    try:
+        config = load_config(project_root)
+        admission_request = load_admission_request(admission_path)
+        admission_criterion = _admission_criterion_by_reference(
+            config, admission_request.criterion
+        )
+        admission_evaluation = evaluate_admission_request(
+            admission_request, admission_criterion
+        )
+        packet = load_packet(packet_path)
+        result = load_execution_result(result_path)
+        execution_evaluation = validate_execution_result(
+            project_root, document_id, packet, result
+        )
+        record, workstream_evaluation = _evaluate_workstream_file(
+            config, document_id, record_path
+        )
+        evaluation = evaluate_lifecycle(
+            document_id=document_id,
+            admission_request=admission_request,
+            admission_evaluation=admission_evaluation,
+            packet=packet,
+            execution=execution_evaluation,
+            record=record,
+            workstream=workstream_evaluation,
+            required_mandate_sections=admission_criterion.required_sections,
+        )
+    except (OSError, ValueError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    if json_output:
+        _print_json(_lifecycle_evaluation_json(evaluation))
+        return 0
+    print(f"workstream\t{evaluation.workstream_id}")
+    print(f"admission_criterion\t{evaluation.admission_criterion}")
+    print(f"workstream_criterion\t{evaluation.workstream_criterion}")
+    print(f"packet_sha256\t{evaluation.packet_sha256}")
+    print(f"targets\t{len(evaluation.targets)}")
+    print(f"changed_paths\t{len(evaluation.changed_paths)}")
+    print(f"attempts\t{evaluation.attempts}")
+    print(f"findings\t{evaluation.findings}")
+    print("target_coverage\tcomplete")
+    print("source_scope\tcomplete")
+    print("independent_review\taccepted")
+    print("ready_to_finish\ttrue")
+    print("authority\tevidence-validation-only")
     return 0
 
 
@@ -6548,6 +6553,14 @@ def _agent_instructions_text(selection: _Selection, config: ProjectConfig) -> st
             "then run `docsystem finish ID PROJECT --workstream-record RECORD "
             "--json`; never claim completion from an in-progress record."
         )
+    if config.admission_criteria and config.workstream_criteria:
+        out.append(
+            "- Before strict finish, validate one cross-artifact lineage with "
+            "`docsystem lifecycle ID PROJECT --admission REQUEST --packet "
+            "PACKET --result RESULT --record RECORD --json`; stop on any "
+            "mismatch and never regenerate the immutable before-state packet "
+            "to fit the result."
+        )
     if config.context_views:
         out.append(
             "- Prefer the lowest configured `docsystem context --view NAME` tier "
@@ -7038,6 +7051,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print deterministic JSON evidence instead of tab-separated text.",
     )
 
+    lifecycle_parser = subparsers.add_parser(
+        "lifecycle",
+        help="Validate one complete provider-neutral workstream evidence lineage.",
+    )
+    lifecycle_parser.add_argument("document_id")
+    lifecycle_parser.add_argument(
+        "project", nargs="?", type=Path, default=Path.cwd()
+    )
+    lifecycle_parser.add_argument(
+        "--admission", required=True, type=Path, dest="admission_path"
+    )
+    lifecycle_parser.add_argument("--packet", required=True, type=Path)
+    lifecycle_parser.add_argument("--result", required=True, type=Path)
+    lifecycle_parser.add_argument("--record", required=True, type=Path)
+    lifecycle_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print deterministic JSON evidence instead of tab-separated text.",
+    )
+
     migration_report_parser = subparsers.add_parser(
         "migration-report", help="Report legacy relation adoption mappings."
     )
@@ -7247,6 +7281,7 @@ def build_parser() -> argparse.ArgumentParser:
         admission_parser,
         execution_handoff_parser,
         execution_result_parser,
+        lifecycle_parser,
         migration_report_parser,
         migrate_parser,
         readiness_parser,
@@ -7397,6 +7432,16 @@ def main() -> int:
             args.document_id,
             packet_path=args.packet,
             result_path=args.result,
+            json_output=args.json_output,
+        )
+    if args.command == "lifecycle":
+        return lifecycle(
+            project,
+            args.document_id,
+            admission_path=args.admission_path,
+            packet_path=args.packet,
+            result_path=args.result,
+            record_path=args.record,
             json_output=args.json_output,
         )
     if args.command == "migration-report":

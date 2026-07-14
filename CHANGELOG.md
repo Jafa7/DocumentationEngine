@@ -36,6 +36,9 @@ All notable changes to Documentation Engine are documented in this file.
   explicit unowned contracts, with matching MCP and generated-agent guidance.
 - Opt-in delivery-aware change plans add owner and completion evidence as a
   separate review-only layer, with default-output compatibility and MCP parity.
+- Read-only `lifecycle` CLI/MCP validation composes an admission request,
+  host-persisted execution packet, authoritative changed-file result and
+  completed workstream record into one fail-closed, body-free evidence lineage.
 
 ## [0.2.0] - 2026-07-13
 

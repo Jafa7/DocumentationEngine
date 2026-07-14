@@ -430,6 +430,19 @@ caller-declared changed paths and after-hashes to that scope. This is
 structured evidence, not filesystem observation: authoritative inventory
 collection remains an external runtime responsibility.
 
+The read-only `lifecycle` gate composes these existing artifacts after
+execution. It verifies one workstream identity across the normalized admission
+request, sealed before-state packet, current changed-file evidence and
+criteria-validated completed record. It also requires admitted stable targets
+to be present in completion changes and preserves corrective lineage plus the
+accepted independent-review assertion. The packet is not rebuilt after source
+changes: its immutable before-state is compared with the result's after-state.
+This composition grants no write, review, commit or publication authority.
+The current mandate revision/status and catalog guard are intentionally not
+compared with their before-state values because legitimate execution may
+advance them; stable ID, admitted targets, required-section identities and
+completion evidence provide the post-execution linkage instead.
+
 ## Product sequence
 
 1. Configuration contract, bootstrap and diagnostics.
@@ -458,3 +471,6 @@ collection remains an external runtime responsibility.
     orchestration or implementation.
 16. Immutable, body-free execution handoff with exact pre-execution drift
     verification and explicit graph coverage.
+17. End-to-end lifecycle evidence that binds admission, the persisted
+    before-state packet, changed-file result, corrective lineage and strict
+    finish readiness without executing the workstream.

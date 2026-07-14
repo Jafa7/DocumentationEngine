@@ -389,6 +389,36 @@ def execution_result(
     return _json_tool(arguments)
 
 
+def lifecycle(
+    project: str,
+    document_id: str,
+    admission_request: str,
+    packet: str,
+    result: str,
+    record: str,
+    source: str | None = None,
+    workspace: str | None = None,
+) -> dict:
+    """Validate one complete provider-neutral workstream evidence lineage."""
+
+    arguments = [
+        "lifecycle",
+        document_id,
+        project,
+        "--admission",
+        admission_request,
+        "--packet",
+        packet,
+        "--result",
+        result,
+        "--record",
+        record,
+        "--json",
+    ]
+    arguments.extend(_selection_arguments(source, workspace))
+    return _json_tool(arguments)
+
+
 def finish_handoff(
     project: str,
     document_id: str,
@@ -669,6 +699,7 @@ _TOOLS = (
     admission,
     execution_handoff,
     execution_result,
+    lifecycle,
     finish_handoff,
     context,
     read_document,

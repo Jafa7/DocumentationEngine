@@ -266,6 +266,7 @@ docsystem intake . --request idea-intake-request.json --json
 docsystem admission WS-001 . --request execution-admission-request.json --json
 docsystem execution-handoff WS-001 . --admission execution-admission-request.json --json
 docsystem execution-result WS-001 . --packet execution-packet.json --result execution-result.json --json
+docsystem lifecycle WS-001 . --admission execution-admission-request.json --packet execution-packet.json --result execution-result.json --record workstream-record.json --json
 docsystem migration-report .
 docsystem migration-report . --json
 docsystem readiness .
@@ -564,6 +565,13 @@ returns, `execution-result` validates its structured changed-file inventory
 against that scope and current after-hashes. The inventory remains a caller
 assertion: use an authoritative host/runtime diff rather than worker prose.
 
+`lifecycle` is the final read-only cross-artifact gate. It proves that the
+admission request, immutable packet, changed-file result and completed
+workstream record belong to one lineage, that all admitted targets are covered
+and that accepted independent review evidence is present. It does not execute,
+approve, commit or publish the result. See
+[end-to-end workstream lifecycle evidence](docs/workstream-lifecycle.md).
+
 `report draft` produces a privacy-safe GitHub issue body for adopter
 runtime reports, adoption findings, core bugs or documentation pattern
 requests; it is read-only and leaves expected/actual/requested-action fields
@@ -594,7 +602,7 @@ is missing, so the pasted snippet can never drift from
 
 `readiness`, `migration-report`, `catalog --explain`, `changes`, `context`,
 `criteria`, `workstream`, `intake`, `admission`, `execution-handoff`,
-`execution-result` and `agent-instructions` accept
+`execution-result`, `lifecycle` and `agent-instructions` accept
 `--json` and print one
 deterministic JSON value
 (sorted keys, stable field names) instead of text, carrying the same

@@ -405,6 +405,12 @@ _WORKSTREAM_BULLET = (
     "run `docsystem finish ID PROJECT --workstream-record RECORD --json`; "
     "never claim completion from an in-progress record."
 )
+_LIFECYCLE_BULLET = (
+    "- Before strict finish, validate one cross-artifact lineage with "
+    "`docsystem lifecycle ID PROJECT --admission REQUEST --packet "
+    "PACKET --result RESULT --record RECORD --json`; stop on any mismatch "
+    "and never regenerate the immutable before-state packet to fit the result."
+)
 
 
 def test_agent_instructions_omits_lifecycle_bullets_without_criteria(
@@ -418,9 +424,11 @@ def test_agent_instructions_omits_lifecycle_bullets_without_criteria(
 
     assert _INTAKE_BULLET not in output
     assert _ADMISSION_BULLET not in output
+    assert _LIFECYCLE_BULLET not in output
     assert _HANDOFF_BULLET not in output
     assert _EXECUTION_RESULT_BULLET not in output
     assert _WORKSTREAM_BULLET not in output
+    assert _LIFECYCLE_BULLET not in output
 
 
 def test_agent_instructions_intake_only_adds_intake_bullet(
@@ -463,6 +471,7 @@ def test_agent_instructions_admission_only_adds_admission_and_handoff_bullets(
     assert _HANDOFF_BULLET in output
     assert _EXECUTION_RESULT_BULLET in output
     assert _WORKSTREAM_BULLET not in output
+    assert _LIFECYCLE_BULLET not in output
     # The handoff bullet must directly follow the admission bullet.
     assert output.index(_ADMISSION_BULLET) < output.index(_HANDOFF_BULLET)
 
@@ -486,6 +495,7 @@ def test_agent_instructions_workstream_only_adds_workstream_bullet(
     assert _HANDOFF_BULLET not in output
     assert _EXECUTION_RESULT_BULLET not in output
     assert _WORKSTREAM_BULLET in output
+    assert _LIFECYCLE_BULLET not in output
 
 
 def test_agent_instructions_full_lifecycle_orders_intake_admission_handoff_finish(
@@ -511,6 +521,7 @@ def test_agent_instructions_full_lifecycle_orders_intake_admission_handoff_finis
         _HANDOFF_BULLET,
         _EXECUTION_RESULT_BULLET,
         _WORKSTREAM_BULLET,
+        _LIFECYCLE_BULLET,
     ):
         assert bullet in output
 
@@ -520,6 +531,7 @@ def test_agent_instructions_full_lifecycle_orders_intake_admission_handoff_finis
         < output.index(_HANDOFF_BULLET)
         < output.index(_EXECUTION_RESULT_BULLET)
         < output.index(_WORKSTREAM_BULLET)
+        < output.index(_LIFECYCLE_BULLET)
     )
 
 

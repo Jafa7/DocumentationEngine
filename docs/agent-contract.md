@@ -118,6 +118,16 @@ PACKET --result RESULT --json` before accepting completion evidence. The core
 checks admitted paths and hashes but does not observe writes; caller-declared
 inventory must come from a trusted host/runtime diff, not worker prose.
 
+Before the strict finish handoff, validate the complete lineage with
+`docsystem lifecycle ID PROJECT --admission REQUEST --packet PACKET --result
+RESULT --record RECORD --json`. Use the same immutable packet and completed
+record already reviewed by the host. A successful result proves artifact
+identity, source-scope completeness, admitted-target coverage and declared
+independent review; it does not authenticate the reviewer or approve product
+semantics. Stop on any mismatch and never regenerate the pre-execution packet
+to fit an after-state. See
+[end-to-end workstream lifecycle evidence](workstream-lifecycle.md).
+
 When installing or adopting Documentation Engine for a project that will keep
 important state outside git, the agent must ask the user where backups should
 be stored and then write that choice only to local ignored policy, such as
