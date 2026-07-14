@@ -7,7 +7,7 @@ provider's orchestration.
 
 ## Read-only vs. mutating commands
 
-Three operations write anything:
+Five operations write anything:
 
 - `docsystem init PROJECT` creates `.docsystem.toml` and the documentation
   root. It refuses to overwrite an existing configuration, but it is a
@@ -18,9 +18,15 @@ Three operations write anything:
   values in place.
 - `docsystem index PROJECT --write` writes a new projection generation
   below `.docsystem/cache`.
+- `docsystem maintenance TARGET PROJECT --write` applies only declared,
+  drifted `current` managed blocks through an immutable journal.
+- `docsystem maintenance-recover GENERATION PROJECT` restores verified before
+  bytes and refuses to overwrite any source that no longer equals the
+  generation's recorded after state.
 
 Every other command — `doctor`, `show-config`, `catalog`, `validate`, `read`,
-`dependencies`, `references`, `change-plan`, `maintenance`, `context`,
+`dependencies`, `references`, `change-plan`, `maintenance` with `--check` or
+`--preview`, `context`,
 `impact`, `migration-report`, `migrate` without `--apply`, `readiness`,
 `finish`, `report draft`, and `index`/`changes` without `--write` — is
 read-only. An agent may call any read-only command freely to inspect project
@@ -28,10 +34,10 @@ state before deciding whether a mutating command is warranted.
 
 `docsystem migrate` without `--apply` is always a preview: it computes and
 prints the same plan `--apply` would write, but touches nothing. An agent
-should treat the presence of `--apply` as the sole signal that a command
-will mutate the source tree, and should surface that distinction to the
-human or calling system before using it, exactly like any other
-destructive/hard-to-reverse action.
+should treat `--apply`, `--write`, and the explicit `maintenance-recover`
+command as mutating authority signals, and surface that distinction to the
+human or calling system before using them, exactly like any other
+hard-to-reverse action.
 
 ## Protect local-only state before risky work
 
@@ -253,13 +259,13 @@ touches, falling back to direct Markdown with exactly one `NOTE` diagnostic on
 staleness, incompatibility or corruption. Either path produces byte-identical
 stdout for the same query.
 
-## `maintenance` is a read-only managed-block preview, never write authority
+## Managed maintenance requires bounded write authority
 
-`docsystem maintenance TARGET PROJECT --check|--preview [--json]
+`docsystem maintenance TARGET PROJECT --check|--preview|--write [--json]
 [--expect-source-hash SHA256]` reports
 drift between one project-declared canonical source block and its declared
-occurrences. It has no `--write`/`--apply` variant in this milestone: it never
-edits Markdown, on any path, including every error path.
+occurrences. Check and preview are read-only. Write is an explicit mutating
+mode and must not be inferred from drift alone.
 
 A target is declared in `.docsystem.toml` as `[[maintenance]]`: one
 `source_document`/`source_anchor` owns the canonical block, and a bounded
@@ -290,8 +296,7 @@ non-`2` exit.
 Each report carries exact section, marker and content line ranges. It also
 carries document/section/block hashes for the source and every eligible
 occurrence, plus a deterministic unified diff for a drifted occurrence. This
-is evidence for a later bounded-write milestone, not something `maintenance`
-itself acts on. Every item also links to a
+is the evidence `--write` acts on. Every item also links to a
 read-only `change-plan` view of the canonical source address, the same
 explainable graph evidence `change-plan` exposes elsewhere; an agent should
 treat it as planning context, not as permission to edit the occurrence
@@ -303,7 +308,28 @@ byte-identical stdout either way.
 For a multi-step continuation, pass the source `block_hash` from the previous
 report as `--expect-source-hash`. A malformed hash or a source block that has
 changed since that report fails closed with exit `1`, stderr diagnostics and
-empty stdout. This guard does not grant write authority.
+empty stdout. This guard does not grant write authority by itself.
+
+`--write` requires both that hash and `--workstream-id`. It re-reads raw files,
+admits only marker interiors owned by drifted `current` occurrences, and
+applies all admitted files in one immutable journal generation. The canonical
+source file is a read guard: if it changes during the transaction, every
+occurrence edit is rolled back. Post-write catalog, metadata, section and graph
+validation is mandatory; validation failure also restores every touched file
+byte-for-byte. Historical, example, snapshot and unmanaged occurrences remain
+excluded even when their text matches the source.
+
+After a successful write, the command refreshes the disposable projection.
+Projection failure does not undo a validated Markdown transaction: it emits a
+warning and subsequent reads safely use direct Markdown until projection state
+can be regenerated. Recovery follows the same refresh rule.
+
+The journal normally lives below project-local `.docsystem/journal`. If the
+documentation root is the project root, it uses the user state directory
+instead so journal evidence never overlaps authored source. Recovery is
+explicit: `maintenance-recover GENERATION PROJECT` verifies the immutable
+generation and restores only when every current file still equals recorded
+after bytes. A newer or unknown state is a refusal, not a forced rollback.
 
 ## Context is explicit, never silently truncated
 

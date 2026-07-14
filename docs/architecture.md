@@ -12,7 +12,7 @@ Documentation Engine owns deterministic documentation mechanics:
 - impact and changed-section analysis;
 - versioned, sharded machine projections;
 - bootstrap, diagnostics, adoption readiness reporting and migration tooling;
-- read-only managed-block maintenance drift check and preview diff.
+- guarded managed-block maintenance preview, journaled write and recovery.
 
 It does not decide whether an architectural claim is correct, whether a review
 is persuasive, or whether selected context is semantically sufficient.
@@ -267,7 +267,7 @@ canonical H2 anchors in `navigation.extend_through`; the result remains one
 contiguous prefix ending after the furthest matching section. Missing anchors
 fall back to the default, while a configured non-H2 match is invalid.
 
-## Managed maintenance preview
+## Managed maintenance
 
 A project may declare a bounded `[[maintenance]]` target in `.docsystem.toml`:
 one canonical `source_document`/`source_anchor` owns the authored bytes of a
@@ -306,7 +306,7 @@ block. Missing, duplicate, nested or crossed markers, and a marker whose span
 escapes its declared section, are fail-closed diagnostics rather than a
 guessed location.
 
-`docsystem maintenance TARGET PROJECT --check|--preview [--json]` reads the
+`docsystem maintenance TARGET PROJECT --check|--preview|--write [--json]` reads the
 canonical source block and every declared occurrence and reports, per
 occurrence, its role and disposition. Only a `current` occurrence is preview
 eligible and can be `clean` or `drifted`; every other role is reported as
@@ -321,14 +321,11 @@ returns `0` for a clean target and a stable non-zero `2` on drift, while
 read-only inspection rather than a gate. Invalid config, an unknown target, an
 unknown or ambiguous document/section/marker address, or a graph-blocking
 metadata error all fail closed with exit `1`, diagnostics on stderr only, and
-empty stdout. This milestone has no `--write`/`--apply`, no automatic repair
-and no journal generation: Markdown remains source of truth, and the command
-never mutates a file on any path, including every error path.
+empty stdout. Check and preview never mutate Markdown.
 
 Each report carries exact section, marker and content line ranges plus
 document/section/block hashes for the source and every eligible occurrence —
-evidence a later bounded-write milestone can use to detect stale input, not
-something this milestone acts on. Every item also links to a read-only
+evidence used to detect stale input. Every item also links to a read-only
 `change-plan` view of the canonical
 source address (reverse, direct), reusing the same explainable graph
 evidence `change-plan` exposes elsewhere; this is planning context, not write
@@ -341,6 +338,17 @@ An optional `--expect-source-hash SHA256` continuation guard compares a
 previously observed source block hash with the current canonical block. A
 malformed or stale value fails closed before any report is emitted; it is
 evidence continuity, not write authority.
+
+Write is a separate explicit mode requiring that source hash and a workstream
+ID. It re-resolves raw UTF-8 files, replaces only managed marker interiors for
+drifted `current` occurrences, preserves unrelated bytes and line endings, and
+submits all files as one bounded journal transaction. The canonical source is
+held as a read guard across admission, apply and validation. The rebuilt
+catalog, metadata, section and graph contracts must validate; otherwise the
+journal restores all touched files. `maintenance-recover` verifies immutable
+generation evidence and refuses recovery over newer source. Successful write
+and recovery rebuild the disposable projection; a refresh failure is visible
+and falls back to direct Markdown without weakening Markdown authority.
 
 ## Product sequence
 
@@ -355,5 +363,5 @@ evidence continuity, not write authority.
    `docsystem.mcp_server`) and additional client integrations.
 8. Local workspace source selection for independently owned profiles, before
    any atomic cross-source federation design.
-9. Read-only managed maintenance drift check and preview diff, ahead of any
-   bounded, non-destructive write.
+9. Managed maintenance preview followed by guarded, journaled bounded write
+   and conflict-safe explicit recovery.

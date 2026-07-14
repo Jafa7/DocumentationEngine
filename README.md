@@ -237,6 +237,8 @@ docsystem maintenance install-version . --check
 docsystem maintenance install-version . --preview
 docsystem maintenance install-version . --check --json
 docsystem maintenance install-version . --preview --expect-source-hash SHA256
+docsystem maintenance install-version . --write --expect-source-hash SHA256 --workstream-id WS-001
+docsystem maintenance-recover 20260714T100000Z-WS-001 .
 docsystem context DOC-001 . --depth 1
 docsystem context DOC-001 . --depth 1 --json
 docsystem context DOC-001 . --outline
@@ -360,23 +362,30 @@ instead of one collapsing flag, and unresolved targets remain visible
 boundaries with their source address. There is no `--write`/`--apply`: like
 `references`, this command never edits Markdown.
 
-`maintenance TARGET PROJECT --check|--preview` is a read-only drift check and
-preview diff for one project-declared `[[maintenance]]` target: a canonical
+`maintenance TARGET PROJECT --check|--preview|--write` manages one
+project-declared `[[maintenance]]` target: a canonical
 `source_document`/`source_anchor` block and its bounded `occurrences`, each
 with an opt-in role (`current`, `historical`, `example`, `snapshot` or
 `unmanaged`). Only a `current` occurrence is preview eligible; every other
 role is reported as excluded evidence, never diffed. The block is delimited
 by exact `<!-- docsystem:source target=NAME -->`/
 `<!-- docsystem:managed target=NAME -->` HTML-comment markers, one per line
-and inert inside fenced code. `--check` and `--preview` print the same
-deterministic result and never write Markdown; `--check` exits `0` clean or
+and inert inside fenced code. `--check` and `--preview` are read-only and
+print the same deterministic result; `--check` exits `0` clean or
 `2` on drift (a documented, non-error code), while `--preview` always exits
 `0` for a valid target. Invalid config, an unknown target/address or a
-graph-blocking error exit `1` with empty stdout. There is no `--write` in
-this milestone. Reports include exact line ranges and content hashes for
-review and for stale-input guards in a future bounded-write milestone.
+graph-blocking error exit `1` with empty stdout. Reports include exact line
+ranges and content hashes for review and stale-input guards.
 Pass a previously reported source `block_hash` with `--expect-source-hash` to
 fail closed if the canonical block changed between inspection steps.
+`--write` additionally requires `--workstream-id`; it changes only drifted
+`current` block interiors in one journaled transaction, validates the rebuilt
+catalog/graph, and rolls back every touched file on failure. Other roles are
+never written. A successful write refreshes the disposable projection;
+refresh failure is a visible warning and direct Markdown remains authoritative.
+`maintenance-recover GENERATION` restores verified before
+bytes only when current files still equal that generation's after state, so
+newer authored work is never overwritten.
 
 Existing projects may opt into a migration bridge for relative path relations:
 

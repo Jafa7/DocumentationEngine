@@ -1,10 +1,16 @@
 import json
 from pathlib import Path
 
+import docsystem.cli as cli_module
 from docsystem.catalog import build_catalog
-from docsystem.cli import initialize, maintenance
+from docsystem.cli import build_parser, initialize, maintenance, maintenance_recover
 from docsystem.config import CONFIG_FILENAME, load_config
-from docsystem.projection import build_projection, cache_root, write_projection
+from docsystem.projection import (
+    build_projection,
+    cache_root,
+    load_verified_projection,
+    write_projection,
+)
 
 MAINTENANCE_TOML = """
 [[maintenance]]
@@ -114,6 +120,13 @@ def bootstrap_project(
         '<a id="unmanaged-note"></a>\n## Unmanaged note\n\n'
         "pip install docsystem\n",
     )
+    _write(
+        tmp_path,
+        "architecture/README.md",
+        "---\nid: DOC-007\nrevision: 1\n---\n\n# Architecture\n\n"
+        "- [A](a.md)\n- [B](b.md)\n- [C](c.md)\n- [D](d.md)\n"
+        "- [E](e.md)\n- [F](f.md)\n",
+    )
     return tmp_path
 
 
@@ -122,6 +135,44 @@ def _snapshot(project_root: Path) -> dict[str, str]:
         path.as_posix(): path.read_text(encoding="utf-8")
         for path in sorted((project_root / "plan").rglob("*.md"))
     }
+
+
+def _preview_source_hash(project_root: Path, capsys) -> str:
+    assert (
+        maintenance(
+            project_root,
+            "install-version",
+            check=False,
+            preview=True,
+            json_output=True,
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    return str(payload["source"]["block_hash"])
+
+
+def test_cli_parses_write_and_recovery_contracts() -> None:
+    write = build_parser().parse_args(
+        [
+            "maintenance",
+            "install-version",
+            ".",
+            "--write",
+            "--expect-source-hash",
+            "0" * 64,
+            "--workstream-id",
+            "WS-001",
+        ]
+    )
+    assert write.write is True
+    assert write.expect_source_hash == "0" * 64
+    assert write.workstream_id == "WS-001"
+    recovery = build_parser().parse_args(
+        ["maintenance-recover", "20260714T100000Z-WS-001", ".", "--json"]
+    )
+    assert recovery.generation == "20260714T100000Z-WS-001"
+    assert recovery.json_output is True
 
 
 # --- clean / drift / roles --------------------------------------------------
@@ -274,6 +325,398 @@ def test_invalid_expected_source_hash_fails_closed(tmp_path: Path, capsys) -> No
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "must be a lowercase SHA-256 value" in captured.err
+
+
+# --- bounded write and recovery --------------------------------------------
+
+
+def test_write_applies_only_current_block_and_creates_journal(
+    tmp_path: Path, capsys
+) -> None:
+    bootstrap_project(tmp_path, occurrence_line="pip install docsystem==1.0.0\n")
+    capsys.readouterr()
+    before = _snapshot(tmp_path)
+    source_hash = _preview_source_hash(tmp_path, capsys)
+
+    assert (
+        maintenance(
+            tmp_path,
+            "install-version",
+            check=False,
+            preview=False,
+            write=True,
+            json_output=True,
+            expected_source_hash=source_hash,
+            workstream_id="WS-001",
+            created_at="2026-07-14T10:00:00Z",
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "applied"
+    assert payload["write"]["generation"] == "20260714T100000Z-WS-001"
+    assert payload["write"]["changed_paths"] == ["architecture/b.md"]
+    after = _snapshot(tmp_path)
+    assert "docsystem==1.2.2" in after[
+        (tmp_path / "plan" / "architecture" / "b.md").as_posix()
+    ]
+    for name in ("c.md", "d.md", "e.md", "f.md"):
+        path = (tmp_path / "plan" / "architecture" / name).as_posix()
+        assert after[path] == before[path]
+    generation = (
+        tmp_path
+        / ".docsystem"
+        / "journal"
+        / "20260714T100000Z-WS-001"
+    )
+    assert (generation / "manifest.json").is_file()
+    assert (generation / "before" / "architecture" / "b.md").read_text() == before[
+        (tmp_path / "plan" / "architecture" / "b.md").as_posix()
+    ]
+
+
+def test_write_requires_hash_and_workstream_without_touching_source(
+    tmp_path: Path, capsys
+) -> None:
+    bootstrap_project(tmp_path, occurrence_line="pip install docsystem==1.0.0\n")
+    capsys.readouterr()
+    before = _snapshot(tmp_path)
+
+    assert (
+        maintenance(
+            tmp_path,
+            "install-version",
+            check=False,
+            preview=False,
+            write=True,
+            workstream_id="WS-001",
+        )
+        == 1
+    )
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "requires --expect-source-hash" in captured.err
+    assert _snapshot(tmp_path) == before
+
+    source_hash = _preview_source_hash(tmp_path, capsys)
+    assert (
+        maintenance(
+            tmp_path,
+            "install-version",
+            check=False,
+            preview=False,
+            write=True,
+            expected_source_hash=source_hash,
+            workstream_id="invalid",
+        )
+        == 1
+    )
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "workstream id must match" in captured.err
+    assert _snapshot(tmp_path) == before
+
+
+def test_source_change_between_preview_and_transaction_is_not_adopted(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    bootstrap_project(tmp_path, occurrence_line="old value\n")
+    capsys.readouterr()
+    source_hash = _preview_source_hash(tmp_path, capsys)
+    source_path = tmp_path / "plan" / "architecture" / "a.md"
+    occurrence_path = tmp_path / "plan" / "architecture" / "b.md"
+    occurrence_before = occurrence_path.read_bytes()
+    original_read_bytes = Path.read_bytes
+    changed = False
+
+    def change_before_guard(path: Path) -> bytes:
+        nonlocal changed
+        if path == source_path and not changed:
+            changed = True
+            source_path.write_text(source_path.read_text().replace("1.2.2", "1.3.0"))
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", change_before_guard)
+    assert (
+        maintenance(
+            tmp_path,
+            "install-version",
+            check=False,
+            preview=False,
+            write=True,
+            expected_source_hash=source_hash,
+            workstream_id="WS-RACE-001",
+            created_at="2026-07-14T10:00:30Z",
+        )
+        == 1
+    )
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "canonical source block changed after preview" in captured.err
+    assert occurrence_path.read_bytes() == occurrence_before
+
+
+def test_occurrence_change_between_preview_and_transaction_fails_closed(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    bootstrap_project(tmp_path, occurrence_line="old value\n")
+    capsys.readouterr()
+    source_hash = _preview_source_hash(tmp_path, capsys)
+    occurrence_path = tmp_path / "plan" / "architecture" / "b.md"
+    original_read_bytes = Path.read_bytes
+    changed = False
+
+    def change_before_admission(path: Path) -> bytes:
+        nonlocal changed
+        if path == occurrence_path and not changed:
+            changed = True
+            occurrence_path.write_text(
+                occurrence_path.read_text().replace("old value", "new authored value")
+            )
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", change_before_admission)
+    assert (
+        maintenance(
+            tmp_path,
+            "install-version",
+            check=False,
+            preview=False,
+            write=True,
+            expected_source_hash=source_hash,
+            workstream_id="WS-RACE-002",
+            created_at="2026-07-14T10:00:40Z",
+        )
+        == 1
+    )
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "managed block changed after preview" in captured.err
+    assert "new authored value" in occurrence_path.read_text()
+
+
+def test_failed_post_write_validation_rolls_back_byte_exact(
+    tmp_path: Path, capsys
+) -> None:
+    bootstrap_project(
+        tmp_path,
+        occurrence_line="old value\n",
+        source_line='<a id="conflict"></a>\n### Injected\n',
+    )
+    b_path = tmp_path / "plan" / "architecture" / "b.md"
+    b_path.write_text(
+        b_path.read_text(encoding="utf-8")
+        + '\n<a id="conflict"></a>\n### Existing conflict\n',
+        encoding="utf-8",
+    )
+    capsys.readouterr()
+    before = b_path.read_bytes()
+    source_hash = _preview_source_hash(tmp_path, capsys)
+
+    assert (
+        maintenance(
+            tmp_path,
+            "install-version",
+            check=False,
+            preview=False,
+            write=True,
+            expected_source_hash=source_hash,
+            workstream_id="WS-002",
+            created_at="2026-07-14T10:01:00Z",
+        )
+        == 1
+    )
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "rolled back" in captured.err
+    assert b_path.read_bytes() == before
+    verification = json.loads(
+        (
+            tmp_path
+            / ".docsystem"
+            / "journal"
+            / "20260714T100100Z-WS-002"
+            / "verification.json"
+        ).read_text()
+    )
+    assert verification["status"] == "rolled-back"
+
+
+def test_explicit_maintenance_recovery_and_newer_source_refusal(
+    tmp_path: Path, capsys
+) -> None:
+    bootstrap_project(tmp_path, occurrence_line="pip install docsystem==1.0.0\n")
+    capsys.readouterr()
+    b_path = tmp_path / "plan" / "architecture" / "b.md"
+    before = b_path.read_bytes()
+    source_hash = _preview_source_hash(tmp_path, capsys)
+    assert (
+        maintenance(
+            tmp_path,
+            "install-version",
+            check=False,
+            preview=False,
+            write=True,
+            expected_source_hash=source_hash,
+            workstream_id="WS-003",
+            created_at="2026-07-14T10:02:00Z",
+        )
+        == 0
+    )
+    capsys.readouterr()
+    generation = "20260714T100200Z-WS-003"
+    assert (
+        maintenance_recover(
+            tmp_path,
+            generation,
+            json_output=True,
+            recovered_at="2026-07-14T10:03:00Z",
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["status"] == "recovered"
+    assert b_path.read_bytes() == before
+
+    source_hash = _preview_source_hash(tmp_path, capsys)
+    assert (
+        maintenance(
+            tmp_path,
+            "install-version",
+            check=False,
+            preview=False,
+            write=True,
+            expected_source_hash=source_hash,
+            workstream_id="WS-004",
+            created_at="2026-07-14T10:04:00Z",
+        )
+        == 0
+    )
+    capsys.readouterr()
+    b_path.write_text(b_path.read_text() + "\nnewer authored work\n")
+    assert (
+        maintenance_recover(
+            tmp_path,
+            "20260714T100400Z-WS-004",
+            recovered_at="2026-07-14T10:05:00Z",
+        )
+        == 1
+    )
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "recovery refused" in captured.err
+    assert "newer authored work" in b_path.read_text()
+
+
+def test_write_updates_multiple_declared_blocks_in_one_file(tmp_path: Path, capsys) -> None:
+    bootstrap_project(tmp_path, occurrence_line="old first\n")
+    _append_maintenance_config(
+        tmp_path,
+        """
+[[maintenance.occurrences]]
+document = "DOC-002"
+anchor = "second-current"
+role = "current"
+""",
+    )
+    b_path = tmp_path / "plan" / "architecture" / "b.md"
+    b_path.write_text(
+        b_path.read_text()
+        + "\n<a id=\"second-current\"></a>\n## Second current\n\n"
+        "<!-- docsystem:managed target=install-version -->\n"
+        "old second\n"
+        "<!-- /docsystem:managed target=install-version -->\n"
+    )
+    capsys.readouterr()
+    source_hash = _preview_source_hash(tmp_path, capsys)
+
+    assert (
+        maintenance(
+            tmp_path,
+            "install-version",
+            check=False,
+            preview=False,
+            write=True,
+            expected_source_hash=source_hash,
+            workstream_id="WS-005",
+            created_at="2026-07-14T10:06:00Z",
+        )
+        == 0
+    )
+    capsys.readouterr()
+    assert b_path.read_text().count("pip install docsystem==1.2.2") == 2
+    manifest = json.loads(
+        (
+            tmp_path
+            / ".docsystem"
+            / "journal"
+            / "20260714T100600Z-WS-005"
+            / "manifest.json"
+        ).read_text()
+    )
+    assert [item["path"] for item in manifest["files"]] == ["architecture/b.md"]
+    assert len(manifest["files"][0]["allowed_ranges"]) == 2
+
+
+def test_write_preserves_crlf_and_unrelated_bytes(tmp_path: Path, capsys) -> None:
+    bootstrap_project(tmp_path, occurrence_line="old value\n")
+    b_path = tmp_path / "plan" / "architecture" / "b.md"
+    before = b_path.read_bytes().replace(b"\n", b"\r\n")
+    b_path.write_bytes(before)
+    capsys.readouterr()
+    source_hash = _preview_source_hash(tmp_path, capsys)
+
+    assert (
+        maintenance(
+            tmp_path,
+            "install-version",
+            check=False,
+            preview=False,
+            write=True,
+            expected_source_hash=source_hash,
+            workstream_id="WS-006",
+            created_at="2026-07-14T10:07:00Z",
+        )
+        == 0
+    )
+    capsys.readouterr()
+    expected = before.replace(
+        b"old value\r\n", b"pip install docsystem==1.2.2\r\n"
+    )
+    assert b_path.read_bytes() == expected
+
+
+def test_root_documentation_uses_external_user_state_journal(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    bootstrap_project(tmp_path, occurrence_line="old value\n")
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text(
+        config_path.read_text()
+        .replace('root = "plan"', 'root = "."')
+        .replace('architecture = "architecture"', 'architecture = "plan/architecture"')
+    )
+    state_home = tmp_path.parent / f"{tmp_path.name}-state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_home))
+    capsys.readouterr()
+    source_hash = _preview_source_hash(tmp_path, capsys)
+
+    assert (
+        maintenance(
+            tmp_path,
+            "install-version",
+            check=False,
+            preview=False,
+            write=True,
+            expected_source_hash=source_hash,
+            workstream_id="WS-007",
+            created_at="2026-07-14T10:08:00Z",
+        )
+        == 0
+    )
+    capsys.readouterr()
+    generations = list(state_home.rglob("20260714T100800Z-WS-007"))
+    assert len(generations) == 1
+    assert not (tmp_path / ".docsystem" / "journal").exists()
 
 
 # --- errors: unknown target/address, empty stdout ---------------------------
@@ -435,7 +878,25 @@ def test_marker_outside_declared_section_fails_closed(tmp_path: Path, capsys) ->
     assert maintenance(tmp_path, "install-version", check=True, preview=False) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "outside declared section" in captured.err
+    assert "0 declared occurrence owners" in captured.err
+
+
+def test_undeclared_managed_marker_fails_closed(tmp_path: Path, capsys) -> None:
+    bootstrap_project(tmp_path)
+    capsys.readouterr()
+    path = tmp_path / "plan" / "architecture" / "c.md"
+    path.write_text(
+        path.read_text()
+        + "\n## Unclaimed\n\n"
+        "<!-- docsystem:managed target=install-version -->\n"
+        "unclaimed value\n"
+        "<!-- /docsystem:managed target=install-version -->\n"
+    )
+
+    assert maintenance(tmp_path, "install-version", check=True, preview=False) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "0 declared occurrence owners" in captured.err
 
 
 # --- CRLF / EOF preservation -------------------------------------------------
@@ -498,6 +959,68 @@ def test_direct_and_projected_output_are_byte_identical(tmp_path: Path, capsys) 
     captured = capsys.readouterr()
     assert captured.out == direct_stdout
     assert captured.err == ""
+
+
+def test_write_from_verified_projection_uses_raw_guarded_source(
+    tmp_path: Path, capsys
+) -> None:
+    bootstrap_project(tmp_path, occurrence_line="old value\n")
+    config = load_config(tmp_path)
+    write_projection(config, build_projection(build_catalog(config), config))
+    capsys.readouterr()
+    source_hash = _preview_source_hash(tmp_path, capsys)
+
+    assert (
+        maintenance(
+            tmp_path,
+            "install-version",
+            check=False,
+            preview=False,
+            write=True,
+            expected_source_hash=source_hash,
+            workstream_id="WS-008",
+            created_at="2026-07-14T10:09:00Z",
+        )
+        == 0
+    )
+    captured = capsys.readouterr()
+    assert "using direct Markdown" not in captured.err
+    assert "pip install docsystem==1.2.2" in (
+        tmp_path / "plan" / "architecture" / "b.md"
+    ).read_text()
+    loaded, reason = load_verified_projection(load_config(tmp_path))
+    assert loaded is not None, reason
+
+
+def test_projection_refresh_failure_keeps_validated_markdown(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    bootstrap_project(tmp_path, occurrence_line="old value\n")
+    capsys.readouterr()
+    source_hash = _preview_source_hash(tmp_path, capsys)
+
+    def fail_projection(*_args, **_kwargs):
+        raise OSError("projection storage unavailable")
+
+    monkeypatch.setattr(cli_module, "write_projection", fail_projection)
+    assert (
+        maintenance(
+            tmp_path,
+            "install-version",
+            check=False,
+            preview=False,
+            write=True,
+            expected_source_hash=source_hash,
+            workstream_id="WS-009",
+            created_at="2026-07-14T10:10:00Z",
+        )
+        == 0
+    )
+    captured = capsys.readouterr()
+    assert "projection refresh failed" in captured.err
+    assert "pip install docsystem==1.2.2" in (
+        tmp_path / "plan" / "architecture" / "b.md"
+    ).read_text()
 
 
 def test_corrupt_projection_falls_back_to_direct_with_one_diagnostic(

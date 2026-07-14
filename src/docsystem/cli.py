@@ -5,10 +5,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
 from collections import deque
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
 from docsystem import __version__
@@ -50,6 +52,15 @@ from docsystem.graph import (
 from docsystem.graph import (
     traverse_reasons as graph_traverse_reasons,
 )
+from docsystem.journal import (
+    FileEdit,
+    FileGuard,
+    JournalError,
+    LineRange,
+    recover_generation,
+    run_bounded_transaction,
+    validate_workstream_id,
+)
 from docsystem.maintenance import (
     CLEAN,
     CURRENT,
@@ -60,6 +71,7 @@ from docsystem.maintenance import (
     block_lines,
     block_text,
     resolve_marker,
+    resolve_marker_in_section,
     scan_markers,
     sha256_text,
     span_within_section,
@@ -3078,21 +3090,196 @@ def _maintenance_occurrence_json(result: _MaintenanceOccurrenceResult) -> dict[s
     }
 
 
+def _utc_second() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _maintenance_journal_root(config: ProjectConfig) -> Path:
+    local = config.project_root / ".docsystem" / "journal"
+    documentation_root = config.documentation_root.resolve()
+    if not local.resolve(strict=False).is_relative_to(documentation_root):
+        return local
+    state_home = Path(
+        os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")
+    )
+    identity = hashlib.sha256(str(config.project_root.resolve()).encode()).hexdigest()[:16]
+    return state_home / "documentation-engine" / "journals" / identity
+
+
+def _marker_newline(content: str, start_line: int) -> str:
+    line = content.splitlines(keepends=True)[start_line - 1]
+    if line.endswith("\r\n"):
+        return "\r\n"
+    if line.endswith("\r"):
+        return "\r"
+    return "\n"
+
+
+def _maintenance_write_plan(
+    config: ProjectConfig,
+    target,
+    views: _Views,
+    source_block: str,
+    occurrence_results: list[_MaintenanceOccurrenceResult],
+) -> tuple[tuple[FileEdit, ...], tuple[FileGuard, ...]]:
+    """Build exact raw-file edits and a canonical-source read guard."""
+
+    source_view = views[target.source_document_id]
+    source_relative = source_view.path.as_posix()
+    source_path = config.documentation_root / source_view.path
+    source_bytes = source_path.read_bytes()
+    try:
+        source_raw = source_bytes.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise JournalError(f"{source_relative}: source is not valid UTF-8") from error
+    source_scan = scan_markers(source_raw, target.name)
+    source_span, source_issues = resolve_marker(source_scan, SOURCE)
+    if source_span is None:
+        raise JournalError(f"{source_relative}: {'; '.join(source_issues)}")
+    current_source_block = block_text(source_raw, source_span)
+    normalized_source_block = current_source_block.replace("\r\n", "\n").replace(
+        "\r", "\n"
+    )
+    if normalized_source_block != source_block:
+        raise JournalError("canonical source block changed after preview")
+
+    by_document: dict[str, list[tuple[_MaintenanceOccurrenceResult, object]]] = {}
+    for occurrence, result in zip(
+        target.occurrences, occurrence_results, strict=True
+    ):
+        if result.eligible and result.disposition == DRIFTED:
+            if occurrence.document_id == target.source_document_id:
+                raise JournalError(
+                    "canonical source and a drifted occurrence share one document; "
+                    "this write shape is not supported"
+                )
+            by_document.setdefault(occurrence.document_id, []).append(
+                (result, occurrence)
+            )
+
+    edits: list[FileEdit] = []
+    for document_id in sorted(by_document):
+        view = views[document_id]
+        relative = view.path.as_posix()
+        path = config.documentation_root / view.path
+        before_bytes = path.read_bytes()
+        try:
+            before = before_bytes.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise JournalError(f"{relative}: source is not valid UTF-8") from error
+        lines = before.splitlines(keepends=True)
+        replacements: list[tuple[int, int, list[str]]] = []
+        ranges: list[LineRange] = []
+        for result, _occurrence in by_document[document_id]:
+            scan = scan_markers(before, target.name)
+            if scan.issues:
+                raise JournalError(f"{relative}: {'; '.join(scan.issues)}")
+            span = next(
+                (
+                    item
+                    for item in scan.spans
+                    if item.kind == MANAGED
+                    and result.marker_range == (item.start_line, item.end_line)
+                ),
+                None,
+            )
+            if span is None:
+                raise JournalError(f"{relative}: managed marker range changed after preview")
+            current_block = block_text(before, span).replace("\r\n", "\n").replace(
+                "\r", "\n"
+            )
+            if sha256_text(current_block) != result.block_hash:
+                raise JournalError(
+                    f"{relative}: managed block changed after preview"
+                )
+            content_start = span.start_line + 1
+            content_end = span.end_line - 1
+            if content_end < content_start:
+                raise JournalError(
+                    f"{relative}: empty managed block cannot be expanded safely"
+                )
+            newline = _marker_newline(before, span.start_line)
+            rendered = source_block.replace("\n", newline)
+            replacements.append(
+                (
+                    span.start_line,
+                    span.end_line - 1,
+                    rendered.splitlines(keepends=True),
+                )
+            )
+            ranges.append(LineRange(content_start, content_end))
+
+        mechanical_lines = list(lines)
+        for start, end, replacement in sorted(replacements, reverse=True):
+            mechanical_lines[start:end] = replacement
+        edits.append(
+            FileEdit(
+                path=relative,
+                operation="bounded-edit",
+                before_sha256=hashlib.sha256(before_bytes).hexdigest(),
+                semantic_content=before,
+                mechanical_content="".join(mechanical_lines),
+                allowed_ranges=tuple(sorted(ranges, key=lambda item: item.start)),
+            )
+        )
+
+    return (
+        tuple(edits),
+        (
+            FileGuard(
+                path=source_relative,
+                sha256=hashlib.sha256(source_bytes).hexdigest(),
+            ),
+        ),
+    )
+
+
+def _maintenance_validation(
+    config: ProjectConfig, diagnostics: list[str] | None = None
+) -> bool:
+    catalog_value = build_catalog(config)
+    issues = _with_graph_issues(
+        validate_catalog(catalog_value, config), catalog_value, config
+    )
+    blockers = [issue for issue in issues if issue.severity != "warning"]
+    if blockers:
+        if diagnostics is not None:
+            diagnostics.extend(
+                f"{issue.path.as_posix()}: {issue.message}" for issue in blockers
+            )
+        return False
+    build_projection(catalog_value, config)
+    return True
+
+
+def _maintenance_refresh_projection(config: ProjectConfig) -> tuple[bool, str | None]:
+    try:
+        catalog_value = build_catalog(config)
+        write_projection(config, build_projection(catalog_value, config))
+    except (OSError, ValueError) as error:
+        return False, str(error)
+    return True, None
+
+
 def maintenance(
     project_root: Path,
     target_name: str,
     *,
     check: bool,
     preview: bool,
+    write: bool = False,
     json_output: bool = False,
     expected_source_hash: str | None = None,
+    workstream_id: str | None = None,
+    created_at: str | None = None,
 ) -> int:
-    """Read-only managed-block drift check/preview for one declared target.
+    """Check, preview or journal one declared managed-block target.
 
     `--check` reports the same deterministic result as `--preview` but exits
     `2` on drift so it composes as a CI gate; `--preview` always exits `0` for
-    a valid target. Neither ever writes Markdown: this milestone has no
-    `--write`/`--apply` variant. Invalid config, an unknown target, unknown or
+    a valid target. `--write` applies only drifted current blocks through an
+    immutable journal and requires source-hash plus workstream evidence.
+    Invalid config, an unknown target, unknown or
     ambiguous document/section/marker addresses, and graph-blocking errors
     fail closed with exit `1`, diagnostics on stderr only and no stdout.
     """
@@ -3101,6 +3288,25 @@ def maintenance(
         config = load_config(project_root)
     except ValueError as error:
         print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+
+    if sum((check, preview, write)) != 1:
+        print("ERROR: choose exactly one of --check, --preview or --write", file=sys.stderr)
+        return 1
+    if write and expected_source_hash is None:
+        print("ERROR: --write requires --expect-source-hash", file=sys.stderr)
+        return 1
+    if write and workstream_id is None:
+        print("ERROR: --write requires --workstream-id", file=sys.stderr)
+        return 1
+    if write and workstream_id is not None:
+        try:
+            validate_workstream_id(workstream_id)
+        except JournalError as error:
+            print(f"ERROR: {error}", file=sys.stderr)
+            return 1
+    if not write and workstream_id is not None:
+        print("ERROR: --workstream-id is only valid with --write", file=sys.stderr)
         return 1
 
     target = _maintenance_find_target(config, target_name)
@@ -3184,7 +3390,61 @@ def maintenance(
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
 
-    source_scan = scan_markers(source_view.content, target.name)
+    marker_scans = {
+        document_id: scan_markers(view.content, target.name)
+        for document_id, view in views.items()
+    }
+    marker_errors = False
+    for document_id, scan in marker_scans.items():
+        for issue in scan.issues:
+            marker_errors = True
+            print(f"ERROR: {document_id}: {issue}", file=sys.stderr)
+    if marker_errors:
+        return 1
+    source_locations = [
+        (document_id, span)
+        for document_id, scan in marker_scans.items()
+        for span in scan.spans
+        if span.kind == SOURCE
+    ]
+    if len(source_locations) != 1:
+        message = (
+            "no source marker pair found"
+            if not source_locations
+            else f"duplicate source marker pair ({len(source_locations)} found)"
+        )
+        print(f"ERROR: {target.source_document_id}: {message}", file=sys.stderr)
+        return 1
+    if source_locations[0][0] != target.source_document_id:
+        print(
+            "ERROR: canonical source marker is not in declared source document "
+            f"{target.source_document_id}",
+            file=sys.stderr,
+        )
+        return 1
+
+    declared_by_document: dict[str, list[MarkdownSection]] = {}
+    for index, occurrence in enumerate(target.occurrences):
+        declared_by_document.setdefault(occurrence.document_id, []).append(
+            occurrence_sections[index]
+        )
+    for document_id, scan in marker_scans.items():
+        for span in (item for item in scan.spans if item.kind == MANAGED):
+            owners = [
+                section
+                for section in declared_by_document.get(document_id, ())
+                if span_within_section(span, section)
+            ]
+            if len(owners) != 1:
+                print(
+                    f"ERROR: {document_id}: managed marker lines "
+                    f"{span.start_line}-{span.end_line} have {len(owners)} "
+                    "declared occurrence owners",
+                    file=sys.stderr,
+                )
+                return 1
+
+    source_scan = marker_scans[target.source_document_id]
     source_span, source_issues = resolve_marker(source_scan, SOURCE)
     if source_span is None:
         for issue in source_issues:
@@ -3250,8 +3510,10 @@ def maintenance(
                 )
             )
             continue
-        occurrence_scan = scan_markers(occurrence_view.content, target.name)
-        occurrence_span, occurrence_issues = resolve_marker(occurrence_scan, MANAGED)
+        occurrence_scan = marker_scans[occurrence.document_id]
+        occurrence_span, occurrence_issues = resolve_marker_in_section(
+            occurrence_scan, MANAGED, occurrence_section
+        )
         if occurrence_span is None:
             for issue in occurrence_issues:
                 print(f"ERROR: {occurrence.document_id}: {issue}", file=sys.stderr)
@@ -3330,47 +3592,108 @@ def maintenance(
     if plan_diagnostic is not None:
         print(f"NOTE: {plan_diagnostic}", file=sys.stderr)
 
+    apply_result = None
+    projection_updated = False
+    write_validation_issues: list[str] = []
+    if write and any_drift:
+        try:
+            edits, guards = _maintenance_write_plan(
+                config, target, views, source_block, occurrence_results
+            )
+            apply_result = run_bounded_transaction(
+                source_root=config.documentation_root,
+                journal_root=_maintenance_journal_root(config),
+                workstream_id=workstream_id or "",
+                created_at=created_at or _utc_second(),
+                edits=edits,
+                validate=lambda _root: _maintenance_validation(
+                    config, write_validation_issues
+                ),
+                guards=guards,
+            )
+        except (JournalError, OSError) as error:
+            print(f"ERROR: maintenance write failed: {error}", file=sys.stderr)
+            return 1
+        if apply_result.status != "applied":
+            print(
+                "ERROR: maintenance write rolled back: "
+                f"{apply_result.reason or 'validation failed'}; "
+                f"generation={apply_result.generation_id}",
+                file=sys.stderr,
+            )
+            for issue in write_validation_issues:
+                print(f"ERROR: post-write validation: {issue}", file=sys.stderr)
+            return 1
+        status = "applied"
+        projection_updated, projection_error = _maintenance_refresh_projection(config)
+        if not projection_updated:
+            print(
+                "WARNING: maintenance source was applied but projection refresh "
+                f"failed: {projection_error}; direct Markdown remains authoritative",
+                file=sys.stderr,
+            )
+
+    mode = "write" if write else ("check" if check else "preview")
     if json_output:
-        _print_json(
-            {
-                "target": target.name,
-                "mode": "check" if check else "preview",
-                "status": status,
-                "source": {
-                    "address": source_address.text,
-                    "document_hash": source_document_hash,
-                    "section_hash": source_section_hash,
-                    "block_hash": source_block_hash,
-                    "section_range": {
-                        "start_line": source_section.start_line,
-                        "end_line": source_section.end_line,
-                    },
-                    "marker_range": {
-                        "start_line": source_marker_range[0],
-                        "end_line": source_marker_range[1],
-                    },
-                    "content_range": {
-                        "start_line": source_content_range[0],
-                        "end_line": source_content_range[1],
-                    },
+        payload: dict[str, object] = {
+            "target": target.name,
+            "mode": mode,
+            "status": status,
+            "source": {
+                "address": source_address.text,
+                "document_hash": source_document_hash,
+                "section_hash": source_section_hash,
+                "block_hash": source_block_hash,
+                "section_range": {
+                    "start_line": source_section.start_line,
+                    "end_line": source_section.end_line,
                 },
-                "occurrences": [
-                    _maintenance_occurrence_json(result) for result in occurrence_results
+                "marker_range": {
+                    "start_line": source_marker_range[0],
+                    "end_line": source_marker_range[1],
+                },
+                "content_range": {
+                    "start_line": source_content_range[0],
+                    "end_line": source_content_range[1],
+                },
+            },
+            "occurrences": [
+                _maintenance_occurrence_json(result) for result in occurrence_results
+            ],
+            "change_plan": {
+                "address": plan.address.text,
+                "items": [_change_plan_item_json(item) for item in plan.items],
+                "boundaries": [
+                    _references_boundary_json(boundary)
+                    for boundary in plan.boundaries
                 ],
-                "change_plan": {
-                    "address": plan.address.text,
-                    "items": [_change_plan_item_json(item) for item in plan.items],
-                    "boundaries": [
-                        _references_boundary_json(boundary)
-                        for boundary in plan.boundaries
-                    ],
-                    "completeness": {
-                        "authored": plan.completeness.authored,
-                        "observed": plan.completeness.observed,
-                        "generated": plan.completeness.generated,
-                    },
+                "completeness": {
+                    "authored": plan.completeness.authored,
+                    "observed": plan.completeness.observed,
+                    "generated": plan.completeness.generated,
                 },
-            }
+            },
+        }
+        if write:
+            payload["write"] = (
+                {
+                    "generation": apply_result.generation_id,
+                    "status": apply_result.status,
+                    "changed_paths": list(apply_result.changed_paths),
+                    "manifest_hash": apply_result.manifest_sha256,
+                    "projection_updated": projection_updated,
+                }
+                if apply_result is not None
+                else {
+                    "generation": None,
+                    "status": "not-needed",
+                    "changed_paths": [],
+                    "manifest_hash": None,
+                    "projection_updated": False,
+                }
+            )
+        _print_json(
+            payload
         )
     else:
         print(f"target\t{target.name}\tstatus\t{status}")
@@ -3392,6 +3715,17 @@ def maintenance(
             print(f"changeplan\t{_change_plan_boundary_row(boundary)}")
         for row in _change_plan_completeness_rows(plan.completeness):
             print(f"changeplan\t{row}")
+        if write:
+            if apply_result is None:
+                print("write\tnot-needed\tchanged_paths=-")
+            else:
+                print(
+                    f"write\t{apply_result.status}\t"
+                    f"generation={apply_result.generation_id}\t"
+                    f"changed_paths={','.join(apply_result.changed_paths)}\t"
+                    f"manifest_hash={apply_result.manifest_sha256}\t"
+                    f"projection_updated={str(projection_updated).lower()}"
+                )
         for result in occurrence_results:
             if result.diff:
                 print()
@@ -3401,6 +3735,68 @@ def maintenance(
 
     if check:
         return 2 if status == DRIFTED else 0
+    return 0
+
+
+def maintenance_recover(
+    project_root: Path,
+    generation_id: str,
+    *,
+    json_output: bool = False,
+    recovered_at: str | None = None,
+) -> int:
+    """Restore one verified maintenance generation without overwriting newer work."""
+
+    try:
+        config = load_config(project_root)
+        result = recover_generation(
+            source_root=config.documentation_root,
+            journal_root=_maintenance_journal_root(config),
+            generation_id=generation_id,
+            recovered_at=recovered_at or _utc_second(),
+        )
+    except (ValueError, JournalError, OSError) as error:
+        print(f"ERROR: maintenance recovery failed: {error}", file=sys.stderr)
+        return 1
+    if result.status == "refused":
+        print(
+            f"ERROR: maintenance recovery refused: {result.reason}",
+            file=sys.stderr,
+        )
+        return 1
+    recovery_validation_issues: list[str] = []
+    if not _maintenance_validation(config, recovery_validation_issues):
+        print(
+            "ERROR: maintenance recovery restored source but project validation failed",
+            file=sys.stderr,
+        )
+        for issue in recovery_validation_issues:
+            print(f"ERROR: post-recovery validation: {issue}", file=sys.stderr)
+        return 1
+    projection_updated, projection_error = _maintenance_refresh_projection(config)
+    if not projection_updated:
+        print(
+            "WARNING: recovery succeeded but projection refresh failed: "
+            f"{projection_error}; direct Markdown remains authoritative",
+            file=sys.stderr,
+        )
+    if json_output:
+        _print_json(
+            {
+                "generation": result.generation_id,
+                "status": result.status,
+                "restored_paths": list(result.restored_paths),
+                "recovery_record": result.recovery_record,
+                "projection_updated": projection_updated,
+            }
+        )
+    else:
+        print(
+            f"recovery\t{result.status}\tgeneration={result.generation_id}\t"
+            f"restored_paths={','.join(result.restored_paths) or '-'}\t"
+            f"record={result.recovery_record or '-'}"
+            f"\tprojection_updated={str(projection_updated).lower()}"
+        )
     return 0
 
 
@@ -3464,8 +3860,9 @@ def _agent_instructions_text(selection: _Selection, config: ProjectConfig) -> st
         "instead of assuming an omitted document or section is irrelevant."
     )
     out.append(
-        "- Never run `docsystem init`, `docsystem migrate --apply` or "
-        "`docsystem index --write` without explicit approval."
+        "- Never run `docsystem init`, `docsystem migrate --apply`, "
+        "`docsystem index --write`, `docsystem maintenance --write` or "
+        "`docsystem maintenance-recover` without explicit approval."
     )
     out.append(
         "- Before mutating ignored/local-only documentation state, follow "
@@ -3637,6 +4034,7 @@ def build_parser() -> argparse.ArgumentParser:
     maintenance_mode = maintenance_parser.add_mutually_exclusive_group(required=True)
     maintenance_mode.add_argument("--check", action="store_true")
     maintenance_mode.add_argument("--preview", action="store_true")
+    maintenance_mode.add_argument("--write", action="store_true")
     maintenance_parser.add_argument(
         "--json",
         action="store_true",
@@ -3647,6 +4045,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--expect-source-hash",
         metavar="SHA256",
         help="Fail closed unless the canonical source block still has this hash.",
+    )
+    maintenance_parser.add_argument(
+        "--workstream-id",
+        metavar="ID",
+        help="Required audit identity for --write (for example WS-001).",
+    )
+
+    maintenance_recover_parser = subparsers.add_parser(
+        "maintenance-recover",
+        help="Restore one verified maintenance journal generation.",
+    )
+    maintenance_recover_parser.add_argument("generation")
+    maintenance_recover_parser.add_argument(
+        "project", nargs="?", type=Path, default=Path.cwd()
+    )
+    maintenance_recover_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print a deterministic JSON object instead of tab-separated text.",
     )
 
     context_parser = subparsers.add_parser("context", help="Build an inspectable context packet.")
@@ -3840,6 +4258,7 @@ def build_parser() -> argparse.ArgumentParser:
         references_parser,
         change_plan_parser,
         maintenance_parser,
+        maintenance_recover_parser,
         context_parser,
         impact_parser,
         migration_report_parser,
@@ -3909,8 +4328,16 @@ def main() -> int:
             args.target,
             check=args.check,
             preview=args.preview,
+            write=args.write,
             json_output=args.json_output,
             expected_source_hash=args.expect_source_hash,
+            workstream_id=args.workstream_id,
+        )
+    if args.command == "maintenance-recover":
+        return maintenance_recover(
+            project,
+            args.generation,
+            json_output=args.json_output,
         )
     if args.command == "catalog":
         return catalog(project, explain=args.explain, json_output=args.json_output)

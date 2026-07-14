@@ -48,7 +48,8 @@ The adapter is deliberately a wrapper, not a second implementation:
   when successful commands emitted non-fatal stderr, such as projection
   fallback warnings;
 - only read-only commands are exposed. Mutating operations (`init`,
-  `migrate --apply`, `index --write`) intentionally have no tools and stay
+  `migrate --apply`, `index --write`, `maintenance --write` and
+  `maintenance-recover`) intentionally have no tools and stay
   with the human or calling system, matching
   [the agent contract](agent-contract.md);
 - a non-zero CLI exit becomes a tool error carrying the CLI's stderr

@@ -1,10 +1,10 @@
-"""Bounded, journaled synthetic transactions for RM-003 safety prototyping.
+"""Bounded, journaled transactions for documentation maintenance.
 
-This module is a standalone, provider-neutral prototype of the non-destructive
-change journal described by `DOC-017`. It never touches this repository's
-private `plan/` tree, never runs against a real project, and adds no CLI
-surface: every entry point takes an explicit `source_root` and `journal_root`
-supplied by the caller (tests use `pytest`'s `tmp_path`).
+This provider-neutral module implements the non-destructive change journal
+described by `DOC-017`. Every entry point takes explicit `source_root` and
+`journal_root` authority from its caller. The public maintenance CLI integrates
+it only for declared managed blocks; tests and safety drills use copied or
+synthetic roots and never grant implicit authority over a private `plan/`.
 
 A *generation* is one immutable, journaled attempt at a bounded write. Every
 generation is created under an exclusive directory name derived from a
@@ -107,6 +107,14 @@ class FileEdit:
 
 
 @dataclass(frozen=True)
+class FileGuard:
+    """A read-only file hash that must remain stable for the transaction."""
+
+    path: str
+    sha256: str
+
+
+@dataclass(frozen=True)
 class ApplyResult:
     """The outcome of one `run_bounded_transaction` call."""
 
@@ -180,7 +188,7 @@ def normalize_source_path(raw: str) -> PurePosixPath:
     return path
 
 
-def _validate_workstream_id(value: str) -> None:
+def validate_workstream_id(value: str) -> None:
     if not isinstance(value, str) or not _WORKSTREAM_PATTERN.fullmatch(value):
         raise JournalError(f"workstream id must match {_WORKSTREAM_PATTERN.pattern}: {value!r}")
 
@@ -385,6 +393,37 @@ def _admit(source_root: Path, edits: Sequence[FileEdit]) -> tuple[_AdmittedEdit,
     return tuple(sorted(admitted, key=lambda item: item.normalized_path))
 
 
+def _admit_guards(
+    source_root: Path,
+    guards: Sequence[FileGuard],
+    admitted: Sequence[_AdmittedEdit],
+) -> tuple[tuple[str, Path, str], ...]:
+    edit_paths = {item.normalized_path for item in admitted}
+    resolved: list[tuple[str, Path, str]] = []
+    seen: set[str] = set()
+    for guard in guards:
+        path = normalize_source_path(guard.path)
+        normalized = path.as_posix()
+        if normalized in seen:
+            raise JournalError(f"duplicate read guard: {normalized}")
+        if normalized in edit_paths:
+            raise JournalError(f"read guard overlaps edited path: {normalized}")
+        if not _SHA256_PATTERN.fullmatch(guard.sha256):
+            raise JournalError(f"{normalized}: guard sha256 must be 64 lowercase hex characters")
+        target = _safe_target(source_root, path, "bounded-edit")
+        if _current_hash(target) != guard.sha256:
+            raise JournalError(f"{normalized}: stale read guard; source has changed")
+        seen.add(normalized)
+        resolved.append((normalized, target, guard.sha256))
+    return tuple(sorted(resolved))
+
+
+def _revalidate_guards(guards: Sequence[tuple[str, Path, str]]) -> None:
+    for normalized, target, expected_hash in guards:
+        if _current_hash(target) != expected_hash:
+            raise JournalError(f"{normalized}: guarded source changed during transaction")
+
+
 def _unified_patch(before: str, after: str, path: str) -> str:
     diff = difflib.unified_diff(
         _split_lines(before),
@@ -411,6 +450,7 @@ def _manifest_dict(
     created_at: str,
     status: str,
     admitted: Sequence[_AdmittedEdit],
+    guards: Sequence[tuple[str, Path, str]],
     semantic_patch_sha256: str,
     mechanical_patch_sha256: str,
 ) -> dict[str, object]:
@@ -441,6 +481,10 @@ def _manifest_dict(
             },
         },
         "files": files,
+        "guards": [
+            {"path": path, "sha256": sha256}
+            for path, _target, sha256 in guards
+        ],
     }
 
 
@@ -450,6 +494,7 @@ _CHECKS = (
     "range-admission",
     "atomic-apply",
     "validation-hook",
+    "read-guard-stability",
 )
 
 
@@ -511,8 +556,9 @@ def run_bounded_transaction(
     created_at: str,
     edits: Sequence[FileEdit],
     validate: Callable[[Path], bool],
+    guards: Sequence[FileGuard] = (),
 ) -> ApplyResult:
-    """Admit, journal and atomically apply one bounded synthetic transaction.
+    """Admit, journal and atomically apply one bounded transaction.
 
     Order: admit every edit against the current source (no writes); create an
     exclusive generation directory holding `before/`, `after/`, both patches
@@ -523,10 +569,11 @@ def run_bounded_transaction(
     generation directory itself is never deleted.
     """
 
-    _validate_workstream_id(workstream_id)
+    validate_workstream_id(workstream_id)
     _validate_timestamp(created_at)
     resolved_source, resolved_journal = _resolved_separate_roots(source_root, journal_root)
     admitted = _admit(resolved_source, edits)
+    admitted_guards = _admit_guards(resolved_source, guards, admitted)
 
     generation_id = _generation_id(workstream_id, created_at)
     generation_root = resolved_journal / generation_id
@@ -568,6 +615,7 @@ def run_bounded_transaction(
         created_at,
         "pending",
         admitted,
+        admitted_guards,
         hashlib.sha256(semantic_patch_bytes).hexdigest(),
         hashlib.sha256(mechanical_patch_bytes).hexdigest(),
     )
@@ -578,6 +626,7 @@ def run_bounded_transaction(
     temp_files: list[tuple[Path, Path]] = []
     try:
         _revalidate_admitted(resolved_source, admitted)
+        _revalidate_guards(admitted_guards)
         for item in admitted:
             item.absolute_path.parent.mkdir(parents=True, exist_ok=True)
             descriptor, temp_name = tempfile.mkstemp(
@@ -640,6 +689,8 @@ def run_bounded_transaction(
     validation_error: Exception | None = None
     try:
         validation_passed = bool(validate(resolved_source))
+        if validation_passed:
+            _revalidate_guards(admitted_guards)
     except Exception as error:  # validation is an injected trust boundary
         validation_error = error
         validation_passed = False
@@ -929,6 +980,24 @@ def _load_and_verify_generation(journal_root: Path, generation_id: str) -> _Veri
                 or hashlib.sha256(after_file.read_bytes()).hexdigest() != after_sha
             ):
                 raise JournalError(f"after evidence is corrupted: {generation_id}/{path}")
+
+    guards = manifest.get("guards", [])
+    if not isinstance(guards, list):
+        raise JournalError(f"generation guard evidence is invalid: {generation_id}")
+    seen_guards: set[str] = set()
+    for entry in guards:
+        if not isinstance(entry, dict):
+            raise JournalError(f"generation guard evidence is invalid: {generation_id}")
+        path_value = entry.get("path")
+        sha256 = entry.get("sha256")
+        if not isinstance(path_value, str):
+            raise JournalError(f"generation guard path is invalid: {generation_id}")
+        path = normalize_source_path(path_value).as_posix()
+        if path in seen_guards or path in seen_paths:
+            raise JournalError(f"generation contains duplicate guarded path: {path}")
+        if not isinstance(sha256, str) or not _SHA256_PATTERN.fullmatch(sha256):
+            raise JournalError(f"generation guard hash is invalid: {path}")
+        seen_guards.add(path)
 
     return _VerifiedGeneration(generation_root, manifest, verification)
 

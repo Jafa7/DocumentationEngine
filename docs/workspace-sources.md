@@ -126,7 +126,8 @@ root. Generated next commands therefore remain directly executable while the
 same local pointer or environment wiring is active.
 
 Mutating commands retain their existing authorization boundary. Source
-selection does not make `init`, `migrate --apply` or `index --write` read-only;
+selection does not make `init`, `migrate --apply`, `index --write`,
+`maintenance --write` or `maintenance-recover` read-only;
 it only changes the one project root they target. Agents must still obtain the
 required approval and backup local-only authored state first.
 

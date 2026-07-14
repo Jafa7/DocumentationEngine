@@ -9,6 +9,7 @@ import docsystem.journal as journal_module
 from docsystem.journal import (
     ApplyResult,
     FileEdit,
+    FileGuard,
     JournalError,
     LineRange,
     copy_generation_to_cloud,
@@ -45,6 +46,71 @@ def _accept(_root: Path) -> bool:
 
 def _reject(_root: Path) -> bool:
     return False
+
+
+def test_stale_read_guard_blocks_transaction_before_journal_creation(
+    tmp_path: Path,
+) -> None:
+    source_root = _source(tmp_path)
+    _write(source_root / "docs" / "authority.md", "canonical\n")
+    journal_root = _journal(tmp_path)
+
+    with pytest.raises(JournalError, match="stale read guard"):
+        run_bounded_transaction(
+            source_root=source_root,
+            journal_root=journal_root,
+            workstream_id="WS-GUARD-001",
+            created_at="2026-07-14T10:00:00Z",
+            edits=[
+                FileEdit(
+                    path="docs/example.md",
+                    operation="bounded-edit",
+                    before_sha256=_sha(BASE_CONTENT),
+                    semantic_content=BASE_CONTENT,
+                    mechanical_content=BASE_CONTENT.replace("line3", "changed"),
+                    allowed_ranges=(LineRange(3, 3),),
+                )
+            ],
+            guards=[FileGuard("docs/authority.md", "0" * 64)],
+            validate=_accept,
+        )
+    assert not journal_root.exists() or not any(journal_root.iterdir())
+    assert (source_root / "docs" / "example.md").read_text() == BASE_CONTENT
+
+
+def test_read_guard_change_during_validation_rolls_back_edits(tmp_path: Path) -> None:
+    source_root = _source(tmp_path)
+    authority = source_root / "docs" / "authority.md"
+    _write(authority, "canonical\n")
+    journal_root = _journal(tmp_path)
+
+    def mutate_guard(_root: Path) -> bool:
+        authority.write_text("new canonical\n")
+        return True
+
+    result = run_bounded_transaction(
+        source_root=source_root,
+        journal_root=journal_root,
+        workstream_id="WS-GUARD-002",
+        created_at="2026-07-14T10:01:00Z",
+        edits=[
+            FileEdit(
+                path="docs/example.md",
+                operation="bounded-edit",
+                before_sha256=_sha(BASE_CONTENT),
+                semantic_content=BASE_CONTENT,
+                mechanical_content=BASE_CONTENT.replace("line3", "changed"),
+                allowed_ranges=(LineRange(3, 3),),
+            )
+        ],
+        guards=[FileGuard("docs/authority.md", _sha("canonical\n"))],
+        validate=mutate_guard,
+    )
+
+    assert result.status == "rolled-back"
+    assert result.reason == "validation-error: JournalError"
+    assert (source_root / "docs" / "example.md").read_text() == BASE_CONTENT
+    assert authority.read_text() == "new canonical\n"
 
 
 def test_valid_bounded_semantic_then_mechanical_edit(tmp_path: Path) -> None:

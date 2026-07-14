@@ -184,6 +184,38 @@ def resolve_marker(
     return matches[0], ()
 
 
+def resolve_marker_in_section(
+    result: MarkerScanResult,
+    kind: str,
+    section: MarkdownSection,
+) -> tuple[MarkerSpan | None, tuple[str, ...]]:
+    """Resolve one marker pair inside a declared section.
+
+    This permits the same maintenance target to have independently declared
+    managed occurrences in multiple sections of one document while retaining
+    fail-closed handling for malformed/crossed markers.
+    """
+
+    if result.issues:
+        return None, result.issues
+    matches = [
+        span
+        for span in result.spans
+        if span.kind == kind and span_within_section(span, section)
+    ]
+    if not matches:
+        all_matches = [span for span in result.spans if span.kind == kind]
+        if len(all_matches) == 1:
+            return all_matches[0], ()
+        return None, (f"no {kind} marker pair found in section #{section.anchor}",)
+    if len(matches) > 1:
+        return None, (
+            f"duplicate {kind} marker pair in section #{section.anchor} "
+            f"({len(matches)} found)",
+        )
+    return matches[0], ()
+
+
 def span_within_section(span: MarkerSpan, section: MarkdownSection) -> bool:
     """Return whether a marker pair is fully contained by its declared section."""
 
