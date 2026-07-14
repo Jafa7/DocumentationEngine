@@ -50,6 +50,21 @@ from docsystem.graph import (
 from docsystem.graph import (
     traverse_reasons as graph_traverse_reasons,
 )
+from docsystem.maintenance import (
+    CLEAN,
+    CURRENT,
+    DRIFTED,
+    EXCLUDED,
+    MANAGED,
+    SOURCE,
+    block_lines,
+    block_text,
+    resolve_marker,
+    scan_markers,
+    sha256_text,
+    span_within_section,
+    unified_block_diff,
+)
 from docsystem.migration import apply_migration_plan, build_migration_plan, validate_plan
 from docsystem.projection import (
     LoadedProjection,
@@ -2982,6 +2997,413 @@ def change_plan(
     return 0
 
 
+@dataclass(frozen=True)
+class _MaintenanceOccurrenceResult:
+    """One resolved occurrence: excluded evidence, or an eligible current block."""
+
+    document_id: str
+    anchor: str
+    role: str
+    eligible: bool
+    disposition: str  # "clean" | "drifted" | "excluded"
+    reason: str | None
+    section_range: tuple[int, int]
+    marker_range: tuple[int, int] | None
+    content_range: tuple[int, int] | None
+    document_hash: str
+    section_hash: str
+    block_hash: str | None
+    diff: str | None
+
+
+def _maintenance_find_target(config: ProjectConfig, name: str):
+    for target in config.maintenance_targets:
+        if target.name == name:
+            return target
+    return None
+
+
+def _maintenance_occurrence_row(result: _MaintenanceOccurrenceResult) -> str:
+    return "\t".join(
+        (
+            "occurrence",
+            f"{result.document_id}#{result.anchor}",
+            result.role,
+            result.disposition,
+            result.reason or "-",
+            f"section={result.section_range[0]}-{result.section_range[1]}",
+            (
+                f"content={result.content_range[0]}-{result.content_range[1]}"
+                if result.content_range is not None
+                else "content=-"
+            ),
+            f"document_hash={result.document_hash}",
+            f"section_hash={result.section_hash}",
+            f"block_hash={result.block_hash or '-'}",
+        )
+    )
+
+
+def _maintenance_occurrence_json(result: _MaintenanceOccurrenceResult) -> dict[str, object]:
+    return {
+        "address": f"{result.document_id}#{result.anchor}",
+        "role": result.role,
+        "eligible": result.eligible,
+        "disposition": result.disposition,
+        "reason": result.reason,
+        "section_range": {
+            "start_line": result.section_range[0],
+            "end_line": result.section_range[1],
+        },
+        "marker_range": (
+            {
+                "start_line": result.marker_range[0],
+                "end_line": result.marker_range[1],
+            }
+            if result.marker_range is not None
+            else None
+        ),
+        "content_range": (
+            {
+                "start_line": result.content_range[0],
+                "end_line": result.content_range[1],
+            }
+            if result.content_range is not None
+            else None
+        ),
+        "document_hash": result.document_hash,
+        "section_hash": result.section_hash,
+        "block_hash": result.block_hash,
+        "diff": result.diff,
+    }
+
+
+def maintenance(
+    project_root: Path,
+    target_name: str,
+    *,
+    check: bool,
+    preview: bool,
+    json_output: bool = False,
+    expected_source_hash: str | None = None,
+) -> int:
+    """Read-only managed-block drift check/preview for one declared target.
+
+    `--check` reports the same deterministic result as `--preview` but exits
+    `2` on drift so it composes as a CI gate; `--preview` always exits `0` for
+    a valid target. Neither ever writes Markdown: this milestone has no
+    `--write`/`--apply` variant. Invalid config, an unknown target, unknown or
+    ambiguous document/section/marker addresses, and graph-blocking errors
+    fail closed with exit `1`, diagnostics on stderr only and no stdout.
+    """
+
+    try:
+        config = load_config(project_root)
+    except ValueError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+
+    target = _maintenance_find_target(config, target_name)
+    if target is None:
+        print(f"ERROR: unknown maintenance target: {target_name}", file=sys.stderr)
+        return 1
+
+    involved_ids = {
+        target.source_document_id,
+        *(occurrence.document_id for occurrence in target.occurrences),
+    }
+    try:
+        views, _, catalog_value = _load_views(config)
+        if catalog_value is not None:
+            by_id = {
+                document.metadata.document_id: document
+                for document in catalog_value.documents
+                if document.metadata is not None
+            }
+            for document_id in involved_ids:
+                if document_id not in by_id:
+                    raise ValueError(f"document ID not found: {document_id}")
+            blockers = [
+                issue
+                for issue in (
+                    *validate_membership(catalog_value),
+                    *validate_metadata(catalog_value),
+                    *validate_adoption(catalog_value, config),
+                )
+                if issue.affects_graph and issue.severity != "warning"
+            ]
+            for document_id in involved_ids:
+                document = by_id[document_id]
+                blockers.extend(
+                    ValidationIssue(document.path, message)
+                    for message in document_section_issues(document, config)
+                )
+            if blockers:
+                for issue in blockers:
+                    print(
+                        f"ERROR: {issue.path.as_posix()}: {issue.message}",
+                        file=sys.stderr,
+                    )
+                return 1
+        for document_id in involved_ids:
+            if document_id not in views:
+                raise ValueError(f"document ID not found: {document_id}")
+
+        source_view = views[target.source_document_id]
+        source_section = next(
+            (
+                section
+                for section in source_view.sections
+                if section.anchor == target.source_anchor
+            ),
+            None,
+        )
+        if source_section is None:
+            raise ValueError(
+                f"anchor not found in {target.source_document_id}: "
+                f"{target.source_anchor}"
+            )
+        occurrence_sections: dict[int, MarkdownSection] = {}
+        for index, occurrence in enumerate(target.occurrences):
+            occurrence_view = views[occurrence.document_id]
+            section = next(
+                (
+                    item
+                    for item in occurrence_view.sections
+                    if item.anchor == occurrence.anchor
+                ),
+                None,
+            )
+            if section is None:
+                raise ValueError(
+                    f"anchor not found in {occurrence.document_id}: "
+                    f"{occurrence.anchor}"
+                )
+            occurrence_sections[index] = section
+    except ValueError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+
+    source_scan = scan_markers(source_view.content, target.name)
+    source_span, source_issues = resolve_marker(source_scan, SOURCE)
+    if source_span is None:
+        for issue in source_issues:
+            print(f"ERROR: {target.source_document_id}: {issue}", file=sys.stderr)
+        return 1
+    if not span_within_section(source_span, source_section):
+        print(
+            f"ERROR: {target.source_document_id}: source marker for target "
+            f"{target.name!r} is outside declared section #{target.source_anchor}",
+            file=sys.stderr,
+        )
+        return 1
+
+    source_block = block_text(source_view.content, source_span)
+    source_document_hash = sha256_text(source_view.content)
+    source_section_hash = sha256_text(extract_section(source_view.content, source_section))
+    source_block_hash = sha256_text(source_block)
+    if expected_source_hash is not None:
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_source_hash):
+            print(
+                "ERROR: --expect-source-hash must be a lowercase SHA-256 value",
+                file=sys.stderr,
+            )
+            return 1
+        if expected_source_hash != source_block_hash:
+            print(
+                "ERROR: source block hash changed: expected "
+                f"{expected_source_hash}, current {source_block_hash}",
+                file=sys.stderr,
+            )
+            return 1
+    source_marker_range = (source_span.start_line, source_span.end_line)
+    source_content_range = (source_span.start_line + 1, source_span.end_line - 1)
+
+    occurrence_results: list[_MaintenanceOccurrenceResult] = []
+    any_drift = False
+    for index, occurrence in enumerate(target.occurrences):
+        occurrence_view = views[occurrence.document_id]
+        occurrence_section = occurrence_sections[index]
+        occurrence_document_hash = sha256_text(occurrence_view.content)
+        occurrence_section_hash = sha256_text(
+            extract_section(occurrence_view.content, occurrence_section)
+        )
+        if occurrence.role != CURRENT:
+            occurrence_results.append(
+                _MaintenanceOccurrenceResult(
+                    document_id=occurrence.document_id,
+                    anchor=occurrence.anchor,
+                    role=occurrence.role,
+                    eligible=False,
+                    disposition=EXCLUDED,
+                    reason=f"role is {occurrence.role!r}, not eligible for preview",
+                    section_range=(
+                        occurrence_section.start_line,
+                        occurrence_section.end_line,
+                    ),
+                    marker_range=None,
+                    content_range=None,
+                    document_hash=occurrence_document_hash,
+                    section_hash=occurrence_section_hash,
+                    block_hash=None,
+                    diff=None,
+                )
+            )
+            continue
+        occurrence_scan = scan_markers(occurrence_view.content, target.name)
+        occurrence_span, occurrence_issues = resolve_marker(occurrence_scan, MANAGED)
+        if occurrence_span is None:
+            for issue in occurrence_issues:
+                print(f"ERROR: {occurrence.document_id}: {issue}", file=sys.stderr)
+            return 1
+        if not span_within_section(occurrence_span, occurrence_section):
+            print(
+                f"ERROR: {occurrence.document_id}: managed marker for target "
+                f"{target.name!r} is outside declared section #{occurrence.anchor}",
+                file=sys.stderr,
+            )
+            return 1
+        occurrence_block = block_text(occurrence_view.content, occurrence_span)
+        occurrence_block_hash = sha256_text(occurrence_block)
+        drifted = occurrence_block != source_block
+        diff_text = None
+        if drifted:
+            any_drift = True
+            diff_text = unified_block_diff(
+                before=block_lines(occurrence_view.content, occurrence_span),
+                after=block_lines(source_view.content, source_span),
+                from_label=f"{occurrence.document_id}#{occurrence.anchor}",
+                to_label=f"{target.source_document_id}#{target.source_anchor}",
+            )
+        occurrence_results.append(
+            _MaintenanceOccurrenceResult(
+                document_id=occurrence.document_id,
+                anchor=occurrence.anchor,
+                role=occurrence.role,
+                eligible=True,
+                disposition=DRIFTED if drifted else CLEAN,
+                reason=None,
+                section_range=(
+                    occurrence_section.start_line,
+                    occurrence_section.end_line,
+                ),
+                marker_range=(occurrence_span.start_line, occurrence_span.end_line),
+                content_range=(
+                    occurrence_span.start_line + 1,
+                    occurrence_span.end_line - 1,
+                ),
+                document_hash=occurrence_document_hash,
+                section_hash=occurrence_section_hash,
+                block_hash=occurrence_block_hash,
+                diff=diff_text,
+            )
+        )
+
+    status = DRIFTED if any_drift else CLEAN
+
+    source_address = Address(target.source_document_id, target.source_anchor)
+    plan_diagnostic: str | None = None
+    plan: ChangePlan | None = None
+    try:
+        if catalog_value is not None:
+            plan = _change_plan_direct(
+                config, source_address, reverse=True, transitive=False
+            )
+        else:
+            plan = _change_plan_projected(
+                config, source_address, reverse=True, transitive=False
+            )
+    except ProjectionUnavailable as error:
+        plan_diagnostic = f"{error}; using direct Markdown"
+        try:
+            plan = _change_plan_direct(config, source_address, reverse=True, transitive=False)
+        except _ReferenceGraphInvalid as invalid:
+            for issue in invalid.issues:
+                print(
+                    f"ERROR: {issue.path.as_posix()}: {issue.message}",
+                    file=sys.stderr,
+                )
+            return 1
+    if plan is None:
+        print(f"ERROR: unknown graph address: {source_address.text}", file=sys.stderr)
+        return 1
+    if plan_diagnostic is not None:
+        print(f"NOTE: {plan_diagnostic}", file=sys.stderr)
+
+    if json_output:
+        _print_json(
+            {
+                "target": target.name,
+                "mode": "check" if check else "preview",
+                "status": status,
+                "source": {
+                    "address": source_address.text,
+                    "document_hash": source_document_hash,
+                    "section_hash": source_section_hash,
+                    "block_hash": source_block_hash,
+                    "section_range": {
+                        "start_line": source_section.start_line,
+                        "end_line": source_section.end_line,
+                    },
+                    "marker_range": {
+                        "start_line": source_marker_range[0],
+                        "end_line": source_marker_range[1],
+                    },
+                    "content_range": {
+                        "start_line": source_content_range[0],
+                        "end_line": source_content_range[1],
+                    },
+                },
+                "occurrences": [
+                    _maintenance_occurrence_json(result) for result in occurrence_results
+                ],
+                "change_plan": {
+                    "address": plan.address.text,
+                    "items": [_change_plan_item_json(item) for item in plan.items],
+                    "boundaries": [
+                        _references_boundary_json(boundary)
+                        for boundary in plan.boundaries
+                    ],
+                    "completeness": {
+                        "authored": plan.completeness.authored,
+                        "observed": plan.completeness.observed,
+                        "generated": plan.completeness.generated,
+                    },
+                },
+            }
+        )
+    else:
+        print(f"target\t{target.name}\tstatus\t{status}")
+        print(
+            "source\t"
+            f"{source_address.text}\t"
+            f"document_hash={source_document_hash},"
+            f"section_hash={source_section_hash},"
+            f"block_hash={source_block_hash},"
+            f"section={source_section.start_line}-{source_section.end_line},"
+            f"content={source_content_range[0]}-{source_content_range[1]}"
+        )
+        for result in occurrence_results:
+            print(_maintenance_occurrence_row(result))
+        for item in plan.items:
+            for row in _change_plan_item_rows(item):
+                print(f"changeplan\t{row}")
+        for boundary in plan.boundaries:
+            print(f"changeplan\t{_change_plan_boundary_row(boundary)}")
+        for row in _change_plan_completeness_rows(plan.completeness):
+            print(f"changeplan\t{row}")
+        for result in occurrence_results:
+            if result.diff:
+                print()
+                print(f"## diff {result.document_id}#{result.anchor}")
+                print()
+                sys.stdout.write(result.diff)
+
+    if check:
+        return 2 if status == DRIFTED else 0
+    return 0
+
+
 def show_config(project_root: Path) -> int:
     try:
         config = load_config(project_root)
@@ -3206,6 +3628,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print a deterministic JSON object instead of tab-separated text.",
     )
 
+    maintenance_parser = subparsers.add_parser(
+        "maintenance",
+        help="Read-only managed maintenance drift check and preview diff.",
+    )
+    maintenance_parser.add_argument("target", metavar="TARGET")
+    maintenance_parser.add_argument("project", nargs="?", type=Path, default=Path.cwd())
+    maintenance_mode = maintenance_parser.add_mutually_exclusive_group(required=True)
+    maintenance_mode.add_argument("--check", action="store_true")
+    maintenance_mode.add_argument("--preview", action="store_true")
+    maintenance_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print a deterministic JSON object instead of tab-separated text.",
+    )
+    maintenance_parser.add_argument(
+        "--expect-source-hash",
+        metavar="SHA256",
+        help="Fail closed unless the canonical source block still has this hash.",
+    )
+
     context_parser = subparsers.add_parser("context", help="Build an inspectable context packet.")
     context_parser.add_argument("document_id")
     context_parser.add_argument("project", nargs="?", type=Path, default=Path.cwd())
@@ -3396,6 +3839,7 @@ def build_parser() -> argparse.ArgumentParser:
         dependencies_parser,
         references_parser,
         change_plan_parser,
+        maintenance_parser,
         context_parser,
         impact_parser,
         migration_report_parser,
@@ -3458,6 +3902,15 @@ def main() -> int:
             reverse=args.reverse,
             transitive=args.transitive,
             json_output=args.json_output,
+        )
+    if args.command == "maintenance":
+        return maintenance(
+            project,
+            args.target,
+            check=args.check,
+            preview=args.preview,
+            json_output=args.json_output,
+            expected_source_hash=args.expect_source_hash,
         )
     if args.command == "catalog":
         return catalog(project, explain=args.explain, json_output=args.json_output)

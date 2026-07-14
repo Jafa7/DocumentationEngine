@@ -20,11 +20,11 @@ Three operations write anything:
   below `.docsystem/cache`.
 
 Every other command — `doctor`, `show-config`, `catalog`, `validate`, `read`,
-`dependencies`, `references`, `change-plan`, `context`, `impact`,
-`migration-report`, `migrate` without `--apply`, `readiness`, `finish`,
-`report draft`, and `index`/`changes` without `--write` — is read-only. An
-agent may call any read-only command freely to inspect project state before
-deciding whether a mutating command is warranted.
+`dependencies`, `references`, `change-plan`, `maintenance`, `context`,
+`impact`, `migration-report`, `migrate` without `--apply`, `readiness`,
+`finish`, `report draft`, and `index`/`changes` without `--write` — is
+read-only. An agent may call any read-only command freely to inspect project
+state before deciding whether a mutating command is warranted.
 
 `docsystem migrate` without `--apply` is always a preview: it computes and
 prints the same plan `--apply` would write, but touches nothing. An agent
@@ -252,6 +252,58 @@ generation-bound projection and reads only the shards its query actually
 touches, falling back to direct Markdown with exactly one `NOTE` diagnostic on
 staleness, incompatibility or corruption. Either path produces byte-identical
 stdout for the same query.
+
+## `maintenance` is a read-only managed-block preview, never write authority
+
+`docsystem maintenance TARGET PROJECT --check|--preview [--json]
+[--expect-source-hash SHA256]` reports
+drift between one project-declared canonical source block and its declared
+occurrences. It has no `--write`/`--apply` variant in this milestone: it never
+edits Markdown, on any path, including every error path.
+
+A target is declared in `.docsystem.toml` as `[[maintenance]]`: one
+`source_document`/`source_anchor` owns the canonical block, and a bounded
+`occurrences` list names every document/section that may hold a replica, each
+with one role — `current`, `historical`, `example`, `snapshot` or
+`unmanaged`. Only a `current` occurrence is preview eligible and can be
+`clean` or `drifted`; every other role is reported as excluded evidence with
+its role as the reason and is never diffed, however similar its text. The
+canonical block and every replica are delimited by exact
+`<!-- docsystem:source target=NAME -->`/`<!-- docsystem:managed target=NAME -->`
+HTML-comment marker pairs (each on its own line; inert inside fenced code);
+markers themselves are never part of the compared payload. Comparison is
+exact over the engine's decoded Markdown text. The shared Markdown reader
+canonicalizes platform line endings to `\n`; it does not summarize, reflow or
+otherwise rewrite the block's semantic content.
+
+`--check` and `--preview` report the identical deterministic result; only the
+exit code differs. `--check` returns `0` for a clean target and `2` — a
+documented, non-error drift code — when any current occurrence has drifted,
+so it composes as a CI gate. `--preview` always returns `0` for a valid
+target, clean or drifted, since previewing is inspection, not a pass/fail
+check. Invalid configuration, an unknown target, an unknown or ambiguous
+document/section/marker address, and a graph-blocking metadata error are all
+errors: exit `1`, one diagnostic line per blocker on stderr, and empty
+stdout — an agent should never try to parse stdout after a non-zero,
+non-`2` exit.
+
+Each report carries exact section, marker and content line ranges. It also
+carries document/section/block hashes for the source and every eligible
+occurrence, plus a deterministic unified diff for a drifted occurrence. This
+is evidence for a later bounded-write milestone, not something `maintenance`
+itself acts on. Every item also links to a
+read-only `change-plan` view of the canonical source address, the same
+explainable graph evidence `change-plan` exposes elsewhere; an agent should
+treat it as planning context, not as permission to edit the occurrence
+directly. `maintenance` shares `change-plan`'s projection strategy: it prefers
+a verified projection and falls back to direct Markdown with exactly one
+visible stderr diagnostic on absence, staleness or corruption, producing
+byte-identical stdout either way.
+
+For a multi-step continuation, pass the source `block_hash` from the previous
+report as `--expect-source-hash`. A malformed hash or a source block that has
+changed since that report fails closed with exit `1`, stderr diagnostics and
+empty stdout. This guard does not grant write authority.
 
 ## Context is explicit, never silently truncated
 

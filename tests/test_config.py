@@ -214,3 +214,219 @@ def test_invalid_catalog_exclusions_are_rejected(
 
     with pytest.raises(ValueError, match=message):
         load_config(tmp_path)
+
+
+def test_maintenance_table_is_optional(tmp_path: Path) -> None:
+    (tmp_path / CONFIG_FILENAME).write_text(DEFAULT_CONFIG, encoding="utf-8")
+    assert load_config(tmp_path).maintenance_targets == ()
+
+
+_MINIMAL_MAINTENANCE = """
+[[maintenance]]
+name = "install-version"
+source_document = "DOC-001"
+source_anchor = "install-block"
+
+[[maintenance.occurrences]]
+document = "DOC-002"
+anchor = "quickstart"
+role = "current"
+"""
+
+_EXTENDED_MAINTENANCE = """
+[[maintenance]]
+name = "install-version"
+source_document = "DOC-001"
+source_anchor = "install-block"
+
+[[maintenance.occurrences]]
+document = "DOC-002"
+anchor = "quickstart"
+role = "current"
+
+[[maintenance.occurrences]]
+document = "DOC-003"
+anchor = "changelog"
+role = "historical"
+
+[[maintenance]]
+name = "second-target"
+source_document = "DOC-004"
+source_anchor = "canonical"
+
+[[maintenance.occurrences]]
+document = "DOC-005"
+anchor = "replica"
+role = "current"
+"""
+
+
+def test_minimal_maintenance_config_loads(tmp_path: Path) -> None:
+    config = DEFAULT_CONFIG + _MINIMAL_MAINTENANCE
+    (tmp_path / CONFIG_FILENAME).write_text(config, encoding="utf-8")
+    loaded = load_config(tmp_path)
+    assert len(loaded.maintenance_targets) == 1
+    target = loaded.maintenance_targets[0]
+    assert target.name == "install-version"
+    assert target.source_document_id == "DOC-001"
+    assert target.source_anchor == "install-block"
+    assert len(target.occurrences) == 1
+    assert target.occurrences[0].document_id == "DOC-002"
+    assert target.occurrences[0].anchor == "quickstart"
+    assert target.occurrences[0].role == "current"
+
+
+def test_extended_maintenance_config_with_multiple_targets_loads(tmp_path: Path) -> None:
+    config = DEFAULT_CONFIG + _EXTENDED_MAINTENANCE
+    (tmp_path / CONFIG_FILENAME).write_text(config, encoding="utf-8")
+    loaded = load_config(tmp_path)
+    assert [target.name for target in loaded.maintenance_targets] == [
+        "install-version",
+        "second-target",
+    ]
+    assert len(loaded.maintenance_targets[0].occurrences) == 2
+    assert loaded.maintenance_targets[0].occurrences[1].role == "historical"
+
+
+@pytest.mark.parametrize(
+    ("maintenance_toml", "message"),
+    [
+        ("maintenance = \"invalid\"\n", "maintenance must be a list of tables"),
+        (
+            "[[maintenance]]\n"
+            'name = "t"\n'
+            'source_document = "DOC-001"\n'
+            'source_anchor = "install-block"\n'
+            'extra_key = "x"\n\n'
+            "[[maintenance.occurrences]]\n"
+            'document = "DOC-002"\n'
+            'anchor = "quickstart"\n'
+            'role = "current"\n',
+            r"maintenance\[0\] has unknown key\(s\): extra_key",
+        ),
+        (
+            "[[maintenance]]\n"
+            'name = ""\n'
+            'source_document = "DOC-001"\n'
+            'source_anchor = "install-block"\n\n'
+            "[[maintenance.occurrences]]\n"
+            'document = "DOC-002"\n'
+            'anchor = "quickstart"\n'
+            'role = "current"\n',
+            r"maintenance\[0\]\.name must be a non-empty identifier-style string",
+        ),
+        (
+            "[[maintenance]]\n"
+            'name = "t"\n'
+            'source_document = "DOC-001"\n'
+            'source_anchor = "install-block"\n\n'
+            "[[maintenance.occurrences]]\n"
+            'document = "DOC-002"\n'
+            'anchor = "quickstart"\n'
+            'role = "current"\n\n'
+            "[[maintenance]]\n"
+            'name = "t"\n'
+            'source_document = "DOC-004"\n'
+            'source_anchor = "canonical"\n\n'
+            "[[maintenance.occurrences]]\n"
+            'document = "DOC-005"\n'
+            'anchor = "replica"\n'
+            'role = "current"\n',
+            "maintenance target name is duplicated: 't'",
+        ),
+        (
+            "[[maintenance]]\n"
+            'name = "t"\n'
+            'source_document = "DOC-001"\n'
+            'source_anchor = "install-block"\n'
+            "occurrences = []\n",
+            r"maintenance\[0\]\.occurrences must be a non-empty list",
+        ),
+        (
+            "[[maintenance]]\n"
+            'name = "t"\n'
+            'source_document = "not-an-id"\n'
+            'source_anchor = "install-block"\n\n'
+            "[[maintenance.occurrences]]\n"
+            'document = "DOC-002"\n'
+            'anchor = "quickstart"\n'
+            'role = "current"\n',
+            r"maintenance\[0\]\.source_document must use a configured stable ID prefix",
+        ),
+        (
+            "[[maintenance]]\n"
+            'name = "t"\n'
+            'source_document = "DOC-001"\n'
+            'source_anchor = "bad anchor"\n\n'
+            "[[maintenance.occurrences]]\n"
+            'document = "DOC-002"\n'
+            'anchor = "quickstart"\n'
+            'role = "current"\n',
+            r"maintenance\[0\]\.source_anchor must use the supported stable anchor syntax",
+        ),
+        (
+            "[[maintenance]]\n"
+            'name = "t"\n'
+            'source_document = "DOC-001"\n'
+            'source_anchor = "install-block"\n\n'
+            "[[maintenance.occurrences]]\n"
+            'document = "DOC-002"\n'
+            'anchor = "quickstart"\n'
+            'role = "invented-role"\n',
+            r"maintenance\[0\]\.occurrences\[0\]\.role must be one of:",
+        ),
+        (
+            "[[maintenance]]\n"
+            'name = "t"\n'
+            'source_document = "DOC-001"\n'
+            'source_anchor = "install-block"\n\n'
+            "[[maintenance.occurrences]]\n"
+            'document = "DOC-002"\n'
+            'anchor = "quickstart"\n'
+            'role = "current"\n'
+            'extra = "x"\n',
+            r"maintenance\[0\]\.occurrences\[0\] has unknown key\(s\): extra",
+        ),
+        (
+            "[[maintenance]]\n"
+            'name = "t"\n'
+            'source_document = "DOC-001"\n'
+            'source_anchor = "install-block"\n\n'
+            "[[maintenance.occurrences]]\n"
+            'document = "DOC-001"\n'
+            'anchor = "install-block"\n'
+            'role = "current"\n',
+            r"maintenance\[0\]\.occurrences\[0\] overlaps the declared source address",
+        ),
+        (
+            "[[maintenance]]\n"
+            'name = "t"\n'
+            'source_document = "DOC-001"\n'
+            'source_anchor = "install-block"\n\n'
+            "[[maintenance.occurrences]]\n"
+            'document = "DOC-002"\n'
+            'anchor = "quickstart"\n'
+            'role = "current"\n\n'
+            "[[maintenance.occurrences]]\n"
+            'document = "DOC-002"\n'
+            'anchor = "quickstart"\n'
+            'role = "historical"\n',
+            r"maintenance\[0\]\.occurrences\[1\] duplicates another occurrence at",
+        ),
+    ],
+)
+def test_invalid_maintenance_configuration_is_rejected(
+    tmp_path: Path, maintenance_toml: str, message: str
+) -> None:
+    # A bare `key = value` line must precede every `[table]` header in TOML,
+    # or it becomes a key of whatever table was last opened; only the
+    # scalar-assignment case needs to be prepended for that reason.
+    config = (
+        maintenance_toml + DEFAULT_CONFIG
+        if maintenance_toml.startswith("maintenance =")
+        else DEFAULT_CONFIG + maintenance_toml
+    )
+    (tmp_path / CONFIG_FILENAME).write_text(config, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        load_config(tmp_path)

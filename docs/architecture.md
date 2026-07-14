@@ -11,7 +11,8 @@ Documentation Engine owns deterministic documentation mechanics:
 - inspectable context packets with explicit coverage and omissions;
 - impact and changed-section analysis;
 - versioned, sharded machine projections;
-- bootstrap, diagnostics, adoption readiness reporting and migration tooling.
+- bootstrap, diagnostics, adoption readiness reporting and migration tooling;
+- read-only managed-block maintenance drift check and preview diff.
 
 It does not decide whether an architectural claim is correct, whether a review
 is persuasive, or whether selected context is semantically sufficient.
@@ -266,6 +267,81 @@ canonical H2 anchors in `navigation.extend_through`; the result remains one
 contiguous prefix ending after the furthest matching section. Missing anchors
 fall back to the default, while a configured non-H2 match is invalid.
 
+## Managed maintenance preview
+
+A project may declare a bounded `[[maintenance]]` target in `.docsystem.toml`:
+one canonical `source_document`/`source_anchor` owns the authored bytes of a
+block, and a fixed list of `occurrences` names every document/section where a
+replica may exist, each with one declared role — `current`, `historical`,
+`example`, `snapshot` or `unmanaged`. Config validation is deterministic and
+fails closed: unknown keys or roles, an empty or duplicate target name, an
+empty or duplicate occurrence list, an invalid ID/anchor address, or an
+occurrence that overlaps the declared source address are all rejected before
+any Markdown is read.
+
+```toml
+[[maintenance]]
+name = "install-version"
+source_document = "DOC-001"
+source_anchor = "install-block"
+
+[[maintenance.occurrences]]
+document = "DOC-002"
+anchor = "quickstart"
+role = "current"
+
+[[maintenance.occurrences]]
+document = "DOC-003"
+anchor = "changelog-v1"
+role = "historical"
+```
+
+The block itself is delimited by exact, deterministic HTML-comment markers —
+`<!-- docsystem:source target=NAME -->`/`<!-- /docsystem:source target=NAME -->`
+around the canonical block, and `<!-- docsystem:managed target=NAME -->`/
+`<!-- /docsystem:managed target=NAME -->` around a replica. A marker must
+occupy its own line; markers inside fenced code are inert, so documentation
+that shows the syntax as an example is never mistaken for a real managed
+block. Missing, duplicate, nested or crossed markers, and a marker whose span
+escapes its declared section, are fail-closed diagnostics rather than a
+guessed location.
+
+`docsystem maintenance TARGET PROJECT --check|--preview [--json]` reads the
+canonical source block and every declared occurrence and reports, per
+occurrence, its role and disposition. Only a `current` occurrence is preview
+eligible and can be `clean` or `drifted`; every other role is reported as
+visible, excluded evidence with its role as the reason and is never diffed.
+Markers are never part of the compared payload. Comparison is exact over the
+engine's decoded Markdown text: the shared reader canonicalizes platform line
+endings to `\n`, but does not summarize, reflow or otherwise rewrite semantic
+content. `--check` and `--preview` report the same
+deterministic text/JSON result; only the exit-code contract differs: `--check`
+returns `0` for a clean target and a stable non-zero `2` on drift, while
+`--preview` always returns `0` for a valid target so it composes as a
+read-only inspection rather than a gate. Invalid config, an unknown target, an
+unknown or ambiguous document/section/marker address, or a graph-blocking
+metadata error all fail closed with exit `1`, diagnostics on stderr only, and
+empty stdout. This milestone has no `--write`/`--apply`, no automatic repair
+and no journal generation: Markdown remains source of truth, and the command
+never mutates a file on any path, including every error path.
+
+Each report carries exact section, marker and content line ranges plus
+document/section/block hashes for the source and every eligible occurrence —
+evidence a later bounded-write milestone can use to detect stale input, not
+something this milestone acts on. Every item also links to a read-only
+`change-plan` view of the canonical
+source address (reverse, direct), reusing the same explainable graph
+evidence `change-plan` exposes elsewhere; this is planning context, not write
+authority. `maintenance` prefers a verified, generation-bound projection for
+document/section resolution and falls back to direct Markdown with a visible
+stderr diagnostic on any staleness, incompatibility or corruption — either
+path produces byte-identical stdout for the same target.
+
+An optional `--expect-source-hash SHA256` continuation guard compares a
+previously observed source block hash with the current canonical block. A
+malformed or stale value fails closed before any report is emitted; it is
+evidence continuity, not write authority.
+
 ## Product sequence
 
 1. Configuration contract, bootstrap and diagnostics.
@@ -279,3 +355,5 @@ fall back to the default, while a configured non-H2 match is invalid.
    `docsystem.mcp_server`) and additional client integrations.
 8. Local workspace source selection for independently owned profiles, before
    any atomic cross-source federation design.
+9. Read-only managed maintenance drift check and preview diff, ahead of any
+   bounded, non-destructive write.

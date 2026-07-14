@@ -233,6 +233,10 @@ docsystem change-plan DOC-001 .
 docsystem change-plan DOC-001#purpose . --reverse
 docsystem change-plan DOC-001 . --transitive
 docsystem change-plan DOC-001 . --json
+docsystem maintenance install-version . --check
+docsystem maintenance install-version . --preview
+docsystem maintenance install-version . --check --json
+docsystem maintenance install-version . --preview --expect-source-hash SHA256
 docsystem context DOC-001 . --depth 1
 docsystem context DOC-001 . --depth 1 --json
 docsystem context DOC-001 . --outline
@@ -355,6 +359,24 @@ Completeness is reported per graph layer (`authored`, `observed`, `generated`)
 instead of one collapsing flag, and unresolved targets remain visible
 boundaries with their source address. There is no `--write`/`--apply`: like
 `references`, this command never edits Markdown.
+
+`maintenance TARGET PROJECT --check|--preview` is a read-only drift check and
+preview diff for one project-declared `[[maintenance]]` target: a canonical
+`source_document`/`source_anchor` block and its bounded `occurrences`, each
+with an opt-in role (`current`, `historical`, `example`, `snapshot` or
+`unmanaged`). Only a `current` occurrence is preview eligible; every other
+role is reported as excluded evidence, never diffed. The block is delimited
+by exact `<!-- docsystem:source target=NAME -->`/
+`<!-- docsystem:managed target=NAME -->` HTML-comment markers, one per line
+and inert inside fenced code. `--check` and `--preview` print the same
+deterministic result and never write Markdown; `--check` exits `0` clean or
+`2` on drift (a documented, non-error code), while `--preview` always exits
+`0` for a valid target. Invalid config, an unknown target/address or a
+graph-blocking error exit `1` with empty stdout. There is no `--write` in
+this milestone. Reports include exact line ranges and content hashes for
+review and for stale-input guards in a future bounded-write milestone.
+Pass a previously reported source `block_hash` with `--expect-source-hash` to
+fail closed if the canonical block changed between inspection steps.
 
 Existing projects may opt into a migration bridge for relative path relations:
 
