@@ -78,7 +78,8 @@ def config_fingerprint(config: ProjectConfig) -> str:
     policy, dependency-graph semantics, or projection layout: the documentation
     root identity relative to the project, area and identifier maps, catalog
     exclusions, `navigation.extend_through`, `relations.legacy_paths`,
-    `relations.snapshot_types`, the projection format, and the schema version.
+    `relations.snapshot_types`, `relations.snapshot_rules`, authored context
+    views, the projection format, and the schema version.
     When any of these change the generation identity changes too, so
     `load_verified_projection` reports the generation stale and reads fall back
     to direct Markdown and normal validation instead of serving output that no
@@ -101,6 +102,25 @@ def config_fingerprint(config: ProjectConfig) -> str:
         "navigation_extend_through": list(config.navigation_extend_through),
         "legacy_relation_mode": config.legacy_relation_mode,
         "snapshot_document_types": list(config.snapshot_document_types),
+        "snapshot_rules": [
+            {
+                "source_type": rule.source_type,
+                "source_status": rule.source_status,
+            }
+            for rule in config.snapshot_rules
+        ],
+        "context_views": [
+            {
+                "name": view.name,
+                "tier": view.tier,
+                "delivery": view.delivery,
+                "direction": view.direction,
+                "depth": view.depth,
+                "relations": list(view.relations),
+                "layers": list(view.layers),
+            }
+            for view in config.context_views
+        ],
     }
     return _sha(_json(normalized))
 

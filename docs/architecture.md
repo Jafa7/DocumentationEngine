@@ -98,9 +98,10 @@ reverse shard against its recorded hash. It also rejects the generation when the
 fingerprint no longer matches the one recorded at build time — a normalized
 digest of the documentation root identity, areas, identifiers, catalog
 exclusions, `navigation.extend_through`, `relations.legacy_paths`,
-`relations.snapshot_types`, the projection format and the schema version — so a
-read-time policy change forces a rebuild instead of serving differently-shaped
-output. The generation ID is the canonical hash of the complete manifest,
+`relations.snapshot_types`, `relations.snapshot_rules`, authored context views,
+the projection format and the schema version — so a read-time policy change
+forces a rebuild instead of serving differently-shaped output. The generation ID is the canonical hash of
+the complete manifest,
 including the hashes of document, reverse, reference, and reverse-reference
 shards. Semantic shard tampering (a dropped dependency, an altered revision)
 or a matching edit to a shard hash therefore invalidates the immutable
@@ -197,6 +198,12 @@ snapshot. Human navigation continues to use ordinary relative Markdown links.
 Graph queries fail closed when invalid metadata prevents a complete answer;
 they never present a silently filtered partial graph as complete.
 
+Historical classification is explicit project policy. `snapshot_types` matches
+the pin-owning document by type; `snapshot_rules` can match its type, status or
+both. Matching pins remain graph edges and packet evidence, but no longer act
+as freshness warnings. The normalized rules are part of the projection
+fingerprint, so changing lifecycle policy forces direct fallback and rebuild.
+
 For adoption only, `relations.legacy_paths = "resolve-with-warning"` allows the
 four path relations to resolve relative to their source document. Resolved
 values become ordinary canonical ID edges and remain visible as migration
@@ -251,6 +258,19 @@ entirely, printing only that size map, so an agent can inspect a document's
 shape for the cost of one small packet before deciding what to fetch with
 `--include ID#anchor`. `--outline` therefore never combines with `--anchor`
 or `--include`, which select content it does not return.
+
+Optional `[context.views.NAME]` entries are project-authored progressive query
+policy over the same semantic dependency graph. Each view fixes tier,
+outline/navigation delivery, forward/reverse/both direction, depth, relation
+filters and the `authored` layer. Direct Markdown and verified projections
+reduce to the same outgoing/reverse edge views before traversal. Every edge
+stopped by a filter or depth is emitted as a deterministic omission; a view
+never raises edge authority, asserts semantic completeness or limits later
+section/full-document access. Observed/generated layers remain outside this
+first view contract rather than being approximated from authored relations.
+Reverse and bidirectional traversal requires a globally valid catalog semantic
+graph, while forward traversal keeps the existing selected-source validation
+boundary.
 
 ATX headings outside fenced code blocks form deterministic addressable
 sections. A section includes nested headings until the next heading at the same
@@ -367,3 +387,5 @@ and falls back to direct Markdown without weakening Markdown authority.
    and conflict-safe explicit recovery.
 10. Agent-declared context coverage feedback that records body-free evidence
     only when progressive expansion exposes a material reproducible gap.
+11. Project-authored purpose context views with visible relation/depth
+    omissions and unrestricted on-demand expansion.

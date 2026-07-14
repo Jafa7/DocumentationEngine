@@ -35,7 +35,14 @@ from docsystem.change_plan import (
     PlanItem,
     build_change_plan,
 )
-from docsystem.config import CONFIG_FILENAME, DEFAULT_CONFIG, ProjectConfig, load_config
+from docsystem.config import (
+    CONFIG_FILENAME,
+    DEFAULT_CONFIG,
+    ContextView,
+    ProjectConfig,
+    is_historical_snapshot,
+    load_config,
+)
 from docsystem.graph import (
     Address,
     Boundary,
@@ -211,6 +218,17 @@ class _ContextGapEvidence:
     initial: tuple[str, ...]
     expanded: tuple[str, ...]
     projection: str
+
+
+@dataclass(frozen=True)
+class _ContextViewOmission:
+    """One authored edge a purpose view deliberately did not traverse."""
+
+    source_id: str
+    direction: str
+    relation: str
+    peer_id: str
+    reason: str
 
 
 class _ReferenceGraphInvalid(Exception):
@@ -648,7 +666,9 @@ def _freshness_rows(
                     "current_revision": dependency.revision,
                     "classification": (
                         "historical snapshot"
-                        if view.document_type in config.snapshot_document_types
+                        if is_historical_snapshot(
+                            config, view.document_type, view.status
+                        )
                         else "stale"
                     ),
                 }
@@ -680,6 +700,84 @@ def _context_selection(
             included.setdefault(edge.peer_id, set()).add(edge.relation)
             queue.append((edge.peer_id, current_depth + 1))
     return included
+
+
+def _purpose_context_selection(
+    views: _Views,
+    incoming: _Incoming,
+    document_id: str,
+    purpose_view: ContextView,
+) -> tuple[dict[str, set[str]], tuple[_ContextViewOmission, ...]]:
+    """Traverse one authored view while preserving every filtered/stopped edge."""
+
+    included: dict[str, set[str]] = {document_id: {"target"}}
+    queue = deque([(document_id, 0)])
+    expanded: set[str] = set()
+    omissions: set[_ContextViewOmission] = set()
+    allowed = set(purpose_view.relations)
+    while queue:
+        source_id, current_depth = queue.popleft()
+        if source_id in expanded:
+            continue
+        expanded.add(source_id)
+        candidates: list[tuple[str, _EdgeView]] = []
+        if purpose_view.direction in {"forward", "both"}:
+            candidates.extend(("forward", edge) for edge in views[source_id].outgoing)
+        if purpose_view.direction in {"reverse", "both"}:
+            candidates.extend(("reverse", edge) for edge in incoming.get(source_id, ()))
+        for direction, edge in sorted(
+            candidates,
+            key=lambda item: (
+                item[0],
+                item[1].relation,
+                item[1].peer_id,
+                item[1].expected_revision or 0,
+            ),
+        ):
+            if edge.relation not in allowed:
+                omissions.add(
+                    _ContextViewOmission(
+                        source_id,
+                        direction,
+                        edge.relation,
+                        edge.peer_id,
+                        "relation-filter",
+                    )
+                )
+                continue
+            if current_depth >= purpose_view.depth:
+                if edge.peer_id not in included:
+                    omissions.add(
+                        _ContextViewOmission(
+                            source_id,
+                            direction,
+                            edge.relation,
+                            edge.peer_id,
+                            "depth-limit",
+                        )
+                    )
+                continue
+            if edge.peer_id == document_id:
+                continue
+            reason = (
+                edge.relation
+                if direction == "forward"
+                else f"reverse:{edge.relation}"
+            )
+            included.setdefault(edge.peer_id, set()).add(reason)
+            queue.append((edge.peer_id, current_depth + 1))
+    return included, tuple(
+        sorted(
+            omissions,
+            key=lambda item: (
+                item.source_id,
+                item.direction,
+                item.relation,
+                item.peer_id,
+                item.reason,
+            ),
+        )
+    )
 
 
 def _ordered_selection(included: dict[str, set[str]], document_id: str) -> list[str]:
@@ -1188,6 +1286,8 @@ def _emit_context_json(
     mismatches: list[dict[str, object]] | None = None,
     assumed_known_omitted: int = 0,
     assume_known_used: bool = False,
+    purpose_view: ContextView | None = None,
+    view_omissions: tuple[_ContextViewOmission, ...] = (),
 ) -> int:
     """Print the context packet as one structured JSON object.
 
@@ -1275,6 +1375,26 @@ def _emit_context_json(
     }
     if assume_known_used:
         payload["assume_known_mismatches"] = mismatches or []
+    if purpose_view is not None:
+        payload["purpose_view"] = {
+            "name": purpose_view.name,
+            "tier": purpose_view.tier,
+            "delivery": purpose_view.delivery,
+            "direction": purpose_view.direction,
+            "depth": purpose_view.depth,
+            "relations": list(purpose_view.relations),
+            "layers": list(purpose_view.layers),
+        }
+        payload["view_omissions"] = [
+            {
+                "source_id": item.source_id,
+                "direction": item.direction,
+                "relation": item.relation,
+                "peer_id": item.peer_id,
+                "reason": item.reason,
+            }
+            for item in view_omissions
+        ]
     _print_json(payload)
     return 0
 
@@ -1288,6 +1408,8 @@ def _emit_context_outline_json(
     *,
     depth: int,
     include_related: bool,
+    purpose_view: ContextView | None = None,
+    view_omissions: tuple[_ContextViewOmission, ...] = (),
 ) -> int:
     """Print the map-first outline packet: section sizes, no content.
 
@@ -1317,26 +1439,45 @@ def _emit_context_outline_json(
             }
         )
     freshness = _freshness_rows(config, views, ordered)
-    _print_json(
-        {
-            "target": document_id,
-            "depth": depth,
-            "include_related": include_related,
-            "outline": True,
-            "documents": documents,
-            "freshness": freshness,
-            "migrations": _context_migrations_json(views, ordered),
-            "boundaries": _context_boundaries_json(views, ordered),
-            "related_omitted": _context_related_omitted_json(
-                views, document_id, include_related=include_related
-            ),
-            "stats": {
-                "included_documents": len(ordered),
-                "listed_sections": listed_sections,
-                "total_section_bytes": total_section_bytes,
-            },
+    payload: dict[str, object] = {
+        "target": document_id,
+        "depth": depth,
+        "include_related": include_related,
+        "outline": True,
+        "documents": documents,
+        "freshness": freshness,
+        "migrations": _context_migrations_json(views, ordered),
+        "boundaries": _context_boundaries_json(views, ordered),
+        "related_omitted": _context_related_omitted_json(
+            views, document_id, include_related=include_related
+        ),
+        "stats": {
+            "included_documents": len(ordered),
+            "listed_sections": listed_sections,
+            "total_section_bytes": total_section_bytes,
+        },
+    }
+    if purpose_view is not None:
+        payload["purpose_view"] = {
+            "name": purpose_view.name,
+            "tier": purpose_view.tier,
+            "delivery": purpose_view.delivery,
+            "direction": purpose_view.direction,
+            "depth": purpose_view.depth,
+            "relations": list(purpose_view.relations),
+            "layers": list(purpose_view.layers),
         }
-    )
+        payload["view_omissions"] = [
+            {
+                "source_id": item.source_id,
+                "direction": item.direction,
+                "relation": item.relation,
+                "peer_id": item.peer_id,
+                "reason": item.reason,
+            }
+            for item in view_omissions
+        ]
+    _print_json(payload)
     return 0
 
 
@@ -1348,6 +1489,7 @@ def _context_diagnostic_notes(
     *,
     include_related: bool,
     extra_notes: list[str] | None = None,
+    view_omissions: tuple[_ContextViewOmission, ...] = (),
 ) -> list[str]:
     """Return the sorted "Diagnostics and boundaries" note lines.
 
@@ -1393,6 +1535,11 @@ def _context_diagnostic_notes(
         related = list(views[document_id].related_values)
         if related:
             notes.append("Related omitted: " + ", ".join(related))
+    for item in view_omissions:
+        notes.append(
+            f"View omitted: {item.source_id} {item.direction} {item.relation} "
+            f"{item.peer_id} ({item.reason})"
+        )
     return sorted(set(notes))
 
 
@@ -1405,6 +1552,8 @@ def _emit_context_outline_text(
     *,
     depth: int,
     include_related: bool,
+    purpose_view: ContextView | None = None,
+    view_omissions: tuple[_ContextViewOmission, ...] = (),
 ) -> int:
     """Print the map-first outline: section size tables, no content."""
 
@@ -1413,6 +1562,11 @@ def _emit_context_outline_text(
     out.append("")
     out.append(f"- Dependency depth: {depth}")
     out.append(f"- Related traversal: {'included' if include_related else 'omitted'}")
+    if purpose_view is not None:
+        out.append(
+            f"- Purpose view: {purpose_view.name} (tier {purpose_view.tier}, "
+            f"{purpose_view.direction}, authored)"
+        )
     listed_sections = 0
     total_bytes = 0
     for selected_id in ordered:
@@ -1436,12 +1590,24 @@ def _emit_context_outline_text(
     out.append("## Diagnostics and boundaries")
     out.append("")
     for note in _context_diagnostic_notes(
-        config, views, ordered, document_id, include_related=include_related
+        config,
+        views,
+        ordered,
+        document_id,
+        include_related=include_related,
+        view_omissions=view_omissions,
     ):
         out.append(f"- {note}")
-    out.append(
-        "- Fetch content with --include ID#anchor, or drop --outline for full navigation."
-    )
+    if purpose_view is None:
+        out.append(
+            "- Fetch content with --include ID#anchor, or drop --outline for "
+            "full navigation."
+        )
+    else:
+        out.append(
+            "- Expand with another configured view, an explicit read, or the full "
+            "Markdown source."
+        )
     out.append("")
     out.append("## Packet stats")
     out.append("")
@@ -1457,23 +1623,20 @@ def context(
     document_id: str,
     *,
     anchor: str | None = None,
-    depth: int = 1,
-    include_related: bool = False,
+    depth: int | None = None,
+    include_related: bool | None = None,
     includes: list[str] | None = None,
     json_output: bool = False,
-    outline: bool = False,
+    outline: bool | None = None,
     assume_known: list[str] | None = None,
     since: str | None = None,
+    view_name: str | None = None,
 ) -> int:
-    if outline and (anchor is not None or includes):
+    if view_name is not None and any(
+        item is not None for item in (depth, include_related, outline)
+    ):
         print(
-            "ERROR: cannot combine --outline with --anchor or --include",
-            file=sys.stderr,
-        )
-        return 1
-    if outline and (assume_known or since is not None):
-        print(
-            "ERROR: cannot combine --outline with --assume-known or --since",
+            "ERROR: cannot combine --view with --depth, --include-related or --outline",
             file=sys.stderr,
         )
         return 1
@@ -1504,8 +1667,38 @@ def context(
         assumed[document] = declared
     since_manifest: dict[str, object] | None = None
     generation_short: str | None = None
+    purpose_view: ContextView | None = None
+    view_omissions: tuple[_ContextViewOmission, ...] = ()
     try:
         config = load_config(project_root)
+        if view_name is not None:
+            purpose_view = next(
+                (item for item in config.context_views if item.name == view_name),
+                None,
+            )
+            if purpose_view is None:
+                raise ValueError(f"context view not found: {view_name}")
+            depth = purpose_view.depth
+            include_related = "related" in purpose_view.relations
+            outline = purpose_view.delivery == "outline"
+        else:
+            depth = 1 if depth is None else depth
+            include_related = False if include_related is None else include_related
+            outline = False if outline is None else outline
+        if outline and (anchor is not None or includes):
+            if purpose_view is None:
+                raise ValueError(
+                    "cannot combine --outline with --anchor or --include"
+                )
+            raise ValueError("cannot combine outline delivery with --anchor or --include")
+        if outline and (assume_known or since is not None):
+            if purpose_view is None:
+                raise ValueError(
+                    "cannot combine --outline with --assume-known or --since"
+                )
+            raise ValueError(
+                "cannot combine outline delivery with --assume-known or --since"
+            )
         if since is not None:
             resolved = resolve_generation_manifest(config, since)
             if resolved is None:
@@ -1516,17 +1709,22 @@ def context(
                 return 1
             generation, since_manifest = resolved
             generation_short = generation[:12]
-        views, _, catalog_value = _load_views(config)
+        views, incoming, catalog_value = _load_views(config)
         if catalog_value is not None:
             find_document(catalog_value, document_id)
         elif document_id not in views:
             raise ValueError(f"document ID not found: {document_id}")
-        included = _context_selection(
-            views,
-            document_id,
-            depth=depth,
-            include_related=include_related,
-        )
+        if purpose_view is None:
+            included = _context_selection(
+                views,
+                document_id,
+                depth=depth,
+                include_related=include_related,
+            )
+        else:
+            included, view_omissions = _purpose_context_selection(
+                views, incoming, document_id, purpose_view
+            )
         forced: dict[str, list[str]] = {}
         for raw in includes or []:
             selected_id, selected_anchor = _selection(raw)
@@ -1561,16 +1759,33 @@ def context(
                 if document.metadata is not None
             }
             relevant_paths = {by_id[item].path for item in included}
-            blockers = [
-                issue
-                for issue in (
-                    *validate_metadata(catalog_value),
-                    *validate_adoption(catalog_value, config),
-                )
-                if issue.affects_graph
-                and issue.severity != "warning"
-                and issue.path in relevant_paths
-            ]
+            graph_issues = (
+                *validate_membership(catalog_value),
+                *validate_metadata(catalog_value, config),
+                *validate_adoption(catalog_value, config),
+            )
+            if purpose_view is not None and purpose_view.direction in {
+                "reverse",
+                "both",
+            }:
+                # An invalid document anywhere in the catalog can hide an
+                # incoming authored edge. Reverse answers therefore require a
+                # globally valid semantic graph, matching `dependencies
+                # --reverse`; forward-only selection remains scoped to the
+                # documents it actually traverses.
+                blockers = [
+                    issue
+                    for issue in graph_issues
+                    if issue.affects_graph and issue.severity != "warning"
+                ]
+            else:
+                blockers = [
+                    issue
+                    for issue in graph_issues
+                    if issue.affects_graph
+                    and issue.severity != "warning"
+                    and issue.path in relevant_paths
+                ]
             for selected_id in included:
                 document = by_id[selected_id]
                 blockers.extend(
@@ -1606,6 +1821,8 @@ def context(
                 document_id,
                 depth=depth,
                 include_related=include_related,
+                purpose_view=purpose_view,
+                view_omissions=view_omissions,
             )
         return _emit_context_outline_text(
             config,
@@ -1615,6 +1832,8 @@ def context(
             document_id,
             depth=depth,
             include_related=include_related,
+            purpose_view=purpose_view,
+            view_omissions=view_omissions,
         )
     plans, mismatches, extra_notes, assumed_known_omitted = _build_packet_plans(
         views,
@@ -1637,6 +1856,8 @@ def context(
             mismatches=mismatches,
             assumed_known_omitted=assumed_known_omitted,
             assume_known_used=bool(assume_known),
+            purpose_view=purpose_view,
+            view_omissions=view_omissions,
         )
     out: list[str] = []
     explicit_count = 0
@@ -1645,6 +1866,11 @@ def context(
     out.append("")
     out.append(f"- Dependency depth: {depth}")
     out.append(f"- Related traversal: {'included' if include_related else 'omitted'}")
+    if purpose_view is not None:
+        out.append(
+            f"- Purpose view: {purpose_view.name} (tier {purpose_view.tier}, "
+            f"{purpose_view.direction}, authored)"
+        )
     for selected_id in ordered:
         view = views[selected_id]
         plan = plans.get(selected_id)
@@ -1696,9 +1922,16 @@ def context(
         document_id,
         include_related=include_related,
         extra_notes=extra_notes,
+        view_omissions=view_omissions,
     ):
         out.append(f"- {note}")
-    out.append("- Expand with --depth, --include-related, or --include ID#anchor.")
+    if purpose_view is None:
+        out.append("- Expand with --depth, --include-related, or --include ID#anchor.")
+    else:
+        out.append(
+            "- Expand with --include ID#anchor, another configured view, or an "
+            "explicit/full read."
+        )
     body = "\n".join(out) + "\n"
     line_count = body.count("\n")
     byte_count = len(body.encode("utf-8"))
@@ -1725,7 +1958,7 @@ def impact(project_root: Path, document_id: str) -> int:
                 issue
                 for issue in (
                     *validate_membership(catalog_value),
-                    *validate_metadata(catalog_value),
+                    *validate_metadata(catalog_value, config),
                     *validate_adoption(catalog_value, config),
                 )
                 if issue.affects_graph and issue.severity != "warning"
@@ -1753,11 +1986,13 @@ def impact(project_root: Path, document_id: str) -> int:
     print("|---|---|---|---|")
     edges = incoming.get(document_id, ())
     for edge in edges:
-        source_type = views[edge.peer_id].document_type
         if edge.relation == "related":
             classification = "related navigation"
         elif edge.relation == "validated_against":
-            if source_type in config.snapshot_document_types:
+            source = views[edge.peer_id]
+            if is_historical_snapshot(
+                config, source.document_type, source.status
+            ):
                 classification = "historical snapshot"
             elif edge.expected_revision == target.revision:
                 classification = "freshness pin (current)"
@@ -2198,7 +2433,36 @@ def _report_body(
                     ensure_ascii=False,
                     sort_keys=True,
                 ),
+                "relations.snapshot_rules = "
+                + json.dumps(
+                    [
+                        {
+                            "source_type": rule.source_type,
+                            "source_status": rule.source_status,
+                        }
+                        for rule in config.snapshot_rules
+                    ],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
                 f'projection.format = "{config.projection_format}"',
+                "context.views = "
+                + json.dumps(
+                    [
+                        {
+                            "name": view.name,
+                            "tier": view.tier,
+                            "delivery": view.delivery,
+                            "direction": view.direction,
+                            "depth": view.depth,
+                            "relations": list(view.relations),
+                            "layers": list(view.layers),
+                        }
+                        for view in config.context_views
+                    ],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
             )
         )
         affected.extend(
@@ -2662,7 +2926,7 @@ def dependencies(project_root: Path, document_id: str, *, reverse: bool = False)
         config = load_config(project_root)
         markdown_catalog = build_catalog(config)
         document = find_document(markdown_catalog, document_id)
-        metadata_issues = validate_metadata(markdown_catalog)
+        metadata_issues = validate_metadata(markdown_catalog, config)
         relevant_issues = (
             (*validate_membership(markdown_catalog), *metadata_issues)
             if reverse
@@ -2799,7 +3063,7 @@ def _references_direct(
         return None
     all_graph_issues = (
         *validate_membership(markdown_catalog),
-        *validate_metadata(markdown_catalog),
+        *validate_metadata(markdown_catalog, config),
         *validate_adoption(markdown_catalog, config),
     )
     relevant_issues = (
@@ -3084,7 +3348,7 @@ def _change_plan_direct(
         return None
     all_graph_issues = (
         *validate_membership(markdown_catalog),
-        *validate_metadata(markdown_catalog),
+        *validate_metadata(markdown_catalog, config),
         *validate_adoption(markdown_catalog, config),
     )
     blockers = tuple(
@@ -3580,7 +3844,7 @@ def maintenance(
                 issue
                 for issue in (
                     *validate_membership(catalog_value),
-                    *validate_metadata(catalog_value),
+                    *validate_metadata(catalog_value, config),
                     *validate_adoption(catalog_value, config),
                 )
                 if issue.affects_graph and issue.severity != "warning"
@@ -4066,6 +4330,18 @@ def show_config(project_root: Path) -> int:
     print(f"relations.legacy_paths={config.legacy_relation_mode}")
     for document_type in config.snapshot_document_types:
         print(f"relations.snapshot_type={document_type}")
+    for rule in config.snapshot_rules:
+        print(
+            "relations.snapshot_rule="
+            f"source_type:{rule.source_type or '-'},"
+            f"source_status:{rule.source_status or '-'}"
+        )
+    for view in config.context_views:
+        print(
+            f"context.view.{view.name}=tier:{view.tier},delivery:{view.delivery},"
+            f"direction:{view.direction},depth:{view.depth},"
+            f"relations:{','.join(view.relations) or '-'},layers:{','.join(view.layers)}"
+        )
     print(f"projection.format={config.projection_format}")
     print(f"projection.keep_generations={config.keep_generations}")
     return 0
@@ -4087,6 +4363,16 @@ def _agent_instructions_text(selection: _Selection, config: ProjectConfig) -> st
         out.append(f"- {role} -> {path.as_posix()}")
     for role, prefix in sorted(config.identifiers.items()):
         out.append(f"- {prefix} ({role})")
+    if config.context_views:
+        out.append("")
+        out.append("Configured purpose context views:")
+        out.append("")
+        for view in config.context_views:
+            out.append(
+                f"- {view.name}: tier {view.tier}, {view.delivery}, "
+                f"{view.direction}, depth {view.depth}, authored relations "
+                f"{','.join(view.relations) or 'none'}"
+            )
     out.append("")
     out.append("Agent rules:")
     out.append("")
@@ -4103,9 +4389,16 @@ def _agent_instructions_text(selection: _Selection, config: ProjectConfig) -> st
         "human-readable text output."
     )
     out.append(
-        "- Expand context with `--depth`, `--include` or `--include-related` "
-        "instead of assuming an omitted document or section is irrelevant."
+        "- Without a configured view, expand context with `--depth`, `--include` "
+        "or `--include-related` instead of assuming an omitted document or "
+        "section is irrelevant."
     )
+    if config.context_views:
+        out.append(
+            "- Prefer the lowest configured `docsystem context --view NAME` tier "
+            "that fits the task, inspect every `view_omissions` row, and expand "
+            "on demand rather than treating a view as an access boundary."
+        )
     out.append(
         "- If an additional read materially changes the plan, scope, decision, "
         "verification or result, finish the task and draft a sanitized "
@@ -4325,8 +4618,9 @@ def build_parser() -> argparse.ArgumentParser:
     context_parser.add_argument("document_id")
     context_parser.add_argument("project", nargs="?", type=Path, default=Path.cwd())
     context_parser.add_argument("--anchor")
-    context_parser.add_argument("--depth", type=int, choices=range(0, 6), default=1)
-    context_parser.add_argument("--include-related", action="store_true")
+    context_parser.add_argument("--depth", type=int, choices=range(0, 6))
+    context_parser.add_argument("--include-related", action="store_true", default=None)
+    context_parser.add_argument("--view", dest="view_name")
     context_parser.add_argument("--include", action="append", default=[])
     context_parser.add_argument(
         "--json",
@@ -4337,6 +4631,7 @@ def build_parser() -> argparse.ArgumentParser:
     context_parser.add_argument(
         "--outline",
         action="store_true",
+        default=None,
         help=(
             "Print section size maps instead of content; combine with --json "
             "for the structured form. Cannot combine with --anchor or --include."
@@ -4652,6 +4947,7 @@ def main() -> int:
             outline=args.outline,
             assume_known=args.assume_known,
             since=args.since,
+            view_name=args.view_name,
         )
     if args.command == "impact":
         return impact(project, args.document_id)

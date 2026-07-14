@@ -202,7 +202,7 @@ def workspace_list(project: str, workspace: str | None = None) -> dict:
 def context(
     project: str,
     document_id: str,
-    depth: int = 1,
+    depth: int | None = None,
     include_related: bool = False,
     include: list[str] | None = None,
     anchor: str | None = None,
@@ -211,13 +211,18 @@ def context(
     since: str | None = None,
     source: str | None = None,
     workspace: str | None = None,
+    view: str | None = None,
 ) -> dict:
     """Build a deterministic, inspectable context packet for a document.
 
     Read-only. The packet reports exactly what was included and omitted —
     never a silent token-budget truncation. Expand coverage with `depth`,
     `include_related` or explicit `include` selections (`ID` or `ID#anchor`)
-    instead of assuming omitted material is irrelevant. Set `outline` for a
+    instead of assuming omitted material is irrelevant. Set `view` to a
+    project-authored purpose view; it supplies delivery, direction, depth and
+    authored relation filters and returns every filtered/depth-stopped edge in
+    `view_omissions`. A view cannot combine with the manual `depth`,
+    `include_related` or `outline` controls. Set `outline` for a
     map-first packet of per-section `lines`/`bytes` sizes with no document
     content, to budget tokens before fetching; `outline` cannot combine with
     `anchor` or `include`. Declare documents already held with
@@ -232,7 +237,15 @@ def context(
     and `workspace` select a registered workspace source instead of `project`.
     """
 
-    arguments = ["context", document_id, project, "--depth", str(depth), "--json"]
+    if view is not None and (depth is not None or include_related or outline):
+        raise ValueError(
+            "view cannot combine with depth, include_related or outline"
+        )
+    arguments = ["context", document_id, project, "--json"]
+    if view is not None:
+        arguments.extend(["--view", view])
+    elif depth is not None:
+        arguments.extend(["--depth", str(depth)])
     if include_related:
         arguments.append("--include-related")
     if anchor is not None:

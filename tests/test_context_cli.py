@@ -6,6 +6,7 @@ from docsystem.cli import (
     context,
     dependencies,
     doctor,
+    impact,
     index_projection,
     read_document,
     validate,
@@ -68,6 +69,314 @@ Other text.
 """,
         encoding="utf-8",
     )
+
+
+def configured_context_views(tmp_path: Path) -> None:
+    configured_documents(tmp_path)
+    area = tmp_path / "plan" / "architecture"
+    readme = area / "README.md"
+    readme.write_text(
+        readme.read_text(encoding="utf-8") + "\n[Downstream](downstream.md)\n",
+        encoding="utf-8",
+    )
+    (area / "downstream.md").write_text(
+        """\
+---
+id: DOC-003
+revision: 1
+depends_on: [DOC-002]
+---
+# Downstream
+
+Downstream summary.
+""",
+        encoding="utf-8",
+    )
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8")
+        + """
+[context.views.map]
+tier = 1
+delivery = "outline"
+direction = "both"
+depth = 0
+relations = []
+layers = ["authored"]
+
+[context.views.task]
+tier = 2
+delivery = "navigation"
+direction = "forward"
+depth = 1
+relations = ["depends_on"]
+layers = ["authored"]
+
+[context.views.downstream]
+tier = 3
+delivery = "navigation"
+direction = "reverse"
+depth = 1
+relations = ["depends_on"]
+layers = ["authored"]
+
+[context.views.boundary]
+tier = 4
+delivery = "navigation"
+direction = "forward"
+depth = 0
+relations = ["depends_on"]
+layers = ["authored"]
+
+[context.views.both]
+tier = 5
+delivery = "navigation"
+direction = "both"
+depth = 1
+relations = ["depends_on"]
+layers = ["authored"]
+""",
+        encoding="utf-8",
+    )
+
+
+def test_purpose_context_views_expose_policy_and_omissions(
+    tmp_path: Path, capsys
+) -> None:
+    configured_context_views(tmp_path)
+
+    assert context(tmp_path, "DOC-002", view_name="map", json_output=True) == 0
+    capsys.readouterr()  # Direct fallback warning plus payload are tested below.
+    assert context(tmp_path, "DOC-002", view_name="map", json_output=True) == 0
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["outline"] is True
+    assert payload["purpose_view"] == {
+        "name": "map",
+        "tier": 1,
+        "delivery": "outline",
+        "direction": "both",
+        "depth": 0,
+        "relations": [],
+        "layers": ["authored"],
+    }
+    assert [item["id"] for item in payload["documents"]] == ["DOC-002"]
+    assert payload["view_omissions"] == [
+        {
+            "source_id": "DOC-002",
+            "direction": "forward",
+            "relation": "depends_on",
+            "peer_id": "DOC-001",
+            "reason": "relation-filter",
+        },
+        {
+            "source_id": "DOC-002",
+            "direction": "forward",
+            "relation": "validated_against",
+            "peer_id": "DOC-001",
+            "reason": "relation-filter",
+        },
+        {
+            "source_id": "DOC-002",
+            "direction": "reverse",
+            "relation": "depends_on",
+            "peer_id": "DOC-003",
+            "reason": "relation-filter",
+        },
+    ]
+    assert "Selected text." not in captured.out
+
+    assert context(tmp_path, "DOC-002", view_name="task", json_output=True) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert [item["id"] for item in payload["documents"]] == ["DOC-002", "DOC-001"]
+    assert payload["view_omissions"] == [
+        {
+            "source_id": "DOC-002",
+            "direction": "forward",
+            "relation": "validated_against",
+            "peer_id": "DOC-001",
+            "reason": "relation-filter",
+        }
+    ]
+
+    assert context(
+        tmp_path,
+        "DOC-002",
+        view_name="task",
+        includes=["DOC-002#other"],
+        json_output=True,
+    ) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["documents"][0]["explicit_sections"] == [
+        {"anchor": "other", "content": "## Other\n\nOther text."}
+    ]
+
+    assert context(tmp_path, "DOC-001", view_name="downstream", json_output=True) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert [item["id"] for item in payload["documents"]] == ["DOC-001", "DOC-002"]
+    assert payload["documents"][1]["relations"] == ["reverse:depends_on"]
+
+    assert context(tmp_path, "DOC-002", view_name="both", json_output=True) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert [item["id"] for item in payload["documents"]] == [
+        "DOC-002",
+        "DOC-001",
+        "DOC-003",
+    ]
+    assert payload["documents"][1]["relations"] == ["depends_on"]
+    assert payload["documents"][2]["relations"] == ["reverse:depends_on"]
+
+    assert context(tmp_path, "DOC-002", view_name="boundary", json_output=True) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert [item["id"] for item in payload["documents"]] == ["DOC-002"]
+    assert payload["view_omissions"] == [
+        {
+            "source_id": "DOC-002",
+            "direction": "forward",
+            "relation": "depends_on",
+            "peer_id": "DOC-001",
+            "reason": "depth-limit",
+        },
+        {
+            "source_id": "DOC-002",
+            "direction": "forward",
+            "relation": "validated_against",
+            "peer_id": "DOC-001",
+            "reason": "relation-filter",
+        },
+    ]
+
+
+def test_purpose_view_direct_and_projection_output_are_identical(
+    tmp_path: Path, capsys
+) -> None:
+    configured_context_views(tmp_path)
+
+    assert context(tmp_path, "DOC-002", view_name="task") == 0
+    direct_text = capsys.readouterr().out
+    assert "Purpose view: task (tier 2, forward, authored)" in direct_text
+    assert (
+        "View omitted: DOC-002 forward validated_against DOC-001 "
+        "(relation-filter)"
+    ) in direct_text
+    assert context(tmp_path, "DOC-002", view_name="task", json_output=True) == 0
+    direct_json = capsys.readouterr().out
+    assert index_projection(tmp_path, write=True) == 0
+    capsys.readouterr()
+    assert context(tmp_path, "DOC-002", view_name="task") == 0
+    projected_text = capsys.readouterr()
+    assert projected_text.err == ""
+    assert projected_text.out == direct_text
+    assert context(tmp_path, "DOC-002", view_name="task", json_output=True) == 0
+    projected_json = capsys.readouterr()
+    assert projected_json.err == ""
+    assert projected_json.out == direct_json
+
+
+def test_context_view_policy_change_invalidates_projection(
+    tmp_path: Path, capsys
+) -> None:
+    configured_context_views(tmp_path)
+    assert index_projection(tmp_path, write=True) == 0
+    capsys.readouterr()
+
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            '[context.views.task]\ntier = 2\ndelivery = "navigation"\n'
+            'direction = "forward"',
+            '[context.views.task]\ntier = 2\ndelivery = "navigation"\n'
+            'direction = "reverse"',
+        ),
+        encoding="utf-8",
+    )
+
+    assert context(tmp_path, "DOC-002", view_name="task", json_output=True) == 0
+    captured = capsys.readouterr()
+    assert "projection stale: configuration changed" in captured.err
+    payload = json.loads(captured.out)
+    assert payload["purpose_view"]["direction"] == "reverse"
+    assert [item["id"] for item in payload["documents"]] == ["DOC-002", "DOC-003"]
+
+
+def test_purpose_views_fail_closed_for_unknown_or_conflicting_controls(
+    tmp_path: Path, capsys
+) -> None:
+    configured_context_views(tmp_path)
+
+    assert context(tmp_path, "DOC-002", view_name="missing") == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "context view not found: missing" in captured.err
+
+    assert context(tmp_path, "DOC-002", view_name="task", depth=1) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "cannot combine --view with --depth" in captured.err
+
+    assert context(
+        tmp_path,
+        "DOC-002",
+        view_name="map",
+        includes=["DOC-001#index-details"],
+    ) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "cannot combine outline delivery with --anchor or --include" in captured.err
+
+    args = build_parser().parse_args(
+        ["context", "DOC-002", str(tmp_path), "--view", "task", "--json"]
+    )
+    assert args.view_name == "task"
+    assert args.depth is None
+    assert args.include_related is None
+    assert args.outline is None
+
+
+def test_reverse_purpose_view_requires_a_complete_catalog_graph(
+    tmp_path: Path, capsys
+) -> None:
+    configured_context_views(tmp_path)
+    area = tmp_path / "plan" / "architecture"
+    (area / "broken.md").write_text(
+        """\
+---
+id: DOC-004
+revision: 1
+depends_on: [DOC-999]
+---
+# Broken
+""",
+        encoding="utf-8",
+    )
+    readme = area / "README.md"
+    readme.write_text(
+        readme.read_text(encoding="utf-8") + "\n[Broken](broken.md)\n",
+        encoding="utf-8",
+    )
+
+    assert context(tmp_path, "DOC-001", view_name="downstream") == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "metadata.depends_on references unknown ID DOC-999" in captured.err
+
+    # A forward-only answer remains scoped to its selected source graph.
+    assert context(tmp_path, "DOC-002", view_name="task") == 0
+    assert "Context packet: DOC-002" in capsys.readouterr().out
+
+
+def test_purpose_view_text_recommends_compatible_expansion(tmp_path: Path, capsys) -> None:
+    configured_context_views(tmp_path)
+
+    assert context(tmp_path, "DOC-002", view_name="map") == 0
+    outline = capsys.readouterr().out
+    assert "Expand with another configured view" in outline
+    assert "drop --outline" not in outline
+
+    assert context(tmp_path, "DOC-002", view_name="task") == 0
+    navigation = capsys.readouterr().out
+    assert "Expand with --include ID#anchor, another configured view" in navigation
+    assert "Expand with --depth" not in navigation
 
 
 def test_read_document_supports_full_navigation_and_section(
@@ -162,6 +471,58 @@ def test_stale_pin_warns_without_failing_validation(tmp_path: Path, capsys) -> N
     assert "WARNING: architecture/context.md:" in captured.err
     assert "DOC-001@3 is stale" in captured.err
     assert captured.out == "Markdown navigation is valid.\n"
+
+
+def test_completed_roadmap_snapshot_rule_preserves_pin_without_warning(
+    tmp_path: Path, capsys
+) -> None:
+    configured_documents(tmp_path)
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "snapshot_rules = []",
+            'snapshot_rules = [{ source_type = "roadmap", '
+            'source_status = "completed" }]',
+        ),
+        encoding="utf-8",
+    )
+    source = tmp_path / "plan" / "architecture" / "context.md"
+    source.write_text(
+        source.read_text(encoding="utf-8")
+        .replace("revision: 1", "revision: 1\ntype: roadmap\nstatus: completed")
+        .replace("DOC-001@3", "DOC-001@2"),
+        encoding="utf-8",
+    )
+
+    assert validate(tmp_path) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "Markdown navigation is valid.\n"
+    assert captured.err == ""
+
+    assert context(tmp_path, "DOC-002", depth=1, json_output=True) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["freshness"] == [
+        {
+            "source_id": "DOC-002",
+            "target_id": "DOC-001",
+            "pinned_revision": 2,
+            "current_revision": 3,
+            "classification": "historical snapshot",
+        }
+    ]
+
+    assert impact(tmp_path, "DOC-001") == 0
+    report = capsys.readouterr().out
+    assert "| `DOC-002` | validated_against | 2 | historical snapshot |" in report
+
+    source.write_text(
+        source.read_text(encoding="utf-8").replace(
+            "status: completed", "status: active"
+        ),
+        encoding="utf-8",
+    )
+    assert validate(tmp_path) == 0
+    assert "DOC-001@2 is stale" in capsys.readouterr().err
 
 
 def test_forward_dependencies_fail_closed_for_source_graph_errors(

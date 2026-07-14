@@ -16,6 +16,10 @@ MAINTENANCE_ROLES = frozenset(
     {"current", "historical", "example", "snapshot", "unmanaged"}
 )
 MAINTENANCE_TARGET_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+CONTEXT_VIEW_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
+CONTEXT_VIEW_RELATIONS = frozenset(
+    {"derived_from", "depends_on", "validated_against", "related", "supersedes"}
+)
 DEFAULT_CONFIG = """\
 version = 1
 
@@ -47,6 +51,7 @@ extend_through = []
 [relations]
 legacy_paths = "strict"
 snapshot_types = []
+snapshot_rules = []
 
 [projection]
 format = "sharded-json"
@@ -82,6 +87,33 @@ class MaintenanceTarget:
 
 
 @dataclass(frozen=True)
+class ContextView:
+    """One authored, purpose-specific view over semantic dependency edges."""
+
+    name: str
+    tier: int
+    delivery: str
+    direction: str
+    depth: int
+    relations: tuple[str, ...]
+    layers: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SnapshotRule:
+    """Project policy that classifies pins owned by matching documents."""
+
+    source_type: str | None = None
+    source_status: str | None = None
+
+    def matches(self, document_type: str | None, status: str | None) -> bool:
+        return (
+            (self.source_type is None or self.source_type == document_type)
+            and (self.source_status is None or self.source_status == status)
+        )
+
+
+@dataclass(frozen=True)
 class ProjectConfig:
     project_root: Path
     documentation_root: Path
@@ -94,7 +126,9 @@ class ProjectConfig:
     navigation_extend_through: tuple[str, ...] = ()
     legacy_relation_mode: str = "strict"
     snapshot_document_types: tuple[str, ...] = ()
+    snapshot_rules: tuple[SnapshotRule, ...] = ()
     maintenance_targets: tuple[MaintenanceTarget, ...] = ()
+    context_views: tuple[ContextView, ...] = ()
 
 
 def _relative_path(value: object, field: str) -> PurePosixPath:
@@ -165,9 +199,56 @@ def _navigation_anchors(raw: object) -> tuple[str, ...]:
     return tuple(anchors)
 
 
-def _relations_policy(raw: object) -> tuple[str, tuple[str, ...]]:
+def _snapshot_rules(raw: object) -> tuple[SnapshotRule, ...]:
     if raw is None:
-        return "strict", ()
+        return ()
+    if not isinstance(raw, list):
+        raise ValueError("relations.snapshot_rules must be a list of tables")
+
+    rules: list[SnapshotRule] = []
+    seen: set[tuple[str | None, str | None]] = set()
+    for index, entry in enumerate(raw):
+        field = f"relations.snapshot_rules[{index}]"
+        if not isinstance(entry, dict):
+            raise ValueError(f"{field} must be a table")
+        unknown = set(entry) - {"source_type", "source_status"}
+        if unknown:
+            raise ValueError(
+                f"{field} has unknown key(s): {', '.join(sorted(unknown))}"
+            )
+        source_type = entry.get("source_type")
+        source_status = entry.get("source_status")
+        if source_type is None and source_status is None:
+            raise ValueError(
+                f"{field} must define source_type, source_status, or both"
+            )
+        for name, value in (
+            ("source_type", source_type),
+            ("source_status", source_status),
+        ):
+            if value is not None and (
+                not isinstance(value, str) or not value.strip()
+            ):
+                raise ValueError(f"{field}.{name} must be a non-empty string")
+        source_type = source_type.strip() if source_type is not None else None
+        source_status = (
+            source_status.strip() if source_status is not None else None
+        )
+        key = (source_type, source_status)
+        if key in seen:
+            raise ValueError(
+                f"relations.snapshot_rules contains duplicate rule {key!r}"
+            )
+        seen.add(key)
+        rules.append(SnapshotRule(source_type, source_status))
+    return tuple(rules)
+
+
+def _relations_policy(
+    raw: object,
+) -> tuple[str, tuple[str, ...], tuple[SnapshotRule, ...]]:
+    if raw is None:
+        return "strict", (), ()
     if not isinstance(raw, dict):
         raise ValueError("relations must be a table")
     mode = raw.get("legacy_paths", "strict")
@@ -182,7 +263,102 @@ def _relations_policy(raw: object) -> tuple[str, tuple[str, ...]]:
         raise ValueError("relations.snapshot_types must be a list of non-empty strings")
     if len(set(types)) != len(types):
         raise ValueError("relations.snapshot_types must be unique")
-    return mode, tuple(types)
+    return mode, tuple(types), _snapshot_rules(raw.get("snapshot_rules"))
+
+
+def is_historical_snapshot(
+    config: ProjectConfig,
+    document_type: str | None,
+    status: str | None,
+) -> bool:
+    """Return whether a pin owned by this document is historical policy."""
+
+    return document_type in config.snapshot_document_types or any(
+        rule.matches(document_type, status) for rule in config.snapshot_rules
+    )
+
+
+def _context_views(raw: object) -> tuple[ContextView, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, dict):
+        raise ValueError("context must be a table")
+    unknown_context = set(raw) - {"views"}
+    if unknown_context:
+        raise ValueError(
+            "context has unknown key(s): " + ", ".join(sorted(unknown_context))
+        )
+    views = raw.get("views", {})
+    if not isinstance(views, dict):
+        raise ValueError("context.views must be a table")
+
+    result: list[ContextView] = []
+    seen_tiers: set[int] = set()
+    for name, entry in views.items():
+        field = f"context.views.{name}"
+        if not isinstance(name, str) or not CONTEXT_VIEW_NAME_PATTERN.fullmatch(name):
+            raise ValueError(f"{field} has an invalid view name")
+        if not isinstance(entry, dict):
+            raise ValueError(f"{field} must be a table")
+        required = {"tier", "delivery", "direction", "depth", "relations", "layers"}
+        missing = required - set(entry)
+        unknown = set(entry) - required
+        if missing:
+            raise ValueError(
+                f"{field} is missing required key(s): {', '.join(sorted(missing))}"
+            )
+        if unknown:
+            raise ValueError(
+                f"{field} has unknown key(s): {', '.join(sorted(unknown))}"
+            )
+
+        tier = entry["tier"]
+        if not isinstance(tier, int) or isinstance(tier, bool) or not 1 <= tier <= 99:
+            raise ValueError(f"{field}.tier must be an integer between 1 and 99")
+        if tier in seen_tiers:
+            raise ValueError(f"context view tier is duplicated: {tier}")
+        seen_tiers.add(tier)
+
+        delivery = entry["delivery"]
+        if delivery not in {"outline", "navigation"}:
+            raise ValueError(f"{field}.delivery must be 'outline' or 'navigation'")
+        direction = entry["direction"]
+        if direction not in {"forward", "reverse", "both"}:
+            raise ValueError(
+                f"{field}.direction must be 'forward', 'reverse' or 'both'"
+            )
+        depth = entry["depth"]
+        if not isinstance(depth, int) or isinstance(depth, bool) or not 0 <= depth <= 5:
+            raise ValueError(f"{field}.depth must be an integer between 0 and 5")
+
+        relations = entry["relations"]
+        if not isinstance(relations, list) or any(
+            not isinstance(item, str) or item not in CONTEXT_VIEW_RELATIONS
+            for item in relations
+        ):
+            raise ValueError(
+                f"{field}.relations must contain only supported semantic relations"
+            )
+        if len(set(relations)) != len(relations):
+            raise ValueError(f"{field}.relations must be unique")
+
+        layers = entry["layers"]
+        if layers != ["authored"]:
+            raise ValueError(
+                f"{field}.layers must currently be exactly ['authored']"
+            )
+        result.append(
+            ContextView(
+                name=name,
+                tier=tier,
+                delivery=delivery,
+                direction=direction,
+                depth=depth,
+                relations=tuple(relations),
+                layers=("authored",),
+            )
+        )
+    return tuple(sorted(result, key=lambda item: (item.tier, item.name)))
 
 
 def _maintenance_id(value: object, field: str, prefixes: frozenset[str]) -> str:
@@ -334,12 +510,15 @@ def load_config(project_root: Path) -> ProjectConfig:
 
     catalog_exclusions = _catalog_exclusions(raw.get("catalog"))
     navigation_extend_through = _navigation_anchors(raw.get("navigation"))
-    legacy_relation_mode, snapshot_document_types = _relations_policy(
-        raw.get("relations")
-    )
+    (
+        legacy_relation_mode,
+        snapshot_document_types,
+        snapshot_rules,
+    ) = _relations_policy(raw.get("relations"))
     maintenance_targets = _maintenance_targets(
         raw.get("maintenance"), frozenset(normalized_identifiers.values())
     )
+    context_views = _context_views(raw.get("context"))
 
     projection_format = projection.get("format")
     if projection_format != "sharded-json":
@@ -360,5 +539,7 @@ def load_config(project_root: Path) -> ProjectConfig:
         navigation_extend_through=navigation_extend_through,
         legacy_relation_mode=legacy_relation_mode,
         snapshot_document_types=snapshot_document_types,
+        snapshot_rules=snapshot_rules,
         maintenance_targets=maintenance_targets,
+        context_views=context_views,
     )

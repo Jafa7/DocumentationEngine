@@ -21,7 +21,13 @@ from docsystem.cli import (
     report_draft,
     validate,
 )
-from docsystem.config import CONFIG_FILENAME, DEFAULT_CONFIG, load_config
+from docsystem.config import (
+    CONFIG_FILENAME,
+    DEFAULT_CONFIG,
+    ContextView,
+    SnapshotRule,
+    load_config,
+)
 from docsystem.projection import build_projection, config_fingerprint, write_projection
 
 
@@ -168,13 +174,13 @@ def test_legacy_adoption_diagnostics_are_concise_or_verbose(
     concise = capsys.readouterr().err
     assert "2 legacy relation values resolve to stable IDs" in concise
     assert "2 legacy relation values remain resource/outside boundaries" in concise
-    assert "DOC-002@1 is stale" in concise
+    assert "DOC-002@1 is stale" not in concise
     assert "legacy metadata.depends_on value 'README.md'" not in concise
 
     assert doctor(tmp_path) == 0
     doctor_concise = capsys.readouterr().err
     assert "2 legacy relation values resolve to stable IDs" in doctor_concise
-    assert "DOC-002@1 is stale" in doctor_concise
+    assert "DOC-002@1 is stale" not in doctor_concise
 
     assert validate(tmp_path, verbose_adoption=True) == 0
     verbose = capsys.readouterr().err
@@ -339,6 +345,26 @@ def test_config_fingerprint_covers_projection_relevant_fields(
         "legacy_relation_mode": replace(base, legacy_relation_mode="strict"),
         "snapshot_document_types": replace(
             base, snapshot_document_types=("review",)
+        ),
+        "snapshot_rules": replace(
+            base,
+            snapshot_rules=(
+                SnapshotRule(source_type="roadmap", source_status="completed"),
+            ),
+        ),
+        "context_views": replace(
+            base,
+            context_views=(
+                ContextView(
+                    name="task",
+                    tier=1,
+                    delivery="navigation",
+                    direction="forward",
+                    depth=1,
+                    relations=("depends_on",),
+                    layers=("authored",),
+                ),
+            ),
         ),
         "projection_format": replace(base, projection_format="other-json"),
     }
@@ -841,6 +867,20 @@ def test_report_draft_is_privacy_safe_and_read_only(
     project = tmp_path / "project"
     project.mkdir()
     vertical_project(project)
+    config_path = project / CONFIG_FILENAME
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8")
+        + """
+[context.views.task]
+tier = 1
+delivery = "navigation"
+direction = "forward"
+depth = 1
+relations = ["depends_on"]
+layers = ["authored"]
+""",
+        encoding="utf-8",
+    )
     monkeypatch.chdir(tmp_path)
 
     assert (
@@ -866,6 +906,8 @@ def test_report_draft_is_privacy_safe_and_read_only(
     assert "Private document bodies are omitted or sanitized" in output
     assert "Runtime or local-state changes made" in output
     assert "none; report draft is read-only" in output
+    assert '"name": "task"' in output
+    assert '"relations": ["depends_on"]' in output
 
 
 def test_report_draft_writes_output_and_handles_config_errors(

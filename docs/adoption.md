@@ -37,15 +37,43 @@ extend_through = ["резюме", "содержание", "summary", "contents"]
 [relations]
 legacy_paths = "resolve-with-warning"
 snapshot_types = ["review", "experiment"]
+snapshot_rules = [
+  { source_type = "roadmap", source_status = "completed" },
+]
 
 [projection]
 format = "sharded-json"
 keep_generations = 2
+
+[context.views.map]
+tier = 1
+delivery = "outline"
+direction = "both"
+depth = 0
+relations = []
+layers = ["authored"]
+
+[context.views.task]
+tier = 2
+delivery = "navigation"
+direction = "forward"
+depth = 1
+relations = ["depends_on", "derived_from", "validated_against"]
+layers = ["authored"]
 ```
 
 Area `.` owns root-level Markdown and is the fallback below the documentation
 root; more specific areas win. Exclusions are evaluated before parsing, so
 templates cannot create metadata or duplicate-ID errors.
+
+Context views are optional and must reflect the adopter's own task model. Use
+the lowest suitable tier, inspect `view_omissions`, and expand on demand. They
+do not replace full access or authorize an agent to ignore a filtered edge.
+
+Snapshot rules are also project policy. Use a type-wide `snapshot_types` entry
+only when every document of that type is historical; use `snapshot_rules` to
+match a narrower type/status lifecycle. Do not classify active planning pins
+as historical merely to remove useful freshness diagnostics.
 
 Run the adoption sequence without editing source files:
 
@@ -57,6 +85,8 @@ docsystem validate . --verbose-adoption
 docsystem migration-report .
 docsystem migrate .
 docsystem context PDOC-001 . --depth 1
+docsystem context PDOC-001 . --view map --json
+docsystem context PDOC-001 . --view task --json
 docsystem impact PDOC-001 .
 docsystem finish PDOC-001 .
 docsystem report draft . --project-name "Adopter Project" --type adoption-finding --source codex

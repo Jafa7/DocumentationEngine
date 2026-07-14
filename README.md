@@ -243,6 +243,7 @@ docsystem context DOC-001 . --depth 1
 docsystem context DOC-001 . --depth 1 --json
 docsystem context DOC-001 . --outline
 docsystem context DOC-001 . --outline --json
+docsystem context DOC-001 . --view task --json
 docsystem context DOC-001 . --assume-known DOC-001@3
 docsystem context DOC-001 . --since 0a1b2c3d4e5f
 docsystem impact DOC-001 .
@@ -326,6 +327,35 @@ If no configured anchor exists in a document, the original prefix before the
 first H2 is returned. A configured anchor resolving to another heading level
 is an error.
 
+Projects may define progressive, purpose-specific authored context views:
+
+```toml
+[context.views.map]
+tier = 1
+delivery = "outline"
+direction = "both"
+depth = 0
+relations = []
+layers = ["authored"]
+
+[context.views.task]
+tier = 2
+delivery = "navigation"
+direction = "forward"
+depth = 1
+relations = ["depends_on", "derived_from", "validated_against"]
+layers = ["authored"]
+```
+
+`context ID PROJECT --view NAME` applies that policy and emits the selected
+view plus every edge stopped by `relation-filter` or `depth-limit`. View names
+and tiers are stable project policy. The only currently supported layer is
+`authored`; observed links and generated containment remain available through
+`references` but cannot silently enter a context view. A view replaces manual
+`--depth`, `--include-related` and `--outline`; navigation views still allow
+explicit `--include ID#anchor`. A view controls the initial packet, not access:
+agents can always request another section or the full Markdown source.
+
 `dependencies` reports deterministic forward or reverse semantic edges.
 It fails without partial stdout when metadata errors make the requested graph
 incomplete; stale revision warnings remain non-blocking.
@@ -395,6 +425,9 @@ Existing projects may opt into a migration bridge for relative path relations:
 [relations]
 legacy_paths = "resolve-with-warning"
 snapshot_types = ["review", "experiment"]
+snapshot_rules = [
+  { source_type = "roadmap", source_status = "completed" },
+]
 ```
 
 Strict stable-ID relations remain the default. In the compatibility mode,
@@ -407,6 +440,13 @@ blocking error until it is migrated to a stable ID or the project opts into
 `resolve-with-warning`. `migration-report` reports both resolved mappings and
 boundaries as a deterministic dry-run, independent of the current
 `relations.legacy_paths` mode, without editing Markdown.
+
+`snapshot_types` classifies every pin owned by the listed document types as
+historical. `snapshot_rules` is the narrower alternative: each rule matches
+the pin-owning document by optional `source_type`, `source_status`, or both.
+Matched stale pins remain visible as `historical snapshot` in context, impact
+and finish packets, but are not freshness warnings in `validate`, `doctor` or
+`readiness`. Unmatched pins retain normal stale-warning behavior.
 
 By default, `validate` and `doctor` summarize expected resolved mappings and
 resource boundaries by count while printing stale pins and other warnings
@@ -443,9 +483,10 @@ The default handoff stays byte-compatible when no classification is supplied.
 
 `agent-instructions` prints a deterministic Markdown snippet — naming the
 configured documentation root, language, areas and identifier namespaces plus
-the core agent rules (pass the project root explicitly, start with
-`readiness --json`, prefer `--json`, expand context deliberately, never run a
-mutating command without approval, follow local backup policy) — for pasting
+the configured purpose views and core agent rules (pass the project root
+explicitly, start with `readiness --json`, prefer `--json`, use the lowest
+suitable view, expand context deliberately, never run a mutating command
+without approval, follow local backup policy) — for pasting
 into an adopting project's `AGENTS.md`/`CLAUDE.md`. It is read-only, reads
 only project configuration and works even when the documentation root itself
 is missing, so the pasted snippet can never drift from
@@ -500,6 +541,13 @@ prefix, including YAML front matter. `context --outline` prints the same
 document set (`--depth` and `--include-related` still apply) with those
 section size tables instead of navigation excerpts or content — a cheap
 "map first, fetch second" packet.
+When `--view NAME` is selected, JSON adds `purpose_view` and deterministic
+`view_omissions`; text packets show the same policy and omission rows. Reverse
+view inclusions are labeled `reverse:RELATION`, so downstream context cannot be
+mistaken for an authored forward dependency. Reverse and bidirectional views
+fail closed unless the complete catalog semantic graph is valid; a broken
+document elsewhere could otherwise hide an incoming edge. Without `--view`,
+existing text and JSON output remain unchanged.
 `--outline` combines with `--json` for the structured form, but not with
 `--anchor` or `--include`, which select content the outline never returns.
 `context --assume-known ID@REV` (repeatable) lets an agent declare a document

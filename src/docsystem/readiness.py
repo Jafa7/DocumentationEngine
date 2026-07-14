@@ -87,7 +87,7 @@ def evaluate_readiness(
         for document in catalog.documents
         if document.metadata is not None
     }
-    metadata_issues = validate_metadata(catalog)
+    metadata_issues = validate_metadata(catalog, config)
     self_reference_errors = tuple(
         ValidationIssue(
             paths[item.source_id],

@@ -28,6 +28,11 @@ The adapter is deliberately a wrapper, not a second implementation:
   before fetching. `outline` cannot combine with `anchor` or `include` (the
   CLI rejects that combination, so the tool call raises like any other
   non-zero exit);
+- the `context` tool takes an optional `view` name. It maps to the project's
+  authored purpose view and returns `purpose_view` plus `view_omissions`.
+  `view` cannot combine with manual `depth`, `include_related` or `outline`;
+  explicit `anchor`/`include` remains available only when the view's delivery
+  is `navigation`;
 - the `context` tool also takes `assume_known: list[str] | None = None`
   (each value `ID@REV`, mapping to a repeated `--assume-known`) and `since:
   str | None = None` (mapping to `--since GENERATION`). `assume_known`

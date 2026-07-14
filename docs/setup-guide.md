@@ -149,6 +149,36 @@ format = "sharded-json"
 keep_generations = 2
 ```
 
+Optional AI-agent context tiers are authored project policy. Start small; do
+not copy view names or relations from another project without validating its
+workflow:
+
+```toml
+[context.views.map]
+tier = 1
+delivery = "outline"
+direction = "both"
+depth = 0
+relations = []
+layers = ["authored"]
+
+[context.views.task]
+tier = 2
+delivery = "navigation"
+direction = "forward"
+depth = 1
+relations = ["depends_on", "derived_from", "validated_against"]
+layers = ["authored"]
+```
+
+Every view requires all six fields. Names use lowercase letters, digits and
+hyphens; tiers are unique integers from 1 through 99; depth is 0 through 5;
+direction is `forward`, `reverse` or `both`; delivery is `outline` or
+`navigation`. Supported relations are `derived_from`, `depends_on`,
+`validated_against`, `related` and `supersedes`. `layers` must currently be
+exactly `["authored"]`; this prevents a project from assuming observed or
+generated edges are semantic context authority before that layer is supported.
+
 For an existing tree that still uses relative path relations, add the
 compatibility bridge only after understanding the migration boundary:
 
@@ -156,7 +186,17 @@ compatibility bridge only after understanding the migration boundary:
 [relations]
 legacy_paths = "resolve-with-warning"
 snapshot_types = ["review", "experiment"]
+snapshot_rules = [
+  { source_type = "roadmap", source_status = "completed" },
+]
 ```
+
+`snapshot_types` is a type-wide historical classification. Prefer a
+`snapshot_rules` entry when only a particular lifecycle state is historical.
+Every rule is a table with non-empty optional `source_type` and
+`source_status`; at least one must be present. Rules match the document that
+owns `validated_against`, not the pinned target. A matched stale pin remains
+inspectable as historical evidence but does not produce a freshness warning.
 
 **Check:**
 

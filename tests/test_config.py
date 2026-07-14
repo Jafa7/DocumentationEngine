@@ -14,7 +14,128 @@ def test_default_config_loads(tmp_path: Path) -> None:
     assert config.navigation_extend_through == ()
     assert config.legacy_relation_mode == "strict"
     assert config.snapshot_document_types == ()
+    assert config.snapshot_rules == ()
     assert config.projection_format == "sharded-json"
+    assert config.context_views == ()
+
+
+def test_context_views_are_validated_and_ordered_by_tier(tmp_path: Path) -> None:
+    config = DEFAULT_CONFIG + """
+[context.views.task]
+tier = 2
+delivery = "navigation"
+direction = "forward"
+depth = 1
+relations = ["depends_on", "derived_from", "validated_against"]
+layers = ["authored"]
+
+[context.views.map]
+tier = 1
+delivery = "outline"
+direction = "both"
+depth = 0
+relations = []
+layers = ["authored"]
+"""
+    (tmp_path / CONFIG_FILENAME).write_text(config, encoding="utf-8")
+
+    views = load_config(tmp_path).context_views
+    assert [view.name for view in views] == ["map", "task"]
+    assert views[0].delivery == "outline"
+    assert views[0].direction == "both"
+    assert views[1].relations == (
+        "depends_on",
+        "derived_from",
+        "validated_against",
+    )
+
+
+@pytest.mark.parametrize(
+    ("context", "message"),
+    [
+        ("[[context]]\n", "context must be a table"),
+        ("[context]\nunknown = true\n", "context has unknown key"),
+        ("[context]\nviews = []\n", "context.views must be a table"),
+        (
+            "[context.views.Bad_Name]\n",
+            "context.views.Bad_Name has an invalid view name",
+        ),
+        (
+            "[context.views.task]\ntier = 1\n",
+            "is missing required key",
+        ),
+        (
+            "[context.views.task]\n"
+            "tier = 1\ndelivery = \"full\"\ndirection = \"forward\"\n"
+            "depth = 1\nrelations = []\nlayers = [\"authored\"]\n",
+            "delivery must be 'outline' or 'navigation'",
+        ),
+        (
+            "[context.views.task]\n"
+            "tier = 1\ndelivery = \"navigation\"\ndirection = \"sideways\"\n"
+            "depth = 1\nrelations = []\nlayers = [\"authored\"]\n",
+            "direction must be 'forward', 'reverse' or 'both'",
+        ),
+        (
+            "[context.views.task]\n"
+            "tier = 1\ndelivery = \"navigation\"\ndirection = \"forward\"\n"
+            "depth = 6\nrelations = []\nlayers = [\"authored\"]\n",
+            "depth must be an integer between 0 and 5",
+        ),
+        (
+            "[context.views.task]\n"
+            "tier = 1\ndelivery = \"navigation\"\ndirection = \"forward\"\n"
+            "depth = 1\nrelations = [\"references\"]\n"
+            "layers = [\"authored\"]\n",
+            "relations must contain only supported semantic relations",
+        ),
+        (
+            "[context.views.task]\n"
+            "tier = 1\ndelivery = \"navigation\"\ndirection = \"forward\"\n"
+            "depth = 1\nrelations = []\nlayers = [\"observed\"]\n",
+            "layers must currently be exactly",
+        ),
+    ],
+)
+def test_invalid_context_views_are_rejected(
+    tmp_path: Path, context: str, message: str
+) -> None:
+    (tmp_path / CONFIG_FILENAME).write_text(DEFAULT_CONFIG + context, encoding="utf-8")
+    with pytest.raises(ValueError, match=message):
+        load_config(tmp_path)
+
+
+def test_context_view_tiers_and_relations_must_be_unique(tmp_path: Path) -> None:
+    view = """
+[context.views.one]
+tier = 1
+delivery = "navigation"
+direction = "forward"
+depth = 1
+relations = ["depends_on", "depends_on"]
+layers = ["authored"]
+"""
+    (tmp_path / CONFIG_FILENAME).write_text(DEFAULT_CONFIG + view, encoding="utf-8")
+    with pytest.raises(ValueError, match="relations must be unique"):
+        load_config(tmp_path)
+
+    duplicate_tier = view.replace(
+        'relations = ["depends_on", "depends_on"]',
+        'relations = ["depends_on"]',
+    ) + """
+[context.views.two]
+tier = 1
+delivery = "outline"
+direction = "reverse"
+depth = 0
+relations = []
+layers = ["authored"]
+"""
+    (tmp_path / CONFIG_FILENAME).write_text(
+        DEFAULT_CONFIG + duplicate_tier, encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="context view tier is duplicated: 1"):
+        load_config(tmp_path)
 
 
 def test_area_paths_must_be_unique(tmp_path: Path) -> None:
@@ -102,16 +223,62 @@ def test_relations_table_is_optional_and_loads_adoption_policy(
     loaded = load_config(tmp_path)
     assert loaded.legacy_relation_mode == "resolve-with-warning"
     assert loaded.snapshot_document_types == ("review", "experiment")
+    assert loaded.snapshot_rules == ()
 
     legacy = config.replace(
         '[relations]\nlegacy_paths = "resolve-with-warning"\n'
-        'snapshot_types = ["review", "experiment"]\n\n',
+        'snapshot_types = ["review", "experiment"]\n'
+        'snapshot_rules = []\n\n',
         "",
     )
     (tmp_path / CONFIG_FILENAME).write_text(legacy, encoding="utf-8")
     loaded = load_config(tmp_path)
     assert loaded.legacy_relation_mode == "strict"
     assert loaded.snapshot_document_types == ()
+    assert loaded.snapshot_rules == ()
+
+
+def test_status_aware_snapshot_rules_are_validated(tmp_path: Path) -> None:
+    config = DEFAULT_CONFIG.replace(
+        "snapshot_rules = []",
+        'snapshot_rules = [{ source_type = "roadmap", '
+        'source_status = "completed" }, { source_status = "archived" }]',
+    )
+    (tmp_path / CONFIG_FILENAME).write_text(config, encoding="utf-8")
+
+    rules = load_config(tmp_path).snapshot_rules
+    assert len(rules) == 2
+    assert rules[0].matches("roadmap", "completed")
+    assert not rules[0].matches("roadmap", "active")
+    assert rules[1].matches("decision", "archived")
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ('"roadmap"', "must be a list of tables"),
+        ('["roadmap"]', "must be a table"),
+        ("[{}]", "must define source_type, source_status, or both"),
+        (
+            '[{ source_type = "roadmap", unknown = "value" }]',
+            "has unknown key",
+        ),
+        ('[{ source_status = "" }]', "source_status must be a non-empty string"),
+        (
+            '[{ source_status = "completed" }, '
+            '{ source_status = " completed " }]',
+            "contains duplicate rule",
+        ),
+    ],
+)
+def test_invalid_snapshot_rules_are_rejected(
+    tmp_path: Path, value: str, message: str
+) -> None:
+    config = DEFAULT_CONFIG.replace("snapshot_rules = []", f"snapshot_rules = {value}")
+    (tmp_path / CONFIG_FILENAME).write_text(config, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        load_config(tmp_path)
 
 
 @pytest.mark.parametrize(

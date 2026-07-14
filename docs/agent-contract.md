@@ -343,6 +343,34 @@ rather than assuming omitted material is irrelevant. The packet's final
 lines and UTF-8 bytes; an agent should use it to decide whether an expanded
 follow-up request fits its budget instead of re-measuring the output.
 
+When the project declares `[context.views.NAME]`, prefer the lowest tier whose
+purpose fits the task:
+
+```bash
+docsystem context DOC-001 PROJECT --view map --json
+docsystem context DOC-001 PROJECT --view task --json
+```
+
+A view is authored query policy, not an access boundary. It fixes initial
+delivery (`outline` or `navigation`), authored semantic relation filters,
+direction and depth. Inspect every `view_omissions` row: `relation-filter`
+means the policy excluded that edge, while `depth-limit` means traversal
+stopped before following it. Reverse inclusions are labeled
+`reverse:RELATION`. Expand with an explicit section or full read whenever
+omitted evidence may matter; a navigation view may use `--include ID#anchor`
+directly.
+
+Reverse and bidirectional views fail closed on graph-affecting errors anywhere
+in the catalog. This is required to prove that no malformed document hid an
+incoming authored edge; forward-only views retain source-scoped validation.
+
+`--view` cannot combine with manual `--depth`, `--include-related` or
+`--outline`. An outline-delivery view also rejects content selectors and
+declared-cache/delta flags. The currently supported view layer is exactly
+`authored`; do not infer observed links or generated containment as semantic
+dependencies. Default context behavior and output remain unchanged when no
+view is selected.
+
 An agent should budget outline-first: run `docsystem context ID PROJECT
 --outline` (add `--json` for the structured form) before requesting content.
 Outline mode selects the same document set as a normal call (`--depth` and
@@ -478,3 +506,20 @@ running log. A project owner may opt into recording more detail than this
 baseline for their own needs, but that choice can only add detail — it can
 never weaken the safety or public-contract documentation this contract and
 `AGENTS.md` already require.
+
+## Roadmap lifecycle and delivery evidence
+
+A program roadmap should retain each admitted idea until its disposition is
+explicit. Use the lifecycle `planned`, `waiting`, `ready`, `active`,
+`delivered` or `deferred`. A `waiting` row names the prerequisite and the
+condition that makes it `ready`; an `active` row links its bounded delivery
+roadmap; a `delivered` row links the exact stable completion-evidence section.
+Do not erase the original idea or replace its delivery evidence with narrative
+history.
+
+Use authored `depends_on` for document-level prerequisites and an ordinary
+Markdown link to the exact completion anchor for human and observed-graph
+navigation. Keep `validated_against` pins at the revisions actually reviewed.
+If completed roadmap pins are historical evidence, configure a narrow
+`relations.snapshot_rules` type/status match instead of rewriting revisions or
+silencing active-roadmap freshness warnings.

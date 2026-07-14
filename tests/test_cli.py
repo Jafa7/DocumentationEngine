@@ -217,8 +217,9 @@ def test_agent_instructions_snapshot_reflects_custom_config(
         "follow its `next_command` field.\n"
         "- Prefer `--json` on commands that support it instead of parsing "
         "human-readable text output.\n"
-        "- Expand context with `--depth`, `--include` or `--include-related` "
-        "instead of assuming an omitted document or section is irrelevant.\n"
+            "- Without a configured view, expand context with `--depth`, "
+            "`--include` or `--include-related` instead of assuming an omitted "
+            "document or section is irrelevant.\n"
         "- If an additional read materially changes the plan, scope, decision, "
         "verification or result, finish the task and draft a sanitized "
         "`docsystem report context-gap`, then preserve its classification and "
@@ -251,6 +252,36 @@ def test_agent_instructions_is_deterministic_for_the_same_config(
     assert agent_instructions(tmp_path) == 0
     second = capsys.readouterr().out
     assert first == second
+
+
+def test_agent_instructions_include_configured_context_views(
+    tmp_path: Path, capsys
+) -> None:
+    config = _AGENT_INSTRUCTIONS_FIXTURE_CONFIG + """
+[context.views.map]
+tier = 1
+delivery = "outline"
+direction = "forward"
+depth = 0
+relations = []
+layers = ["authored"]
+"""
+    (tmp_path / CONFIG_FILENAME).write_text(config, encoding="utf-8")
+
+    assert agent_instructions(tmp_path) == 0
+    output = capsys.readouterr().out
+    assert "Configured purpose context views:" in output
+    assert "- map: tier 1, outline, forward, depth 0, authored relations none" in output
+    assert "Prefer the lowest configured `docsystem context --view NAME` tier" in output
+    assert "inspect every `view_omissions` row" in output
+    assert "Without a configured view, expand context" in output
+
+    assert show_config(tmp_path) == 0
+    normalized = capsys.readouterr().out
+    assert (
+        "context.view.map=tier:1,delivery:outline,direction:forward,depth:0,"
+        "relations:-,layers:authored\n"
+    ) in normalized
 
 
 def test_agent_instructions_json_carries_exact_text_output(

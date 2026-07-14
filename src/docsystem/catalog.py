@@ -8,7 +8,7 @@ from functools import cached_property
 from pathlib import Path, PurePosixPath
 from urllib.parse import unquote, urlsplit
 
-from docsystem.config import ProjectConfig
+from docsystem.config import ProjectConfig, is_historical_snapshot
 from docsystem.metadata import DocumentMetadata, parse_front_matter
 from docsystem.sections import (
     MarkdownSection,
@@ -386,7 +386,9 @@ def validate_sections(
     )
 
 
-def validate_metadata(catalog: MarkdownCatalog) -> tuple[ValidationIssue, ...]:
+def validate_metadata(
+    catalog: MarkdownCatalog, config: ProjectConfig | None = None
+) -> tuple[ValidationIssue, ...]:
     """Validate stable IDs, revisions and semantic references."""
 
     issues = [
@@ -450,6 +452,10 @@ def validate_metadata(catalog: MarkdownCatalog) -> tuple[ValidationIssue, ...]:
                 and target.metadata is not None
                 and reference.expected_revision != target.metadata.revision
             ):
+                if config is not None and is_historical_snapshot(
+                    config, metadata.document_type, metadata.status
+                ):
+                    continue
                 issues.append(
                     ValidationIssue(
                         document.path,
@@ -655,7 +661,7 @@ def validate_catalog(
         sorted(
             (
                 *validate_membership(catalog),
-                *validate_metadata(catalog),
+                *validate_metadata(catalog, config),
                 *validate_adoption(catalog, config),
                 *validate_sections(catalog, config),
                 *validate_reachability(catalog, config),

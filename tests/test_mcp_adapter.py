@@ -259,6 +259,41 @@ def test_context_outline_reports_section_size_maps_without_content(
         mcp_server.context(str(project), "DOC-002", outline=True, anchor="details")
 
 
+def test_context_tool_supports_authored_purpose_views(tmp_path: Path) -> None:
+    project = adapter_project(tmp_path)
+    config_path = project / CONFIG_FILENAME
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8")
+        + """
+[context.views.map]
+tier = 1
+delivery = "outline"
+direction = "forward"
+depth = 0
+relations = []
+layers = ["authored"]
+""",
+        encoding="utf-8",
+    )
+
+    packet = mcp_server.context(str(project), "DOC-002", view="map")
+    assert packet["purpose_view"]["name"] == "map"
+    assert packet["outline"] is True
+    assert [item["id"] for item in packet["documents"]] == ["DOC-002"]
+    assert packet["view_omissions"] == [
+        {
+            "source_id": "DOC-002",
+            "direction": "forward",
+            "relation": "depends_on",
+            "peer_id": "DOC-001",
+            "reason": "relation-filter",
+        }
+    ]
+
+    with pytest.raises(ValueError, match="view cannot combine with depth"):
+        mcp_server.context(str(project), "DOC-002", depth=1, view="map")
+
+
 def test_text_packet_tools_surface_projection_fallback_diagnostics(
     tmp_path: Path,
 ) -> None:
