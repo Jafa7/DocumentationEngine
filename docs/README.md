@@ -25,6 +25,8 @@ link to that owner rather than repeat commands or policy.
   coverage, observed types and body-free per-document graph facts.
 - [Document profile registry](document-profiles.md) — project-authored document
   type, metadata, semantic-role, relation and lifecycle validation.
+- [Delivery traceability](delivery-traceability.md) — body-free reverse mapping
+  from exact source contracts to delivery ownership and completion evidence.
 - [Compact context delivery](context-delivery.md) — lossless range
   deduplication, inclusion reasons and diagnostics drill-down.
 - [Bounded workstream evidence](workstream-evidence.md) — versioned completion

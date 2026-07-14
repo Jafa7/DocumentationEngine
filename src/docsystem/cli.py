@@ -59,6 +59,7 @@ from docsystem.config import (
     is_historical_snapshot,
     load_config,
 )
+from docsystem.delivery import DeliveryReport, evaluate_delivery
 from docsystem.execution import (
     ExecutionPacketError,
     load_execution_result,
@@ -542,6 +543,10 @@ def doctor(project_root: Path, *, verbose_adoption: bool = False) -> int:
     if profile_report.violations:
         _print_profile_violations(profile_report)
         return 1
+    delivery_report = evaluate_delivery(markdown_catalog, config)
+    if delivery_report.violations:
+        _print_delivery_violations(delivery_report)
+        return 1
     print("Configuration is valid.")
     print(f"Documentation root: {config.documentation_root}")
     print(f"Language: {config.language}")
@@ -608,6 +613,10 @@ def validate(project_root: Path, *, verbose_adoption: bool = False) -> int:
     profile_report = evaluate_profiles(markdown_catalog, config)
     if profile_report.violations:
         _print_profile_violations(profile_report)
+        return 1
+    delivery_report = evaluate_delivery(markdown_catalog, config)
+    if delivery_report.violations:
+        _print_delivery_violations(delivery_report)
         return 1
     print("Markdown navigation is valid.")
     return 0
@@ -958,6 +967,91 @@ def profile_check(project_root: Path, *, json_output: bool = False) -> int:
         _print_json(_profile_report_json(report))
     else:
         _emit_profile_report_text(report)
+    return 0 if report.valid else 1
+
+
+def _delivery_report_json(report: DeliveryReport) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "configured": report.configured,
+        "valid": report.valid,
+        "metadata_field": report.metadata_field,
+        "mappings": [
+            {
+                "source": item.source,
+                "owner_id": item.owner_id,
+                "owner_path": item.owner_path,
+                "owner_status": item.owner_status,
+                "evidence": item.evidence,
+                "disposition": item.disposition,
+            }
+            for item in report.mappings
+        ],
+        "untracked_documents": list(report.untracked_documents),
+        "overlaps": list(report.overlaps),
+        "violations": [
+            {
+                "id": item.document_id,
+                "path": item.path,
+                "code": item.code,
+                "subject": item.subject,
+                "detail": item.detail,
+            }
+            for item in report.violations
+        ],
+    }
+
+
+def _print_delivery_violations(report: DeliveryReport) -> None:
+    for item in report.violations:
+        print(
+            f"ERROR: {item.path}: delivery {item.code} "
+            f"({item.subject}): {item.detail}",
+            file=sys.stderr,
+        )
+
+
+def _emit_delivery_report_text(report: DeliveryReport) -> None:
+    print(f"summary\tconfigured\t{'true' if report.configured else 'false'}")
+    print(f"summary\tvalid\t{'true' if report.valid else 'false'}")
+    for item in report.mappings:
+        print(
+            f"mapping\t{item.source}\towner={item.owner_id}\t"
+            f"status={item.owner_status or '-'}\tevidence={item.evidence}\t"
+            f"disposition={item.disposition}"
+        )
+    for document_id in report.untracked_documents:
+        print(f"untracked\t{document_id}")
+    for source in report.overlaps:
+        print(f"overlap\t{source}")
+    for item in report.violations:
+        print(
+            f"violation\t{item.document_id}\tcode={item.code}\t"
+            f"subject={item.subject}\tdetail={item.detail}"
+        )
+
+
+def delivery_map(project_root: Path, *, json_output: bool = False) -> int:
+    """Build a reverse map from exact source contracts to delivery evidence."""
+
+    try:
+        config = load_config(project_root)
+        catalog_value = build_catalog(config)
+        issues = _with_graph_issues(
+            validate_catalog(catalog_value, config), catalog_value, config
+        )
+        blocking = tuple(issue for issue in issues if issue.severity != "warning")
+        if blocking:
+            _print_validation_issues(blocking, verbose_adoption=False)
+            return 1
+        report = evaluate_delivery(catalog_value, config)
+    except (OSError, ValueError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    if json_output:
+        _print_json(_delivery_report_json(report))
+    else:
+        _emit_delivery_report_text(report)
     return 0 if report.valid else 1
 
 
@@ -6653,6 +6747,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print a deterministic JSON object instead of tab-separated text.",
     )
 
+    delivery_map_parser = subparsers.add_parser(
+        "delivery-map",
+        help="Map exact source contracts to authored delivery evidence.",
+    )
+    delivery_map_parser.add_argument(
+        "project", nargs="?", type=Path, default=Path.cwd()
+    )
+    delivery_map_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print a deterministic JSON object instead of tab-separated text.",
+    )
+
     criteria_parser = subparsers.add_parser(
         "criteria",
         help="List versioned workstream, intake and admission criteria.",
@@ -6979,6 +7087,7 @@ def build_parser() -> argparse.ArgumentParser:
         graph_health_parser,
         metadata_inventory_parser,
         profile_check_parser,
+        delivery_map_parser,
         criteria_parser,
         workstream_parser,
         intake_parser,
@@ -7094,6 +7203,8 @@ def main() -> int:
         )
     if args.command == "profile-check":
         return profile_check(project, json_output=args.json_output)
+    if args.command == "delivery-map":
+        return delivery_map(project, json_output=args.json_output)
     if args.command == "criteria":
         return criteria_registry(project, json_output=args.json_output)
     if args.command == "workstream":

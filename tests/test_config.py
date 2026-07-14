@@ -18,6 +18,7 @@ def test_default_config_loads(tmp_path: Path) -> None:
     assert config.graph_health_policy.required_metadata == ()
     assert config.graph_health_policy.report_orphans is False
     assert config.document_profiles == ()
+    assert config.delivery_policy is None
     assert config.projection_format == "sharded-json"
     assert config.context_views == ()
     assert config.workstream_criteria == ()
@@ -69,6 +70,59 @@ allowed_statuses = ["In Review"]
     assert profile.document_types == ("Architecture Proposal",)
     assert profile.required_metadata == ("review.owner",)
     assert profile.allowed_statuses == ("In Review",)
+
+
+def test_delivery_traceability_policy_binds_profile_role(tmp_path: Path) -> None:
+    configured = DEFAULT_CONFIG.replace("[traceability]\n\n", "") + """
+[profiles.roadmap]
+document_types = ["roadmap"]
+[profiles.roadmap.roles]
+completion = ["completion-evidence"]
+
+[traceability]
+metadata_field = "delivers"
+document_types = ["roadmap"]
+evidence_role = "completion"
+terminal_statuses = ["completed"]
+"""
+    (tmp_path / CONFIG_FILENAME).write_text(configured, encoding="utf-8")
+    policy = load_config(tmp_path).delivery_policy
+    assert policy is not None
+    assert policy.metadata_field == "delivers"
+    assert policy.document_types == ("roadmap",)
+    assert policy.evidence_role == "completion"
+    assert policy.terminal_statuses == ("completed",)
+
+
+@pytest.mark.parametrize(
+    ("traceability", "message"),
+    [
+        ("traceability = []\n", "traceability must be a table"),
+        ("[traceability]\nunknown = true\n", "unknown key"),
+        (
+            "[traceability]\nmetadata_field = \"status\"\n"
+            "document_types = [\"roadmap\"]\nevidence_role = \"completion\"\n"
+            "terminal_statuses = [\"completed\"]\n",
+            "must name an additional field",
+        ),
+        (
+            "[traceability]\nmetadata_field = \"delivers\"\n"
+            "document_types = [\"roadmap\"]\nevidence_role = \"completion\"\n"
+            "terminal_statuses = [\"completed\"]\n",
+            "has no profile",
+        ),
+    ],
+)
+def test_invalid_delivery_traceability_policy_is_rejected(
+    tmp_path: Path, traceability: str, message: str
+) -> None:
+    if traceability.startswith("traceability ="):
+        configured = traceability + DEFAULT_CONFIG.replace("[traceability]\n\n", "")
+    else:
+        configured = DEFAULT_CONFIG.replace("[traceability]\n\n", "") + traceability
+    (tmp_path / CONFIG_FILENAME).write_text(configured, encoding="utf-8")
+    with pytest.raises(ValueError, match=message):
+        load_config(tmp_path)
 
 
 @pytest.mark.parametrize(

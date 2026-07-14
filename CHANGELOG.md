@@ -29,6 +29,9 @@ All notable changes to Documentation Engine are documented in this file.
 - Optional project-authored document profiles and read-only `profile-check`
   CLI/MCP validation cover metadata, semantic anchor roles, relation/status
   allowlists and history-mode evidence without inferred policy or source writes.
+- Optional delivery traceability metadata and read-only `delivery-map` CLI/MCP
+  inspection connect exact source-section contracts to delivery ownership and
+  completion evidence without reading or returning authored bodies.
 
 ## [0.2.0] - 2026-07-13
 

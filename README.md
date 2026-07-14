@@ -254,6 +254,8 @@ docsystem metadata-inventory .
 docsystem metadata-inventory . --field owner --values --json
 docsystem profile-check .
 docsystem profile-check . --json
+docsystem delivery-map .
+docsystem delivery-map . --json
 docsystem criteria .
 docsystem criteria . --json
 docsystem workstream WS-001 . --record workstream-record.json
@@ -403,6 +405,14 @@ and declared history mode. Unprofiled types remain visible for gradual
 adoption. The command never infers policy from inventory or changes Markdown.
 See [document profiles](docs/document-profiles.md) for the configuration and
 failure contract.
+
+`delivery-map PROJECT [--json]` uses optional project-authored traceability
+metadata to map exact `ID#anchor` source contracts to delivery ownership and a
+profile-defined evidence section. Its deterministic output contains addresses
+and status, never Markdown bodies. Untracked delivery documents remain visible
+for gradual adoption; malformed claims fail `delivery-map`, `validate` and
+`doctor`. See [delivery traceability](docs/delivery-traceability.md) for the
+configuration, overlap and authority contract.
 
 `references ID[#anchor] PROJECT` is a read-only inspection of the section and
 reference graph: authored metadata relations, observed Markdown links, and

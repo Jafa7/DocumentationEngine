@@ -77,6 +77,8 @@ report_orphans = false
 
 [profiles]
 
+[traceability]
+
 [workstreams]
 
 [intake]
@@ -179,6 +181,16 @@ class DocumentProfile:
 
 
 @dataclass(frozen=True)
+class DeliveryPolicy:
+    """Project-authored metadata contract for delivery traceability."""
+
+    metadata_field: str
+    document_types: tuple[str, ...]
+    evidence_role: str
+    terminal_statuses: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class WorkstreamCriterion:
     """One versioned, project-authored completion evidence policy."""
 
@@ -258,6 +270,7 @@ class ProjectConfig:
     snapshot_rules: tuple[SnapshotRule, ...] = ()
     graph_health_policy: GraphHealthPolicy = GraphHealthPolicy()
     document_profiles: tuple[DocumentProfile, ...] = ()
+    delivery_policy: DeliveryPolicy | None = None
     maintenance_targets: tuple[MaintenanceTarget, ...] = ()
     context_views: tuple[ContextView, ...] = ()
     workstream_criteria: tuple[WorkstreamCriterion, ...] = ()
@@ -606,6 +619,70 @@ def _document_profiles(raw: object) -> tuple[DocumentProfile, ...]:
             )
         )
     return tuple(profiles)
+
+
+def _delivery_policy(
+    raw: object, profiles: tuple[DocumentProfile, ...]
+) -> DeliveryPolicy | None:
+    if raw is None or raw == {}:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("traceability must be a table")
+    allowed = {
+        "metadata_field",
+        "document_types",
+        "evidence_role",
+        "terminal_statuses",
+    }
+    unknown = set(raw) - allowed
+    if unknown:
+        raise ValueError(
+            "traceability has unknown key(s): " + ", ".join(sorted(unknown))
+        )
+    metadata_field = raw.get("metadata_field")
+    if not isinstance(metadata_field, str) or not metadata_field:
+        raise ValueError("traceability.metadata_field must be a non-empty string")
+    reserved = {"id", "revision", "type", "status", *RELATION_FIELDS, PINNED_RELATION}
+    if metadata_field in reserved:
+        raise ValueError("traceability.metadata_field must name an additional field")
+    document_types = _profile_string_list(
+        raw.get("document_types"),
+        "traceability.document_types",
+        required=True,
+    )
+    evidence_role = raw.get("evidence_role")
+    if (
+        not isinstance(evidence_role, str)
+        or PROFILE_NAME_PATTERN.fullmatch(evidence_role) is None
+    ):
+        raise ValueError("traceability.evidence_role must be a semantic role name")
+    terminal_statuses = _profile_string_list(
+        raw.get("terminal_statuses"),
+        "traceability.terminal_statuses",
+        required=True,
+    )
+    profiles_by_type = {
+        document_type: profile
+        for profile in profiles
+        for document_type in profile.document_types
+    }
+    for document_type in document_types:
+        profile = profiles_by_type.get(document_type)
+        if profile is None:
+            raise ValueError(
+                f"traceability document type {document_type!r} has no profile"
+            )
+        if evidence_role not in {role.name for role in profile.roles}:
+            raise ValueError(
+                f"profile {profile.name!r} has no traceability evidence role "
+                f"{evidence_role!r}"
+            )
+    return DeliveryPolicy(
+        metadata_field=metadata_field,
+        document_types=document_types,
+        evidence_role=evidence_role,
+        terminal_statuses=terminal_statuses,
+    )
 
 
 def _context_views(raw: object) -> tuple[ContextView, ...]:
@@ -1256,6 +1333,7 @@ def load_config(project_root: Path) -> ProjectConfig:
     context_views = _context_views(raw.get("context"))
     graph_health_policy = _graph_health_policy(raw.get("graph_health"))
     document_profiles = _document_profiles(raw.get("profiles"))
+    delivery_policy = _delivery_policy(raw.get("traceability"), document_profiles)
     workstream_criteria = _workstream_criteria(raw.get("workstreams"))
     intake_criteria = _intake_criteria(
         raw.get("intake"), normalized_areas, normalized_identifiers
@@ -1284,6 +1362,7 @@ def load_config(project_root: Path) -> ProjectConfig:
         snapshot_rules=snapshot_rules,
         graph_health_policy=graph_health_policy,
         document_profiles=document_profiles,
+        delivery_policy=delivery_policy,
         maintenance_targets=maintenance_targets,
         context_views=context_views,
         workstream_criteria=workstream_criteria,

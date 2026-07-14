@@ -225,6 +225,22 @@ def profile_check(
     return _json_tool(arguments, allow_failure_payload=True)
 
 
+def delivery_map(
+    project: str,
+    source: str | None = None,
+    workspace: str | None = None,
+) -> dict:
+    """Map exact source contracts to project-authored delivery evidence."""
+
+    arguments = [
+        "delivery-map",
+        project,
+        "--json",
+        *_selection_arguments(source, workspace),
+    ]
+    return _json_tool(arguments, allow_failure_payload=True)
+
+
 def criteria(
     project: str, source: str | None = None, workspace: str | None = None
 ) -> dict:
@@ -620,6 +636,7 @@ _TOOLS = (
     changes,
     metadata_inventory,
     profile_check,
+    delivery_map,
     criteria,
     workstream,
     intake,
