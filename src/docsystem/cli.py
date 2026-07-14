@@ -26,10 +26,18 @@ from docsystem.catalog import (
     validate_membership,
     validate_metadata,
 )
+from docsystem.change_plan import (
+    ChangePlan,
+    Completeness,
+    InclusionReason,
+    PlanItem,
+    build_change_plan,
+)
 from docsystem.config import CONFIG_FILENAME, DEFAULT_CONFIG, ProjectConfig, load_config
 from docsystem.graph import (
     Address,
     Boundary,
+    GraphEdge,
     ProjectionUnavailable,
     TraversalResult,
     build_reference_graph,
@@ -38,6 +46,9 @@ from docsystem.graph import (
 )
 from docsystem.graph import (
     traverse as graph_traverse,
+)
+from docsystem.graph import (
+    traverse_reasons as graph_traverse_reasons,
 )
 from docsystem.migration import apply_migration_plan, build_migration_plan, validate_plan
 from docsystem.projection import (
@@ -2681,6 +2692,296 @@ def references(
     return 0
 
 
+# Text column order for `change-plan`: kind, address, disposition, scope,
+# relation, authority, origin, distance, class, path, reason. `kind` is
+# "item" for one plan-item reason, "boundary" for a visible unresolved
+# target, or "completeness" for one graph-layer state; unused columns for a
+# "boundary" or "completeness" row are "-". A "completeness" row reuses
+# `address` for the layer name (`authored`/`observed`/`generated`) and
+# `reason` for its `complete`/`bounded`/`unknown`/`not-enumerated` state.
+_CHANGE_PLAN_COLUMNS = (
+    "kind",
+    "address",
+    "disposition",
+    "scope",
+    "relation",
+    "authority",
+    "origin",
+    "distance",
+    "class",
+    "path",
+    "reason",
+)
+
+
+def _change_plan_reason_class(reason: InclusionReason) -> str:
+    if reason.scope == "target":
+        return "target"
+    return "direct" if reason.direct else "transitive"
+
+
+def _change_plan_item_rows(item: PlanItem) -> tuple[str, ...]:
+    rows = []
+    for reason in item.reasons:
+        path = " -> ".join(step.text for step in reason.path)
+        rows.append(
+            "\t".join(
+                (
+                    "item",
+                    item.address.text,
+                    item.disposition,
+                    reason.scope,
+                    reason.relation,
+                    reason.authority,
+                    reason.origin,
+                    str(reason.distance),
+                    _change_plan_reason_class(reason),
+                    path,
+                    reason.detail or "-",
+                )
+            )
+        )
+    return tuple(rows)
+
+
+def _change_plan_boundary_row(boundary: Boundary) -> str:
+    return "\t".join(
+        (
+            "boundary",
+            boundary.source.text,
+            "-",
+            "-",
+            "-",
+            "-",
+            "-",
+            "-",
+            "-",
+            boundary.raw_target,
+            f"{boundary.category}: {boundary.reason}",
+        )
+    )
+
+
+def _change_plan_completeness_rows(completeness: Completeness) -> tuple[str, ...]:
+    return tuple(
+        "\t".join(("completeness", layer, "-", "-", "-", "-", "-", "-", "-", "-", state))
+        for layer, state in (
+            ("authored", completeness.authored),
+            ("observed", completeness.observed),
+            ("generated", completeness.generated),
+        )
+    )
+
+
+def _change_plan_reason_json(reason: InclusionReason) -> dict[str, object]:
+    return {
+        "scope": reason.scope,
+        "relation": reason.relation,
+        "authority": reason.authority,
+        "origin": reason.origin,
+        "distance": reason.distance,
+        "direct": reason.direct,
+        "path": [step.text for step in reason.path],
+        "detail": reason.detail,
+    }
+
+
+def _change_plan_item_json(item: PlanItem) -> dict[str, object]:
+    return {
+        "address": item.address.text,
+        "disposition": item.disposition,
+        "reasons": [_change_plan_reason_json(reason) for reason in item.reasons],
+    }
+
+
+def _change_plan_direct(
+    config: ProjectConfig, address: Address, *, reverse: bool, transitive: bool
+) -> ChangePlan | None:
+    """Resolve entirely from Markdown: the fallback and no-projection path."""
+
+    markdown_catalog = build_catalog(config)
+    try:
+        document = find_document(markdown_catalog, address.document_id)
+    except ValueError:
+        return None
+    if address.anchor is not None and address.anchor not in {
+        section.anchor for section in document.sections
+    }:
+        return None
+    all_graph_issues = (
+        *validate_membership(markdown_catalog),
+        *validate_metadata(markdown_catalog),
+        *validate_adoption(markdown_catalog, config),
+    )
+    blockers = tuple(
+        issue
+        for issue in all_graph_issues
+        if issue.affects_graph and issue.severity != "warning"
+    )
+    if blockers:
+        raise _ReferenceGraphInvalid(blockers)
+    reference_graph = build_reference_graph(markdown_catalog, config)
+
+    def _forward(current: Address) -> tuple[GraphEdge, ...]:
+        return reference_graph.forward(current)
+
+    def _reverse(current: Address) -> tuple[GraphEdge, ...]:
+        return reference_graph.reverse_edges(current)
+
+    forward_reasons = graph_traverse_reasons(
+        address, forward=_forward, reverse_edges=_reverse, reverse=False, transitive=transitive
+    )
+    reverse_reasons = (
+        graph_traverse_reasons(
+            address, forward=_forward, reverse_edges=_reverse, reverse=True, transitive=transitive
+        )
+        if reverse
+        else ()
+    )
+    touched = (
+        (address,)
+        if not transitive
+        else (address, *dict.fromkeys(result.address for result in forward_reasons))
+    )
+    boundaries = tuple(
+        boundary for source in touched for boundary in reference_graph.boundaries_from(source)
+    )
+    return build_change_plan(
+        address,
+        reverse=reverse,
+        transitive=transitive,
+        forward_reasons=forward_reasons,
+        reverse_reasons=reverse_reasons,
+        boundaries=boundaries,
+    )
+
+
+def _change_plan_projected(
+    config: ProjectConfig, address: Address, *, reverse: bool, transitive: bool
+) -> ChangePlan | None:
+    """Resolve using only the shards the query touches, or raise/return None."""
+
+    accessor, reason = open_targeted_projection(config)
+    if accessor is None:
+        raise ProjectionUnavailable(reason)
+    if address.document_id not in accessor.manifest.get("documents", {}):
+        return None
+    if address.anchor is not None:
+        document_shard = accessor.document(address.document_id)
+        if document_shard is None:
+            raise ProjectionUnavailable(f"document shard unavailable for {address.document_id}")
+        if address.anchor not in document_shard.get("sections", {}):
+            return None
+    observed_boundaries: dict[tuple[str, str, str], Boundary] = {}
+
+    def _forward(current: Address) -> tuple[GraphEdge, ...]:
+        edges = targeted_forward_edges(accessor, current)
+        if edges is None:
+            raise ProjectionUnavailable(f"references shard unavailable for {current.text}")
+        for item in edges[1]:
+            boundary = Boundary(current, item["raw_target"], item["category"], item["reason"])
+            observed_boundaries[
+                (boundary.source.text, boundary.category, boundary.raw_target)
+            ] = boundary
+        return edges[0]
+
+    def _reverse(current: Address) -> tuple[GraphEdge, ...]:
+        edges = targeted_reverse_edges(accessor, current)
+        if edges is None:
+            raise ProjectionUnavailable(f"reverse shard unavailable for {current.text}")
+        return edges
+
+    forward_reasons = graph_traverse_reasons(
+        address, forward=_forward, reverse_edges=_reverse, reverse=False, transitive=transitive
+    )
+    reverse_reasons = (
+        graph_traverse_reasons(
+            address, forward=_forward, reverse_edges=_reverse, reverse=True, transitive=transitive
+        )
+        if reverse
+        else ()
+    )
+    boundaries = tuple(observed_boundaries.values())
+    return build_change_plan(
+        address,
+        reverse=reverse,
+        transitive=transitive,
+        forward_reasons=forward_reasons,
+        reverse_reasons=reverse_reasons,
+        boundaries=boundaries,
+    )
+
+
+def change_plan(
+    project_root: Path,
+    raw_address: str,
+    *,
+    reverse: bool = False,
+    transitive: bool = False,
+    json_output: bool = False,
+) -> int:
+    try:
+        config = load_config(project_root)
+    except ValueError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    try:
+        address = parse_address(raw_address)
+    except ValueError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+
+    diagnostic: str | None = None
+    plan: ChangePlan | None = None
+    try:
+        plan = _change_plan_projected(config, address, reverse=reverse, transitive=transitive)
+    except ProjectionUnavailable as error:
+        diagnostic = f"{error}; using direct Markdown"
+        try:
+            plan = _change_plan_direct(config, address, reverse=reverse, transitive=transitive)
+        except _ReferenceGraphInvalid as invalid:
+            for issue in invalid.issues:
+                print(
+                    f"ERROR: {issue.path.as_posix()}: {issue.message}",
+                    file=sys.stderr,
+                )
+            return 1
+
+    if plan is None:
+        print(f"ERROR: unknown graph address: {address.text}", file=sys.stderr)
+        return 1
+
+    if diagnostic is not None:
+        print(f"NOTE: {diagnostic}", file=sys.stderr)
+
+    if json_output:
+        _print_json(
+            {
+                "address": address.text,
+                "reverse": reverse,
+                "transitive": transitive,
+                "items": [_change_plan_item_json(item) for item in plan.items],
+                "boundaries": [
+                    _references_boundary_json(boundary) for boundary in plan.boundaries
+                ],
+                "completeness": {
+                    "authored": plan.completeness.authored,
+                    "observed": plan.completeness.observed,
+                    "generated": plan.completeness.generated,
+                },
+            }
+        )
+        return 0
+    for item in plan.items:
+        for row in _change_plan_item_rows(item):
+            print(row)
+    for boundary in plan.boundaries:
+        print(_change_plan_boundary_row(boundary))
+    for row in _change_plan_completeness_rows(plan.completeness):
+        print(row)
+    return 0
+
+
 def show_config(project_root: Path) -> int:
     try:
         config = load_config(project_root)
@@ -2887,6 +3188,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print a deterministic JSON object instead of tab-separated text.",
     )
 
+    change_plan_parser = subparsers.add_parser(
+        "change-plan",
+        help=(
+            "Read-only explainable change plan: read/review items, "
+            "aggregated reasons and boundaries for a document or section."
+        ),
+    )
+    change_plan_parser.add_argument("address", metavar="ID[#anchor]")
+    change_plan_parser.add_argument("project", nargs="?", type=Path, default=Path.cwd())
+    change_plan_parser.add_argument("--reverse", action="store_true")
+    change_plan_parser.add_argument("--transitive", action="store_true")
+    change_plan_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print a deterministic JSON object instead of tab-separated text.",
+    )
+
     context_parser = subparsers.add_parser("context", help="Build an inspectable context packet.")
     context_parser.add_argument("document_id")
     context_parser.add_argument("project", nargs="?", type=Path, default=Path.cwd())
@@ -3076,6 +3395,7 @@ def build_parser() -> argparse.ArgumentParser:
         read_parser,
         dependencies_parser,
         references_parser,
+        change_plan_parser,
         context_parser,
         impact_parser,
         migration_report_parser,
@@ -3125,6 +3445,14 @@ def main() -> int:
         return dependencies(project, args.document_id, reverse=args.reverse)
     if args.command == "references":
         return references(
+            project,
+            args.address,
+            reverse=args.reverse,
+            transitive=args.transitive,
+            json_output=args.json_output,
+        )
+    if args.command == "change-plan":
+        return change_plan(
             project,
             args.address,
             reverse=args.reverse,

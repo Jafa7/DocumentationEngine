@@ -275,6 +275,109 @@ def traverse(
     )
 
 
+def traverse_reasons(
+    start: Address,
+    *,
+    forward: Callable[[Address], tuple[GraphEdge, ...]],
+    reverse_edges: Callable[[Address], tuple[GraphEdge, ...]],
+    reverse: bool = False,
+    transitive: bool = False,
+) -> tuple[TraversalResult, ...]:
+    """Deterministic BFS keeping every distinct edge reaching an address.
+
+    `traverse` keeps exactly one deterministic-minimal edge per address, so an
+    alternate authored or observed edge reaching the same address at the same
+    minimal distance is discarded once BFS finds the first one. This variant
+    keeps every distinct `(relation, authority, origin, reason)` signature
+    that first reaches an address, at that address's minimal distance -- used
+    by `change-plan` (see `docsystem.change_plan`) to aggregate every
+    deterministic inclusion reason instead of reporting only one. Expansion
+    beyond an address still happens exactly once, at the round it is first
+    reached, so results stay bounded on a cyclic graph.
+    """
+
+    start_key = start.text
+    collected: dict[
+        str,
+        dict[tuple[str, str, str, str | None, tuple[str, ...]], TraversalResult],
+    ] = {}
+    expanded: set[str] = {start_key}
+    frontier: list[tuple[Address, tuple[Address, ...]]] = [(start, (start,))]
+    distance = 0
+    while frontier:
+        distance += 1
+        by_neighbor: dict[str, list[tuple[tuple[Address, ...], GraphEdge]]] = {}
+        for address, path in frontier:
+            incident = reverse_edges(address) if reverse else forward(address)
+            for edge in incident:
+                neighbor = edge.source if reverse else edge.target
+                key = neighbor.text
+                if key == start_key or key in expanded:
+                    continue
+                by_neighbor.setdefault(key, []).append((path, edge))
+        next_frontier: list[tuple[Address, tuple[Address, ...]]] = []
+        for key in sorted(by_neighbor):
+            entries = sorted(
+                by_neighbor[key],
+                key=lambda item: (
+                    item[1].relation,
+                    item[1].authority,
+                    item[1].origin,
+                    item[1].reason or "",
+                    tuple(step.text for step in item[0]),
+                ),
+            )
+            bucket = collected.setdefault(key, {})
+            best_path: tuple[Address, ...] | None = None
+            best_neighbor: Address | None = None
+            for path, edge in entries:
+                neighbor = edge.source if reverse else edge.target
+                new_path = (*path, neighbor)
+                signature = (
+                    edge.relation,
+                    edge.authority,
+                    edge.origin,
+                    edge.reason,
+                    tuple(step.text for step in new_path),
+                )
+                if signature not in bucket:
+                    bucket[signature] = TraversalResult(
+                        address=neighbor,
+                        relation=edge.relation,
+                        authority=edge.authority,
+                        origin=edge.origin,
+                        distance=distance,
+                        direct=distance == 1,
+                        path=TraversalPath(new_path),
+                        reason=edge.reason,
+                    )
+                if best_path is None or tuple(step.text for step in new_path) < tuple(
+                    step.text for step in best_path
+                ):
+                    best_path = new_path
+                    best_neighbor = neighbor
+            expanded.add(key)
+            assert best_neighbor is not None and best_path is not None
+            next_frontier.append((best_neighbor, best_path))
+        if not transitive:
+            break
+        frontier = next_frontier
+    flat = [result for bucket in collected.values() for result in bucket.values()]
+    return tuple(
+        sorted(
+            flat,
+            key=lambda result: (
+                result.address.text,
+                result.distance,
+                result.relation,
+                result.authority,
+                result.origin,
+                result.reason or "",
+            ),
+        )
+    )
+
+
 def _mask_fenced(text: str) -> str:
     """Blank fenced-code line contents while preserving line count/offsets.
 

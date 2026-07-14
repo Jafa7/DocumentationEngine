@@ -229,6 +229,10 @@ docsystem references DOC-001 .
 docsystem references DOC-001#purpose . --reverse
 docsystem references DOC-001 . --transitive
 docsystem references DOC-001 . --json
+docsystem change-plan DOC-001 .
+docsystem change-plan DOC-001#purpose . --reverse
+docsystem change-plan DOC-001 . --transitive
+docsystem change-plan DOC-001 . --json
 docsystem context DOC-001 . --depth 1
 docsystem context DOC-001 . --depth 1 --json
 docsystem context DOC-001 . --outline
@@ -334,6 +338,23 @@ rather than blocking an individual `references` call. It prefers a verified
 projection and reads only the shards a query touches, falling back to direct
 Markdown with one diagnostic on any staleness or corruption — either path
 produces byte-identical stdout.
+
+`change-plan ID[#anchor] PROJECT` is a read-only explainable change plan built
+on the same graph: the requested document or section is always a `read` item
+at distance 0; an authored `depends_on` edge adds its target as `read`;
+everything else an agent should look at before changing the target — observed
+Markdown references, `--reverse` incoming impact, and authored `related`,
+`derived_from`, `supersedes` or `validated_against` edges — is `review`, never
+a promoted `read`. Generated section containment can prove a transitive path
+to a section-owned reference, but generated sections are not emitted as plan
+items and never expand a whole document by default. When more
+than one edge reaches the same address, the plan keeps one item and lists
+every distinct reason instead of picking one arbitrarily. `--transitive`
+expands both directions with a deterministic minimal proving path per reason.
+Completeness is reported per graph layer (`authored`, `observed`, `generated`)
+instead of one collapsing flag, and unresolved targets remain visible
+boundaries with their source address. There is no `--write`/`--apply`: like
+`references`, this command never edits Markdown.
 
 Existing projects may opt into a migration bridge for relative path relations:
 

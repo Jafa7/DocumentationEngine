@@ -858,7 +858,7 @@ def test_every_project_command_accepts_the_selection_flags() -> None:
         and any(action.dest == "project" for action in command_parser._actions)
     ]
 
-    assert len(project_commands) == 16
+    assert len(project_commands) == 17
     for name in project_commands:
         options = option_strings(commands[name])
         assert {"--source", "--workspace-source", "--workspace"} <= options, name

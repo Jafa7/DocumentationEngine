@@ -20,11 +20,11 @@ Three operations write anything:
   below `.docsystem/cache`.
 
 Every other command — `doctor`, `show-config`, `catalog`, `validate`, `read`,
-`dependencies`, `references`, `context`, `impact`, `migration-report`,
-`migrate` without `--apply`, `readiness`, `finish`, `report draft`, and
-`index`/`changes` without `--write` — is read-only. An agent may call any
-read-only command freely to inspect project state before deciding whether a
-mutating command is warranted.
+`dependencies`, `references`, `change-plan`, `context`, `impact`,
+`migration-report`, `migrate` without `--apply`, `readiness`, `finish`,
+`report draft`, and `index`/`changes` without `--write` — is read-only. An
+agent may call any read-only command freely to inspect project state before
+deciding whether a mutating command is warranted.
 
 `docsystem migrate` without `--apply` is always a preview: it computes and
 prints the same plan `--apply` would write, but touches nothing. An agent
@@ -184,6 +184,74 @@ current configuration, or fails per-shard integrity verification. Either
 path produces byte-identical stdout for the same query. A fallback always
 prints exactly one `NOTE` diagnostic to stderr — an agent should treat that
 note as informational, not as a query failure.
+
+## `change-plan` is a read/review plan, never write authority
+
+`docsystem change-plan ID[#anchor] PROJECT [--reverse] [--transitive] [--json]`
+builds an explainable, read-only change plan on top of the same section/
+reference graph `references` inspects. It has no `--write`/`--apply` variant
+in this milestone: every item is either `read` or `review`, and no edge --
+however authored -- grants write permission by itself.
+
+The requested document or section is always a `read` item at distance 0. An
+authored `depends_on` edge from the target adds its direct or transitive
+target as `read`. Everything else stays `review`: observed Markdown
+references, `--reverse` incoming impact (including an authored `depends_on`
+edge pointing *at* the target -- being depended upon is impact, not a
+mandatory read), and authored `related`, `derived_from`, `supersedes` or
+`validated_against` edges, which are provenance, lineage or opt-in navigation
+rather than a semantic dependency. `--reverse` *adds* incoming scope on top of
+the forward plan rather than replacing it; `--transitive` expands whichever
+direction(s) are active beyond direct neighbors, and the two flags combine.
+Generated section containment may appear inside a transitive proving path so
+section-owned references remain discoverable, but generated sections are not
+emitted as plan items and never expand a whole document into the plan by
+default.
+
+When more than one edge reaches the same address, `change-plan` keeps exactly
+one plan item and lists every distinct `(relation, authority, origin)` reason
+that reached it, instead of discarding alternate evidence the way a plain
+shortest-path search would. An item is `read` if any of its reasons alone
+would make it `read`.
+
+Default text output is deterministic, tab-separated rows with a fixed
+eleven-column schema:
+
+```text
+kind    address  disposition  scope  relation  authority  origin  distance  class  path  reason
+```
+
+`kind` is `item` for one plan-item reason, `boundary` for a visible unresolved
+target, or `completeness` for one graph-layer state; a row's unused columns
+are `-`. An `item` row's `scope` is `target` (the distance-0 request),
+`forward` or `reverse`; `class` is `target`, `direct` (distance 1) or
+`transitive`. A `boundary` row mirrors `references`: `address` carries the
+source, `path` the unresolved raw target, and `reason` a `category: reason`
+pair. A `completeness` row reuses `address` for the layer name (`authored`,
+`observed` or `generated`) and `reason` for its state. `--json` prints one
+object carrying `"schema_version": 1` plus `address`, `reverse`, `transitive`,
+`items` (one entry per address with `address`, `disposition` and a `reasons`
+list carrying `scope`, `relation`, `authority`, `origin`, `distance`, `direct`,
+`path` and `detail`), `boundaries` (same shape as `references`), and
+`completeness`.
+
+`completeness` never collapses to one boolean: `authored`, `observed` and
+`authored` and `observed` use `complete`, `bounded` (visible, every unresolved
+target explicitly listed as a boundary), or `unknown` (reverse-observed
+evidence cannot prove there is no further incoming link). `generated` is
+`not-enumerated`: containment can prove a transitive path, but generated
+section nodes are intentionally absent from plan items. An agent that needs
+full section navigation should follow up with `references` or `context`.
+An unknown document ID, an
+unknown or malformed anchor, or a metadata error that makes the requested
+graph ambiguous fails closed exactly like `references`: exit `1`, no stdout,
+one precise `ERROR` line per blocking diagnostic on stderr.
+
+`change-plan` shares `references`' projection strategy: it prefers a verified,
+generation-bound projection and reads only the shards its query actually
+touches, falling back to direct Markdown with exactly one `NOTE` diagnostic on
+staleness, incompatibility or corruption. Either path produces byte-identical
+stdout for the same query.
 
 ## Context is explicit, never silently truncated
 

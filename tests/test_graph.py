@@ -3,11 +3,15 @@ from pathlib import Path
 from docsystem.catalog import build_catalog
 from docsystem.config import CONFIG_FILENAME, DEFAULT_CONFIG, ProjectConfig, load_config
 from docsystem.graph import (
+    AUTHORED,
+    GENERATED,
     Address,
+    GraphEdge,
     build_reference_graph,
     detect_cycles,
     graph_validation_issues,
     parse_address,
+    traverse_reasons,
 )
 
 
@@ -428,3 +432,149 @@ def test_observed_reference_cycles_are_navigation_evidence_only(tmp_path: Path) 
     catalog = build_catalog(config)
     graph = build_reference_graph(catalog, config)
     assert detect_cycles(graph.edges) == ()
+
+
+# --- traverse_reasons (multi-reason BFS used by change-plan) -----------------
+
+
+def _semantic_forward(graph, address: Address) -> tuple:
+    return tuple(edge for edge in graph.forward(address) if edge.authority != GENERATED)
+
+
+def _semantic_reverse(graph, address: Address) -> tuple:
+    return tuple(edge for edge in graph.reverse_edges(address) if edge.authority != GENERATED)
+
+
+def test_traverse_reasons_keeps_every_distinct_edge_at_minimal_distance(
+    tmp_path: Path,
+) -> None:
+    """Unlike `traverse`, `traverse_reasons` must not discard an alternate
+    authored/observed edge merely because BFS found one address first."""
+
+    config = configured_project(tmp_path)
+    write(
+        config,
+        "architecture/a.md",
+        "---\nid: DOC-001\nrevision: 1\ndepends_on: [DOC-002]\n---\n\n"
+        "See [Doc B](b.md) before any heading.\n\n# Doc A\n\nBody.\n",
+    )
+    write(
+        config,
+        "architecture/b.md",
+        "---\nid: DOC-002\nrevision: 1\n---\n\n# Doc B\n\nBody.\n",
+    )
+    catalog = build_catalog(config)
+    graph = build_reference_graph(catalog, config)
+
+    results = traverse_reasons(
+        Address("DOC-001"),
+        forward=lambda address: _semantic_forward(graph, address),
+        reverse_edges=lambda address: _semantic_reverse(graph, address),
+        transitive=False,
+    )
+    doc_002_results = [result for result in results if result.address == Address("DOC-002")]
+    assert {(result.relation, result.authority) for result in doc_002_results} == {
+        ("depends_on", "authored"),
+        ("references", "observed"),
+    }
+    assert all(result.distance == 1 and result.direct for result in doc_002_results)
+
+
+def test_traverse_reasons_excludes_generated_containment_when_filtered(
+    tmp_path: Path,
+) -> None:
+    config = configured_project(tmp_path)
+    write(
+        config,
+        "architecture/a.md",
+        "---\nid: DOC-001\nrevision: 1\n---\n\n# Doc A\n\n"
+        "<a id=\"intro\"></a>\n## Introduction\n\nBody.\n",
+    )
+    catalog = build_catalog(config)
+    graph = build_reference_graph(catalog, config)
+
+    results = traverse_reasons(
+        Address("DOC-001"),
+        forward=lambda address: _semantic_forward(graph, address),
+        reverse_edges=lambda address: _semantic_reverse(graph, address),
+        transitive=False,
+    )
+    assert results == ()
+
+
+def test_traverse_reasons_is_deterministic_and_bounded_on_transitive_expansion(
+    tmp_path: Path,
+) -> None:
+    config = configured_project(tmp_path)
+    write(
+        config,
+        "architecture/a.md",
+        "---\nid: DOC-001\nrevision: 1\ndepends_on: [DOC-002]\n---\n\n# Doc A\n\nBody.\n",
+    )
+    write(
+        config,
+        "architecture/b.md",
+        "---\nid: DOC-002\nrevision: 1\ndepends_on: [DOC-003]\n---\n\n# Doc B\n\nBody.\n",
+    )
+    write(
+        config,
+        "architecture/c.md",
+        "---\nid: DOC-003\nrevision: 1\ndepends_on: [DOC-001]\n---\n\n# Doc C\n\nBody.\n",
+    )
+    catalog = build_catalog(config)
+    graph = build_reference_graph(catalog, config)
+
+    first = traverse_reasons(
+        Address("DOC-001"),
+        forward=lambda address: _semantic_forward(graph, address),
+        reverse_edges=lambda address: _semantic_reverse(graph, address),
+        transitive=True,
+    )
+    second = traverse_reasons(
+        Address("DOC-001"),
+        forward=lambda address: _semantic_forward(graph, address),
+        reverse_edges=lambda address: _semantic_reverse(graph, address),
+        transitive=True,
+    )
+    assert first == second
+    doc_003 = next(result for result in first if result.address == Address("DOC-003"))
+    assert doc_003.distance == 2
+    assert not doc_003.direct
+    assert [address.text for address in doc_003.path.addresses] == [
+        "DOC-001",
+        "DOC-002",
+        "DOC-003",
+    ]
+    # DOC-001 is the query start and a cycle target; it must never reappear.
+    assert Address("DOC-001") not in {result.address for result in first}
+
+
+def test_traverse_reasons_preserves_distinct_minimal_proving_paths() -> None:
+    start = Address("DOC-001")
+    left = Address("DOC-002")
+    right = Address("DOC-003")
+    target = Address("DOC-004")
+    edges = {
+        start: (
+            GraphEdge(start, left, "depends_on", AUTHORED, "metadata"),
+            GraphEdge(start, right, "depends_on", AUTHORED, "metadata"),
+        ),
+        left: (GraphEdge(left, target, "depends_on", AUTHORED, "metadata"),),
+        right: (GraphEdge(right, target, "depends_on", AUTHORED, "metadata"),),
+    }
+
+    results = traverse_reasons(
+        start,
+        forward=lambda address: edges.get(address, ()),
+        reverse_edges=lambda _address: (),
+        transitive=True,
+    )
+
+    target_results = [result for result in results if result.address == target]
+    assert len(target_results) == 2
+    assert {
+        tuple(step.text for step in result.path.addresses) for result in target_results
+    } == {
+        ("DOC-001", "DOC-002", "DOC-004"),
+        ("DOC-001", "DOC-003", "DOC-004"),
+    }
