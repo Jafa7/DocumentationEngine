@@ -282,6 +282,30 @@ def execution_handoff(
     return _json_tool(arguments)
 
 
+def execution_result(
+    project: str,
+    document_id: str,
+    packet: str,
+    result: str,
+    source: str | None = None,
+    workspace: str | None = None,
+) -> dict:
+    """Validate caller-declared changed files against admitted source scope."""
+
+    arguments = [
+        "execution-result",
+        document_id,
+        project,
+        "--packet",
+        packet,
+        "--result",
+        result,
+        "--json",
+    ]
+    arguments.extend(_selection_arguments(source, workspace))
+    return _json_tool(arguments)
+
+
 def finish_handoff(
     project: str,
     document_id: str,
@@ -557,6 +581,7 @@ _TOOLS = (
     intake,
     admission,
     execution_handoff,
+    execution_result,
     finish_handoff,
     context,
     read_document,

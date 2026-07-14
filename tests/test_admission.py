@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from docsystem.admission import load_request
 from docsystem.cli import build_parser, criteria_registry, execution_admission
 from docsystem.config import CONFIG_FILENAME, DEFAULT_CONFIG
 
@@ -15,6 +16,7 @@ def _project(
     allowed_actions: str = '"inspect", "plan", "edit-local", "run-checks"',
     required_authorizations: str = '"edit-local"',
     required_sections: str = '"mandate", "boundaries", "review-gate"',
+    require_source_scope_for: str = "",
 ) -> Path:
     config = DEFAULT_CONFIG.replace("[areas]\n", '[areas]\nworkspace = "."\n')
     config = config.replace(
@@ -31,6 +33,7 @@ allowed_verification = ["focused", "full"]
 max_risk = "medium"
 max_targets = 4
 required_sections = [{required_sections}]
+require_source_scope_for = [{require_source_scope_for}]
 safe_fallback = "blocked"
 """
     (tmp_path / CONFIG_FILENAME).write_text(config, encoding="utf-8")
@@ -214,6 +217,20 @@ def test_admission_returns_explainable_blocked_results(
     assert reason in payload["reasons"]
 
 
+def test_admission_policy_can_require_source_scope_for_local_edits(
+    tmp_path: Path, capsys
+) -> None:
+    _project(tmp_path, require_source_scope_for='"edit-local"')
+    path = _write_request(tmp_path, _request())
+
+    assert execution_admission(
+        tmp_path, "WS-001", request_path=path, json_output=True
+    ) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["decision"] == "blocked"
+    assert payload["reasons"] == ["source-scope-required:edit-local"]
+
+
 def test_disallowed_action_is_blocked_with_required_autonomy(
     tmp_path: Path, capsys
 ) -> None:
@@ -328,6 +345,17 @@ def test_legacy_workstream_may_declare_absent_intake_provenance(
     payload = json.loads(capsys.readouterr().out)
     assert payload["decision"] == "admitted"
     assert payload["intake_request_sha256"] is None
+
+
+def test_omitted_source_scope_preserves_legacy_request_hash(tmp_path: Path) -> None:
+    request = _request()
+    omitted = _write_request(tmp_path, request, "omitted.json")
+    request["source_scope"] = []
+    explicit_empty = _write_request(tmp_path, request, "empty.json")
+
+    expected = "43efda6c89fc7d09b9fefcc06da4b8054141802f9d95b726ab68e03f04854400"
+    assert load_request(omitted).request_sha256 == expected
+    assert load_request(explicit_empty).request_sha256 == expected
 
 
 def test_admission_normalizes_semantically_equivalent_request_order(

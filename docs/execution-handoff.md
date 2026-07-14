@@ -27,6 +27,7 @@ The schema-version-1 packet contains:
 - a mandate snapshot with revision, status, relative path, document hash and
   hashes/ranges for every policy-required section;
 - one exact target snapshot per stable document/section address;
+- normalized local source paths with expected pre-edit hashes or absence;
 - direct, transitive, forward and reverse change-plan evidence;
 - a deduplicated `read`/`review` context manifest;
 - a SHA-256 integrity seal over the complete packet except the seal field.
@@ -82,3 +83,32 @@ After execution, the packet does not prove success. Deterministic checks,
 independent review, corrective lineage and return evidence belong in the
 [bounded workstream evidence](workstream-evidence.md) record and `finish`
 handoff.
+
+## Validate returned source evidence
+
+An executor or authoritative host writes a bounded result:
+
+```json
+{
+  "schema_version": 1,
+  "workstream_id": "WS-001",
+  "packet_sha256": "...",
+  "changed_files": [
+    {"path": "src/example.py", "sha256": "..."}
+  ]
+}
+```
+
+Use `sha256: null` for a deleted admitted file. Then validate it read-only:
+
+```bash
+docsystem execution-result WS-001 PROJECT \
+  --packet execution-packet.json --result execution-result.json --json
+```
+
+The command rejects unadmitted paths, omitted changes within the admitted
+scope, unchanged paths declared as changed, wrong after-hashes and packet/ID
+mismatches. It can verify only the structured inventory it receives; it does
+not monitor filesystem writes or discover changes outside the declared scope.
+The host or orchestration runtime must produce the changed-file inventory from
+an authoritative diff/audit source. Worker prose is not sufficient evidence.

@@ -111,6 +111,13 @@ Markdown, graph, mandate, policy or admission evidence no longer reproduces
 it. Enforce write permissions and authorization outside Documentation Engine.
 See [immutable execution handoff](execution-handoff.md).
 
+When the packet carries local source scope, the executor must not change any
+other path. After execution, validate an authoritative machine-readable
+changed-file inventory with `docsystem execution-result ID PROJECT --packet
+PACKET --result RESULT --json` before accepting completion evidence. The core
+checks admitted paths and hashes but does not observe writes; caller-declared
+inventory must come from a trusted host/runtime diff, not worker prose.
+
 When installing or adopting Documentation Engine for a project that will keep
 important state outside git, the agent must ask the user where backups should
 be stored and then write that choice only to local ignored policy, such as

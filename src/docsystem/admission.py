@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from docsystem.config import (
@@ -50,6 +50,12 @@ class AdmissionAuthorization:
 
 
 @dataclass(frozen=True)
+class AdmissionSource:
+    path: str
+    sha256: str | None
+
+
+@dataclass(frozen=True)
 class AdmissionRequest:
     workstream_id: str
     criterion: str
@@ -62,6 +68,7 @@ class AdmissionRequest:
     boundaries: AdmissionBoundaries
     authorizations: tuple[AdmissionAuthorization, ...]
     assumptions: tuple[str, ...]
+    source_scope: tuple[AdmissionSource, ...]
     request_sha256: str
 
 
@@ -83,9 +90,15 @@ def _object(value: object, field: str) -> dict[str, Any]:
     return value
 
 
-def _exact_keys(value: dict[str, Any], field: str, required: set[str]) -> None:
+def _exact_keys(
+    value: dict[str, Any],
+    field: str,
+    required: set[str],
+    optional: set[str] | None = None,
+) -> None:
+    optional = optional or set()
     missing = required - set(value)
-    unknown = set(value) - required
+    unknown = set(value) - required - optional
     if missing:
         raise AdmissionError(
             f"{field} is missing required key(s): {', '.join(sorted(missing))}"
@@ -172,6 +185,50 @@ def _authorizations(value: object) -> tuple[AdmissionAuthorization, ...]:
     return tuple(sorted(result, key=lambda item: item.action))
 
 
+def normalize_source_path(value: object, field: str) -> str:
+    path = _string(value, field)
+    if "\\" in path:
+        raise AdmissionError(f"{field} must use POSIX separators")
+    parsed = PurePosixPath(path)
+    if parsed.is_absolute() or path in {".", ".."} or ".." in parsed.parts:
+        raise AdmissionError(f"{field} must be a relative non-escaping file path")
+    normalized = parsed.as_posix()
+    if normalized != path or normalized.startswith("./"):
+        raise AdmissionError(f"{field} must be a normalized POSIX path")
+    return normalized
+
+
+def _source_scope(value: object) -> tuple[AdmissionSource, ...]:
+    if not isinstance(value, list):
+        raise AdmissionError("source_scope must be a list")
+    if len(value) > MAX_ITEMS:
+        raise AdmissionError(
+            f"source_scope exceeds the bounded limit of {MAX_ITEMS} items"
+        )
+    result: list[AdmissionSource] = []
+    seen: set[str] = set()
+    for index, raw in enumerate(value):
+        field = f"source_scope[{index}]"
+        item = _object(raw, field)
+        _exact_keys(item, field, {"path", "sha256"})
+        path = normalize_source_path(item["path"], f"{field}.path")
+        if path in seen:
+            raise AdmissionError(f"duplicate source_scope path: {path}")
+        seen.add(path)
+        raw_digest = item["sha256"]
+        digest: str | None
+        if raw_digest is None:
+            digest = None
+        else:
+            digest = _string(raw_digest, f"{field}.sha256")
+            if not SHA256_PATTERN.fullmatch(digest):
+                raise AdmissionError(
+                    f"{field}.sha256 must be null or a lowercase SHA-256"
+                )
+        result.append(AdmissionSource(path=path, sha256=digest))
+    return tuple(sorted(result, key=lambda item: item.path))
+
+
 def _request_hash(
     *,
     workstream_id: str,
@@ -185,6 +242,7 @@ def _request_hash(
     boundaries: AdmissionBoundaries,
     authorizations: tuple[AdmissionAuthorization, ...],
     assumptions: tuple[str, ...],
+    source_scope: tuple[AdmissionSource, ...],
 ) -> str:
     normalized = {
         "schema_version": SCHEMA_VERSION,
@@ -209,6 +267,10 @@ def _request_hash(
         ],
         "assumptions": list(assumptions),
     }
+    if source_scope:
+        normalized["source_scope"] = [
+            {"path": item.path, "sha256": item.sha256} for item in source_scope
+        ]
     text = json.dumps(
         normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     )
@@ -246,6 +308,7 @@ def load_request(path: Path) -> AdmissionRequest:
             "authorizations",
             "assumptions",
         },
+        {"source_scope"},
     )
     if item["schema_version"] != SCHEMA_VERSION:
         raise AdmissionError("unsupported admission request schema_version")
@@ -287,6 +350,7 @@ def load_request(path: Path) -> AdmissionRequest:
             "authorization names unrequested action(s): " + ", ".join(unexpected)
         )
     assumptions = _string_list(item["assumptions"], "assumptions")
+    source_scope = _source_scope(item.get("source_scope", []))
     return AdmissionRequest(
         workstream_id=workstream_id,
         criterion=criterion,
@@ -299,6 +363,7 @@ def load_request(path: Path) -> AdmissionRequest:
         boundaries=boundaries,
         authorizations=authorizations,
         assumptions=assumptions,
+        source_scope=source_scope,
         request_sha256=_request_hash(
             workstream_id=workstream_id,
             criterion=criterion,
@@ -311,6 +376,7 @@ def load_request(path: Path) -> AdmissionRequest:
             boundaries=boundaries,
             authorizations=authorizations,
             assumptions=assumptions,
+            source_scope=source_scope,
         ),
     )
 
@@ -352,6 +418,11 @@ def evaluate_request(
         )
     )
     reasons.extend(f"authorization-missing:{action}" for action in missing)
+    reasons.extend(
+        f"source-scope-required:{action}"
+        for action in criterion.require_source_scope_for
+        if action in request.actions and not request.source_scope
+    )
     if reasons:
         return AdmissionEvaluation(
             "blocked", tuple(reasons), required_autonomy, missing

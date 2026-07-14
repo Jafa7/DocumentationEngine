@@ -257,6 +257,7 @@ docsystem workstream WS-001 . --record workstream-record.json --json
 docsystem intake . --request idea-intake-request.json --json
 docsystem admission WS-001 . --request execution-admission-request.json --json
 docsystem execution-handoff WS-001 . --admission execution-admission-request.json --json
+docsystem execution-result WS-001 . --packet execution-packet.json --result execution-result.json --json
 docsystem migration-report .
 docsystem migration-report . --json
 docsystem readiness .
@@ -517,6 +518,12 @@ source, graph, policy or admission drift fails closed. Original Markdown
 remains fully available on demand. See
 [immutable execution handoff](docs/execution-handoff.md).
 
+When project policy requires it, admission also binds normalized local source
+paths to their pre-edit hashes (or explicit absence). After an executor
+returns, `execution-result` validates its structured changed-file inventory
+against that scope and current after-hashes. The inventory remains a caller
+assertion: use an authoritative host/runtime diff rather than worker prose.
+
 `report draft` produces a privacy-safe GitHub issue body for adopter
 runtime reports, adoption findings, core bugs or documentation pattern
 requests; it is read-only and leaves expected/actual/requested-action fields
@@ -546,8 +553,8 @@ is missing, so the pasted snippet can never drift from
 `docs/setup-guide.md` Step 7 by hand-copying.
 
 `readiness`, `migration-report`, `catalog --explain`, `changes`, `context`,
-`criteria`, `workstream`, `intake`, `admission`, `execution-handoff` and
-`agent-instructions` accept
+`criteria`, `workstream`, `intake`, `admission`, `execution-handoff`,
+`execution-result` and `agent-instructions` accept
 `--json` and print one
 deterministic JSON value
 (sorted keys, stable field names) instead of text, carrying the same

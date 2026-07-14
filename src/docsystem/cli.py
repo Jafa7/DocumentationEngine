@@ -18,6 +18,7 @@ from docsystem.admission import (
     AdmissionError,
     AdmissionEvaluation,
     AdmissionRequest,
+    normalize_source_path,
 )
 from docsystem.admission import (
     evaluate_request as evaluate_admission_request,
@@ -58,7 +59,12 @@ from docsystem.config import (
     is_historical_snapshot,
     load_config,
 )
-from docsystem.execution import ExecutionPacketError, load_packet, seal_packet
+from docsystem.execution import (
+    ExecutionPacketError,
+    load_execution_result,
+    load_packet,
+    seal_packet,
+)
 from docsystem.graph import (
     Address,
     Boundary,
@@ -3696,6 +3702,7 @@ def _admission_criterion_json(
         "max_risk": criterion.max_risk,
         "max_targets": criterion.max_targets,
         "required_sections": list(criterion.required_sections),
+        "require_source_scope_for": list(criterion.require_source_scope_for),
         "safe_fallback": criterion.safe_fallback,
     }
 
@@ -3719,7 +3726,7 @@ def _admission_payload(
     criterion: AdmissionCriterion,
     evaluation: AdmissionEvaluation,
 ) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "workstream_id": request.workstream_id,
         "criterion": criterion.reference,
         "intake_request_sha256": request.intake_request_sha256,
@@ -3751,6 +3758,39 @@ def _admission_payload(
         "assumptions": list(request.assumptions),
         "catalog_guard": _catalog_allocation_guard(catalog_value),
     }
+    if request.source_scope:
+        payload["source_scope"] = [
+            {"path": item.path, "sha256": item.sha256}
+            for item in request.source_scope
+        ]
+    return payload
+
+
+def _validate_admission_source_scope(
+    project_root: Path, request: AdmissionRequest
+) -> None:
+    root = project_root.resolve()
+    for item in request.source_scope:
+        candidate = (root / item.path).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError as error:
+            raise AdmissionError(
+                f"source_scope path escapes the project root: {item.path}"
+            ) from error
+        if item.sha256 is None:
+            if candidate.exists():
+                raise AdmissionError(
+                    f"source_scope expected an absent path: {item.path}"
+                )
+            continue
+        if not candidate.is_file():
+            raise AdmissionError(f"source_scope file does not exist: {item.path}")
+        actual = hashlib.sha256(candidate.read_bytes()).hexdigest()
+        if actual != item.sha256:
+            raise AdmissionError(
+                f"source_scope hash does not match current file: {item.path}"
+            )
 
 
 def _evaluate_execution_admission(
@@ -3785,6 +3825,7 @@ def _evaluate_execution_admission(
         )
     criterion = _admission_criterion_by_reference(config, request.criterion)
     evaluation = evaluate_admission_request(request, criterion)
+    _validate_admission_source_scope(project_root, request)
     document = find_document(catalog_value, document_id)
     if (
         document.metadata is None
@@ -3992,30 +4033,40 @@ def _build_execution_handoff(
     admission_payload = _admission_payload(
         catalog_value, request, criterion, evaluation
     )
-    return seal_packet(
-        {
-            "kind": "execution-handoff",
-            "workstream_id": document_id,
-            "admission": admission_payload,
-            "mandate": {
-                "id": document_id,
-                "revision": mandate.metadata.revision,
-                "status": mandate.metadata.status,
-                "path": mandate.path.as_posix(),
-                "document_sha256": hashlib.sha256(
-                    mandate.content.encode()
-                ).hexdigest(),
-                "required_sections": required_sections,
-            },
-            "targets": target_rows,
-            "context_manifest": {
-                "read": sorted(dispositions["read"]),
-                "review": sorted(dispositions["review"]),
-                "content_embedded": False,
-                "expansion": "on-demand-by-stable-address",
-            },
-        }
-    )
+    packet: dict[str, object] = {
+        "kind": "execution-handoff",
+        "workstream_id": document_id,
+        "admission": admission_payload,
+        "mandate": {
+            "id": document_id,
+            "revision": mandate.metadata.revision,
+            "status": mandate.metadata.status,
+            "path": mandate.path.as_posix(),
+            "document_sha256": hashlib.sha256(mandate.content.encode()).hexdigest(),
+            "required_sections": required_sections,
+        },
+        "targets": target_rows,
+        "context_manifest": {
+            "read": sorted(dispositions["read"]),
+            "review": sorted(dispositions["review"]),
+            "content_embedded": False,
+            "expansion": "on-demand-by-stable-address",
+        },
+    }
+    if request.source_scope:
+        packet["source_scope"] = [
+            {
+                "path": item.path,
+                "sha256": item.sha256,
+                "bytes": (
+                    None
+                    if item.sha256 is None
+                    else (project_root.resolve() / item.path).stat().st_size
+                ),
+            }
+            for item in request.source_scope
+        ]
+    return seal_packet(packet)
 
 
 def execution_handoff(
@@ -4057,6 +4108,136 @@ def execution_handoff(
     print(f"packet_sha256\t{current['packet_sha256']}")
     print(f"targets\t{len(current['targets'])}")
     print(f"verified\t{str(verify_path is not None).lower()}")
+    return 0
+
+
+def execution_result(
+    project_root: Path,
+    document_id: str,
+    *,
+    packet_path: Path,
+    result_path: Path,
+    json_output: bool = False,
+) -> int:
+    """Validate structured changed-file evidence against an admitted packet."""
+
+    try:
+        packet = load_packet(packet_path)
+        result = load_execution_result(result_path)
+        if packet.get("workstream_id") != document_id:
+            raise ExecutionPacketError(
+                "execution packet workstream_id does not match the requested ID"
+            )
+        if result.workstream_id != document_id:
+            raise ExecutionPacketError(
+                "execution result workstream_id does not match the requested ID"
+            )
+        if result.packet_sha256 != packet["packet_sha256"]:
+            raise ExecutionPacketError(
+                "execution result does not reference the supplied packet"
+            )
+        raw_scope = packet.get("source_scope")
+        if not isinstance(raw_scope, list):
+            raise ExecutionPacketError("execution packet has no valid source_scope")
+        baseline: dict[str, str | None] = {}
+        for index, raw in enumerate(raw_scope):
+            if not isinstance(raw, dict):
+                raise ExecutionPacketError(
+                    f"execution packet source_scope[{index}] is invalid"
+                )
+            path = raw.get("path")
+            digest = raw.get("sha256")
+            if (
+                not isinstance(path, str)
+                or path in baseline
+                or (
+                    digest is not None
+                    and (
+                        not isinstance(digest, str)
+                        or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                    )
+                )
+            ):
+                raise ExecutionPacketError(
+                    f"execution packet source_scope[{index}] is invalid"
+                )
+            try:
+                normalized = normalize_source_path(path, "execution packet source path")
+            except AdmissionError as error:
+                raise ExecutionPacketError(str(error)) from error
+            if normalized != path:
+                raise ExecutionPacketError(
+                    f"execution packet source_scope[{index}] is invalid"
+                )
+            baseline[path] = digest
+        declared = {item.path: item.sha256 for item in result.changed_files}
+        outside = sorted(set(declared) - set(baseline))
+        if outside:
+            raise ExecutionPacketError(
+                "execution result contains out-of-scope path(s): "
+                + ", ".join(outside)
+            )
+        root = project_root.resolve()
+        current: dict[str, str | None] = {}
+        for path in baseline:
+            candidate = (root / path).resolve()
+            try:
+                candidate.relative_to(root)
+            except ValueError as error:
+                raise ExecutionPacketError(
+                    f"execution packet source path escapes project root: {path}"
+                ) from error
+            if candidate.exists() and not candidate.is_file():
+                raise ExecutionPacketError(
+                    f"execution source path is not a file: {path}"
+                )
+            current[path] = (
+                hashlib.sha256(candidate.read_bytes()).hexdigest()
+                if candidate.is_file()
+                else None
+            )
+        actual = {path for path in baseline if current[path] != baseline[path]}
+        missing = sorted(actual - set(declared))
+        unchanged = sorted(set(declared) - actual)
+        if missing:
+            raise ExecutionPacketError(
+                "execution result omits changed scoped path(s): "
+                + ", ".join(missing)
+            )
+        if unchanged:
+            raise ExecutionPacketError(
+                "execution result declares unchanged path(s): "
+                + ", ".join(unchanged)
+            )
+        mismatched = sorted(
+            path for path, digest in declared.items() if current[path] != digest
+        )
+        if mismatched:
+            raise ExecutionPacketError(
+                "execution result hash does not match current path(s): "
+                + ", ".join(mismatched)
+            )
+    except (OSError, ValueError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    payload = {
+        "workstream_id": document_id,
+        "packet_sha256": packet["packet_sha256"],
+        "changed_files": [
+            {"path": item.path, "sha256": item.sha256}
+            for item in result.changed_files
+        ],
+        "declared_changes_within_scope": True,
+        "inventory_authority": "caller-declared",
+    }
+    if json_output:
+        _print_json(payload)
+        return 0
+    print(f"workstream\t{document_id}")
+    print(f"packet_sha256\t{packet['packet_sha256']}")
+    print(f"changed_files\t{len(result.changed_files)}")
+    print("declared_changes_within_scope\ttrue")
+    print("inventory_authority\tcaller-declared")
     return 0
 
 
@@ -5851,12 +6032,6 @@ def _agent_instructions_text(selection: _Selection, config: ProjectConfig) -> st
         "graph diagnosis, not as mandatory overhead for every edit; metrics are "
         "facts and configured signals remain advisory."
     )
-    if config.workstream_criteria:
-        out.append(
-            "- For governed workstreams, inspect `docsystem criteria PROJECT "
-            "--json`, validate the bounded record with `docsystem workstream`, "
-            "and never claim completion unless `ready_to_finish` is true."
-        )
     if config.intake_criteria:
         out.append(
             "- Convert a new human idea into a bounded request, run `docsystem "
@@ -5869,6 +6044,32 @@ def _agent_instructions_text(selection: _Selection, config: ProjectConfig) -> st
             "with `docsystem admission ID PROJECT --request REQUEST --json`; "
             "do not execute a blocked intent or treat authorization assertions "
             "as authenticated identity."
+        )
+        out.append(
+            "- Immediately before an external executor acts, build the "
+            "immutable packet with `docsystem execution-handoff ID PROJECT "
+            "--admission REQUEST --json`, save that output as `PACKET`, then "
+            "give the executor the exact "
+            "`docsystem execution-handoff ID PROJECT --admission REQUEST "
+            "--verify PACKET --json` re-check to run first; a failed or "
+            "non-zero verification stops the executor before any edit, and "
+            "neither the admission nor the packet is itself a permission grant."
+        )
+        out.append(
+            "- When the packet carries `source_scope`, require a machine-readable "
+            "`RESULT` from the runtime after execution and run `docsystem "
+            "execution-result ID PROJECT --packet PACKET --result RESULT --json`; "
+            "treat it as caller-declared inventory, stop on omitted scoped or "
+            "out-of-scope paths, and do not replace an authoritative host diff "
+            "with worker prose."
+        )
+    if config.workstream_criteria:
+        out.append(
+            "- For governed workstreams, inspect `docsystem criteria PROJECT "
+            "--json`, validate `RECORD` with `docsystem workstream ID PROJECT "
+            "--record RECORD --json`, require `ready_to_finish` to be true, "
+            "then run `docsystem finish ID PROJECT --workstream-record RECORD "
+            "--json`; never claim completion from an in-progress record."
         )
     if config.context_views:
         out.append(
@@ -6269,6 +6470,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print the packet or verification result as deterministic JSON.",
     )
 
+    execution_result_parser = subparsers.add_parser(
+        "execution-result",
+        help="Validate structured changed-file evidence against a handoff packet.",
+    )
+    execution_result_parser.add_argument("document_id")
+    execution_result_parser.add_argument(
+        "project", nargs="?", type=Path, default=Path.cwd()
+    )
+    execution_result_parser.add_argument("--packet", required=True, type=Path)
+    execution_result_parser.add_argument("--result", required=True, type=Path)
+    execution_result_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print deterministic JSON evidence instead of tab-separated text.",
+    )
+
     migration_report_parser = subparsers.add_parser(
         "migration-report", help="Report legacy relation adoption mappings."
     )
@@ -6474,6 +6692,7 @@ def build_parser() -> argparse.ArgumentParser:
         intake_parser,
         admission_parser,
         execution_handoff_parser,
+        execution_result_parser,
         migration_report_parser,
         migrate_parser,
         readiness_parser,
@@ -6602,6 +6821,14 @@ def main() -> int:
             args.document_id,
             admission_path=args.admission_path,
             verify_path=args.verify_path,
+            json_output=args.json_output,
+        )
+    if args.command == "execution-result":
+        return execution_result(
+            project,
+            args.document_id,
+            packet_path=args.packet,
+            result_path=args.result,
             json_output=args.json_output,
         )
     if args.command == "migration-report":

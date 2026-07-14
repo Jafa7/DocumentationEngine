@@ -208,6 +208,7 @@ class AdmissionCriterion:
     max_risk: str
     max_targets: int
     required_sections: tuple[str, ...]
+    require_source_scope_for: tuple[str, ...]
     safe_fallback: str
 
     @property
@@ -787,6 +788,7 @@ def _admission_criteria(raw: object) -> tuple[AdmissionCriterion, ...]:
         "required_sections",
         "safe_fallback",
     }
+    optional = {"require_source_scope_for"}
     result: list[AdmissionCriterion] = []
     seen: set[tuple[str, int]] = set()
     for index, entry in enumerate(criteria):
@@ -794,7 +796,7 @@ def _admission_criteria(raw: object) -> tuple[AdmissionCriterion, ...]:
         if not isinstance(entry, dict):
             raise ValueError(f"{field} must be a table")
         missing = required - set(entry)
-        unknown_entry = set(entry) - required
+        unknown_entry = set(entry) - required - optional
         if missing:
             raise ValueError(
                 f"{field} is missing required key(s): {', '.join(sorted(missing))}"
@@ -861,6 +863,20 @@ def _admission_criteria(raw: object) -> tuple[AdmissionCriterion, ...]:
             raise ValueError(
                 f"{field}.required_authorizations must be allowed actions"
             )
+        source_scope_actions = entry.get("require_source_scope_for", [])
+        if not isinstance(source_scope_actions, list) or any(
+            not isinstance(item, str) or item not in ADMISSION_ACTION_LEVELS
+            for item in source_scope_actions
+        ):
+            raise ValueError(
+                f"{field}.require_source_scope_for may contain only admission actions"
+            )
+        if len(set(source_scope_actions)) != len(source_scope_actions):
+            raise ValueError(f"{field}.require_source_scope_for must be unique")
+        if not set(source_scope_actions).issubset(actions):
+            raise ValueError(
+                f"{field}.require_source_scope_for must be allowed actions"
+            )
         verification = entry["allowed_verification"]
         if not isinstance(verification, list) or any(
             not isinstance(item, str)
@@ -910,6 +926,7 @@ def _admission_criteria(raw: object) -> tuple[AdmissionCriterion, ...]:
                 max_risk=max_risk,
                 max_targets=max_targets,
                 required_sections=tuple(sections),
+                require_source_scope_for=tuple(source_scope_actions),
                 safe_fallback="blocked",
             )
         )

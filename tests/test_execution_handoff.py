@@ -1,10 +1,11 @@
+import hashlib
 import json
 from copy import deepcopy
 from pathlib import Path
 
 import pytest
 
-from docsystem.cli import build_parser, execution_handoff
+from docsystem.cli import build_parser, execution_handoff, execution_result
 from docsystem.config import CONFIG_FILENAME, DEFAULT_CONFIG
 from docsystem.execution import ExecutionPacketError, load_packet, seal_packet
 
@@ -308,3 +309,269 @@ def test_execution_handoff_parser_contract(tmp_path: Path) -> None:
     assert args.document_id == "WS-001"
     assert args.admission_path == admission
     assert args.verify_path == packet
+
+
+def test_source_scope_binds_baseline_and_validates_structured_result(
+    tmp_path: Path, capsys
+) -> None:
+    _project(tmp_path)
+    source = tmp_path / "source.txt"
+    source.write_text("before\n", encoding="utf-8")
+    request = _request()
+    request["source_scope"] = [
+        {"path": "source.txt", "sha256": hashlib.sha256(source.read_bytes()).hexdigest()}
+    ]
+    admission = _write_request(tmp_path, request)
+    assert execution_handoff(
+        tmp_path, "WS-001", admission_path=admission, json_output=True
+    ) == 0
+    packet_path = tmp_path / "packet.json"
+    packet_path.write_text(capsys.readouterr().out, encoding="utf-8")
+    packet = json.loads(packet_path.read_text(encoding="utf-8"))
+    assert packet["source_scope"] == [
+        {
+            "path": "source.txt",
+            "sha256": hashlib.sha256(b"before\n").hexdigest(),
+            "bytes": 7,
+        }
+    ]
+
+    source.write_text("after\n", encoding="utf-8")
+    assert execution_handoff(
+        tmp_path,
+        "WS-001",
+        admission_path=admission,
+        verify_path=packet_path,
+        json_output=True,
+    ) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "source_scope hash does not match" in captured.err
+
+    result_path = tmp_path / "result.json"
+    result_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "workstream_id": "WS-001",
+                "packet_sha256": packet["packet_sha256"],
+                "changed_files": [
+                    {
+                        "path": "source.txt",
+                        "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert execution_result(
+        tmp_path,
+        "WS-001",
+        packet_path=packet_path,
+        result_path=result_path,
+        json_output=True,
+    ) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["declared_changes_within_scope"] is True
+    assert payload["inventory_authority"] == "caller-declared"
+
+
+def test_execution_result_rejects_out_of_scope_and_omitted_changes(
+    tmp_path: Path, capsys
+) -> None:
+    _project(tmp_path)
+    sources = []
+    for name in ("one.txt", "two.txt"):
+        path = tmp_path / name
+        path.write_text("before\n", encoding="utf-8")
+        sources.append(
+            {"path": name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+        )
+    request = _request()
+    request["source_scope"] = sources
+    admission = _write_request(tmp_path, request)
+    assert execution_handoff(
+        tmp_path, "WS-001", admission_path=admission, json_output=True
+    ) == 0
+    packet_path = tmp_path / "packet.json"
+    packet_path.write_text(capsys.readouterr().out, encoding="utf-8")
+    packet = json.loads(packet_path.read_text(encoding="utf-8"))
+    for name in ("one.txt", "two.txt"):
+        (tmp_path / name).write_text("after\n", encoding="utf-8")
+
+    result_path = tmp_path / "result.json"
+    result_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "workstream_id": "WS-001",
+                "packet_sha256": packet["packet_sha256"],
+                "changed_files": [
+                    {
+                        "path": "one.txt",
+                        "sha256": hashlib.sha256((tmp_path / "one.txt").read_bytes()).hexdigest(),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert execution_result(
+        tmp_path,
+        "WS-001",
+        packet_path=packet_path,
+        result_path=result_path,
+        json_output=True,
+    ) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "omits changed scoped path(s): two.txt" in captured.err
+
+    data = json.loads(result_path.read_text(encoding="utf-8"))
+    data["changed_files"] = [{"path": "outside.txt", "sha256": None}]
+    result_path.write_text(json.dumps(data), encoding="utf-8")
+    assert execution_result(
+        tmp_path,
+        "WS-001",
+        packet_path=packet_path,
+        result_path=result_path,
+        json_output=True,
+    ) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "out-of-scope path(s): outside.txt" in captured.err
+
+
+def test_source_scope_supports_absent_then_created_and_rejects_escaping_path(
+    tmp_path: Path, capsys
+) -> None:
+    _project(tmp_path)
+    request = _request()
+    request["source_scope"] = [{"path": "new.txt", "sha256": None}]
+    admission = _write_request(tmp_path, request)
+    assert execution_handoff(
+        tmp_path, "WS-001", admission_path=admission, json_output=True
+    ) == 0
+    packet = json.loads(capsys.readouterr().out)
+    assert packet["source_scope"] == [
+        {"path": "new.txt", "sha256": None, "bytes": None}
+    ]
+
+    request["source_scope"] = [{"path": "../escape.txt", "sha256": None}]
+    admission = _write_request(tmp_path, request)
+    assert execution_handoff(
+        tmp_path, "WS-001", admission_path=admission, json_output=True
+    ) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "relative non-escaping file path" in captured.err
+
+
+def _write_execution_result(
+    tmp_path: Path, packet: dict[str, object], changed_files: list[dict[str, object]]
+) -> Path:
+    path = tmp_path / "result.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "workstream_id": "WS-001",
+                "packet_sha256": packet["packet_sha256"],
+                "changed_files": changed_files,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_execution_result_accepts_absent_path_created_with_after_hash(
+    tmp_path: Path, capsys
+) -> None:
+    _project(tmp_path)
+    request = _request()
+    request["source_scope"] = [{"path": "new.txt", "sha256": None}]
+    admission = _write_request(tmp_path, request)
+    assert execution_handoff(
+        tmp_path, "WS-001", admission_path=admission, json_output=True
+    ) == 0
+    packet_path = tmp_path / "packet.json"
+    packet_path.write_text(capsys.readouterr().out, encoding="utf-8")
+    packet = json.loads(packet_path.read_text(encoding="utf-8"))
+
+    created = tmp_path / "new.txt"
+    created.write_text("created\n", encoding="utf-8")
+    after_hash = hashlib.sha256(created.read_bytes()).hexdigest()
+
+    result_path = _write_execution_result(
+        tmp_path, packet, [{"path": "new.txt", "sha256": after_hash}]
+    )
+    assert execution_result(
+        tmp_path,
+        "WS-001",
+        packet_path=packet_path,
+        result_path=result_path,
+        json_output=True,
+    ) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["changed_files"] == [{"path": "new.txt", "sha256": after_hash}]
+    assert payload["declared_changes_within_scope"] is True
+
+
+def test_execution_result_accepts_existing_path_deleted_with_null_hash(
+    tmp_path: Path, capsys
+) -> None:
+    _project(tmp_path)
+    existing = tmp_path / "existing.txt"
+    existing.write_text("before\n", encoding="utf-8")
+    request = _request()
+    request["source_scope"] = [
+        {
+            "path": "existing.txt",
+            "sha256": hashlib.sha256(existing.read_bytes()).hexdigest(),
+        }
+    ]
+    admission = _write_request(tmp_path, request)
+    assert execution_handoff(
+        tmp_path, "WS-001", admission_path=admission, json_output=True
+    ) == 0
+    packet_path = tmp_path / "packet.json"
+    packet_path.write_text(capsys.readouterr().out, encoding="utf-8")
+    packet = json.loads(packet_path.read_text(encoding="utf-8"))
+
+    existing.unlink()
+
+    result_path = _write_execution_result(
+        tmp_path, packet, [{"path": "existing.txt", "sha256": None}]
+    )
+    assert execution_result(
+        tmp_path,
+        "WS-001",
+        packet_path=packet_path,
+        result_path=result_path,
+        json_output=True,
+    ) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["changed_files"] == [{"path": "existing.txt", "sha256": None}]
+    assert payload["declared_changes_within_scope"] is True
+
+
+def test_execution_result_parser_contract(tmp_path: Path) -> None:
+    packet = tmp_path / "packet.json"
+    result = tmp_path / "result.json"
+    args = build_parser().parse_args(
+        [
+            "execution-result",
+            "WS-001",
+            str(tmp_path),
+            "--packet",
+            str(packet),
+            "--result",
+            str(result),
+            "--json",
+        ]
+    )
+    assert args.command == "execution-result"
+    assert args.packet == packet
+    assert args.result == result

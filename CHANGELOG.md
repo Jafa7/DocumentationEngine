@@ -18,6 +18,11 @@ All notable changes to Documentation Engine are documented in this file.
 - Read-only `execution-handoff` CLI/MCP packet generation and verification with
   mandate/target hashes, section ranges, graph impact, visible completeness and
   no embedded authored bodies.
+- Generated agent instructions now present configured intake, admission,
+  immutable handoff verification and evidence-gated finish in execution order.
+- Optional admission source scopes bind local pre-edit paths/hashes, while the
+  read-only `execution-result` CLI/MCP contract validates structured returned
+  changed-file evidence without claiming to observe external writes.
 
 ## [0.2.0] - 2026-07-13
 

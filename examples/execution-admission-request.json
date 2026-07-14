@@ -26,6 +26,16 @@
   "outcome": "Make one bounded local change.",
   "risk": "medium",
   "schema_version": 1,
+  "source_scope": [
+    {
+      "path": "src/example.py",
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    {
+      "path": "tests/new_test.py",
+      "sha256": null
+    }
+  ],
   "targets": [
     "DOC-010#contract"
   ],

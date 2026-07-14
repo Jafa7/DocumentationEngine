@@ -423,6 +423,13 @@ integrity-sealed and bounded; verification rebuilds it from current Markdown
 and fails closed on any drift. The core still does not dispatch, mutate,
 authenticate authority or grant permissions.
 
+Project policy may additionally require normalized local source scope for a
+write-capable action. The packet binds existing-file hashes and explicitly
+absent creation targets. A separate read-only execution-result check compares
+caller-declared changed paths and after-hashes to that scope. This is
+structured evidence, not filesystem observation: authoritative inventory
+collection remains an external runtime responsibility.
+
 ## Product sequence
 
 1. Configuration contract, bootstrap and diagnostics.

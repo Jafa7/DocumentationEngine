@@ -32,6 +32,7 @@ allowed_verification = ["focused", "full"]
 max_risk = "medium"
 max_targets = 12
 required_sections = ["mandate", "boundaries", "return-protocol", "review-gate"]
+require_source_scope_for = ["edit-local"]
 safe_fallback = "blocked"
 ```
 
@@ -73,7 +74,11 @@ version `1`. See
       "evidence": "user-current-task"
     }
   ],
-  "assumptions": ["The mandate remains authoritative."]
+  "assumptions": ["The mandate remains authoritative."],
+  "source_scope": [
+    {"path": "src/example.py", "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
+    {"path": "tests/new_test.py", "sha256": null}
+  ]
 }
 ```
 
@@ -84,6 +89,12 @@ addresses must resolve in a fully valid catalog. The selected document must
 have `type: workstream`, must not declare terminal status `completed`,
 `cancelled` or `failed`, and must contain every section required by the
 criterion.
+
+`source_scope` is optional unless the selected criterion requires it for a
+requested action. Each entry uses one normalized relative POSIX path. A
+lowercase SHA-256 binds an existing file; `null` binds the expectation that a
+new path is absent. Absolute, escaping, duplicate, missing or stale entries
+fail closed before handoff generation.
 
 The intake hash links admission to the earlier semantic request without
 copying its outcome body. Documentation Engine checks that it is a lowercase

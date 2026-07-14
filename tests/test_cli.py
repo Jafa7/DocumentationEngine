@@ -332,3 +332,214 @@ def test_agent_instructions_works_without_documentation_root(
     assert agent_instructions(tmp_path) == 0
     output = capsys.readouterr().out
     assert output.startswith("## Documentation with Documentation Engine\n")
+
+
+_INTAKE_CRITERION_CONFIG = """
+[[intake.criteria]]
+id = "idea-placement"
+revision = 1
+allowed_decisions = ["update-existing", "create-draft", "create-workstream"]
+max_candidates = 8
+safe_fallback = "blocked"
+draft = { area = "architecture", type = "architecture", identifier = "document", width = 3 }
+workstream = { area = "roadmap", type = "workstream", identifier = "roadmap", width = 3 }
+"""
+
+_ADMISSION_CRITERION_CONFIG = """
+[[admission.criteria]]
+id = "bounded-local"
+revision = 1
+max_autonomy = "A2"
+allowed_actions = ["inspect", "plan", "edit-local", "run-checks"]
+required_authorizations = ["edit-local"]
+allowed_verification = ["focused", "full"]
+max_risk = "medium"
+max_targets = 12
+required_sections = ["mandate", "boundaries", "review-gate"]
+safe_fallback = "blocked"
+"""
+
+_WORKSTREAM_CRITERION_CONFIG = """
+[[workstreams.criteria]]
+id = "verified-delivery"
+revision = 1
+required_sections = ["mandate"]
+required_evidence = ["checks", "review", "returns"]
+max_attempts = 2
+safe_fallback = "blocked"
+"""
+
+_HANDOFF_BULLET = (
+    "- Immediately before an external executor acts, build the immutable "
+    "packet with `docsystem execution-handoff ID PROJECT --admission "
+    "REQUEST --json`, save that output as `PACKET`, then give the executor "
+    "the exact `docsystem "
+    "execution-handoff ID PROJECT --admission REQUEST --verify PACKET "
+    "--json` re-check to run first; a failed or non-zero verification "
+    "stops the executor before any edit, and neither the admission nor "
+    "the packet is itself a permission grant."
+)
+_ADMISSION_BULLET = (
+    "- Before implementation, validate the bounded workstream intent "
+    "with `docsystem admission ID PROJECT --request REQUEST --json`; "
+    "do not execute a blocked intent or treat authorization assertions "
+    "as authenticated identity."
+)
+_EXECUTION_RESULT_BULLET = (
+    "- When the packet carries `source_scope`, require a machine-readable "
+    "`RESULT` from the runtime after execution and run `docsystem "
+    "execution-result ID PROJECT --packet PACKET --result RESULT --json`; "
+    "treat it as caller-declared inventory, stop on omitted scoped or "
+    "out-of-scope paths, and do not replace an authoritative host diff with "
+    "worker prose."
+)
+_INTAKE_BULLET = (
+    "- Convert a new human idea into a bounded request, run `docsystem "
+    "intake PROJECT --request REQUEST --json`, and follow only its "
+    "explicit decision; a blocked result requires owner input."
+)
+_WORKSTREAM_BULLET = (
+    "- For governed workstreams, inspect `docsystem criteria PROJECT "
+    "--json`, validate `RECORD` with `docsystem workstream ID PROJECT "
+    "--record RECORD --json`, require `ready_to_finish` to be true, then "
+    "run `docsystem finish ID PROJECT --workstream-record RECORD --json`; "
+    "never claim completion from an in-progress record."
+)
+
+
+def test_agent_instructions_omits_lifecycle_bullets_without_criteria(
+    tmp_path: Path, capsys
+) -> None:
+    assert initialize(tmp_path) == 0
+    capsys.readouterr()
+
+    assert agent_instructions(tmp_path) == 0
+    output = capsys.readouterr().out
+
+    assert _INTAKE_BULLET not in output
+    assert _ADMISSION_BULLET not in output
+    assert _HANDOFF_BULLET not in output
+    assert _EXECUTION_RESULT_BULLET not in output
+    assert _WORKSTREAM_BULLET not in output
+
+
+def test_agent_instructions_intake_only_adds_intake_bullet(
+    tmp_path: Path, capsys
+) -> None:
+    assert initialize(tmp_path) == 0
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8") + _INTAKE_CRITERION_CONFIG,
+        encoding="utf-8",
+    )
+    capsys.readouterr()
+
+    assert agent_instructions(tmp_path) == 0
+    output = capsys.readouterr().out
+
+    assert _INTAKE_BULLET in output
+    assert _ADMISSION_BULLET not in output
+    assert _HANDOFF_BULLET not in output
+    assert _EXECUTION_RESULT_BULLET not in output
+    assert _WORKSTREAM_BULLET not in output
+
+
+def test_agent_instructions_admission_only_adds_admission_and_handoff_bullets(
+    tmp_path: Path, capsys
+) -> None:
+    assert initialize(tmp_path) == 0
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8") + _ADMISSION_CRITERION_CONFIG,
+        encoding="utf-8",
+    )
+    capsys.readouterr()
+
+    assert agent_instructions(tmp_path) == 0
+    output = capsys.readouterr().out
+
+    assert _INTAKE_BULLET not in output
+    assert _ADMISSION_BULLET in output
+    assert _HANDOFF_BULLET in output
+    assert _EXECUTION_RESULT_BULLET in output
+    assert _WORKSTREAM_BULLET not in output
+    # The handoff bullet must directly follow the admission bullet.
+    assert output.index(_ADMISSION_BULLET) < output.index(_HANDOFF_BULLET)
+
+
+def test_agent_instructions_workstream_only_adds_workstream_bullet(
+    tmp_path: Path, capsys
+) -> None:
+    assert initialize(tmp_path) == 0
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8") + _WORKSTREAM_CRITERION_CONFIG,
+        encoding="utf-8",
+    )
+    capsys.readouterr()
+
+    assert agent_instructions(tmp_path) == 0
+    output = capsys.readouterr().out
+
+    assert _INTAKE_BULLET not in output
+    assert _ADMISSION_BULLET not in output
+    assert _HANDOFF_BULLET not in output
+    assert _EXECUTION_RESULT_BULLET not in output
+    assert _WORKSTREAM_BULLET in output
+
+
+def test_agent_instructions_full_lifecycle_orders_intake_admission_handoff_finish(
+    tmp_path: Path, capsys
+) -> None:
+    assert initialize(tmp_path) == 0
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8")
+        + _INTAKE_CRITERION_CONFIG
+        + _ADMISSION_CRITERION_CONFIG
+        + _WORKSTREAM_CRITERION_CONFIG,
+        encoding="utf-8",
+    )
+    capsys.readouterr()
+
+    assert agent_instructions(tmp_path) == 0
+    output = capsys.readouterr().out
+
+    for bullet in (
+        _INTAKE_BULLET,
+        _ADMISSION_BULLET,
+        _HANDOFF_BULLET,
+        _EXECUTION_RESULT_BULLET,
+        _WORKSTREAM_BULLET,
+    ):
+        assert bullet in output
+
+    assert (
+        output.index(_INTAKE_BULLET)
+        < output.index(_ADMISSION_BULLET)
+        < output.index(_HANDOFF_BULLET)
+        < output.index(_EXECUTION_RESULT_BULLET)
+        < output.index(_WORKSTREAM_BULLET)
+    )
+
+
+def test_agent_instructions_json_carries_exact_text_with_full_lifecycle(
+    tmp_path: Path, capsys
+) -> None:
+    assert initialize(tmp_path) == 0
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8")
+        + _INTAKE_CRITERION_CONFIG
+        + _ADMISSION_CRITERION_CONFIG
+        + _WORKSTREAM_CRITERION_CONFIG,
+        encoding="utf-8",
+    )
+    capsys.readouterr()
+
+    assert agent_instructions(tmp_path) == 0
+    text_output = capsys.readouterr().out
+
+    assert agent_instructions(tmp_path, json_output=True) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {"schema_version": 1, "text": text_output}

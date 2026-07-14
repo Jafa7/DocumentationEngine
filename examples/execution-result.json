@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "workstream_id": "WS-001",
+  "packet_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "changed_files": [
+    {
+      "path": "src/example.py",
+      "sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+    }
+  ]
+}

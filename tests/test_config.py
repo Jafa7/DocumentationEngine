@@ -247,6 +247,7 @@ allowed_verification = ["focused", "full"]
 max_risk = "medium"
 max_targets = 12
 required_sections = ["mandate", "boundaries", "review-gate"]
+require_source_scope_for = ["edit-local"]
 safe_fallback = "blocked"
 """
     (tmp_path / CONFIG_FILENAME).write_text(configured, encoding="utf-8")
@@ -267,6 +268,7 @@ safe_fallback = "blocked"
         "boundaries",
         "review-gate",
     )
+    assert criterion.require_source_scope_for == ("edit-local",)
 
 
 @pytest.mark.parametrize(
@@ -297,6 +299,10 @@ safe_fallback = "blocked"
             "must contain supported stable anchors",
         ),
         ('safe_fallback = "continue"', "safe_fallback must be 'blocked'"),
+        (
+            'require_source_scope_for = ["execute"]',
+            "require_source_scope_for may contain only",
+        ),
     ],
 )
 def test_invalid_admission_criteria_are_rejected(
@@ -313,6 +319,7 @@ allowed_verification = ["focused", "full"]
 max_risk = "medium"
 max_targets = 12
 required_sections = ["mandate", "boundaries", "review-gate"]
+require_source_scope_for = []
 safe_fallback = "blocked"
 """
     field = replacement.split(" =", 1)[0]

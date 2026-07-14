@@ -297,6 +297,12 @@ docsystem agent-instructions /path/to/project
 
 Paste its output into the agent instructions file.
 
+When the project configures intake, admission or governed-workstream
+criteria, the generated snippet also carries the applicable chronological
+cycle: idea placement, admission, saved-packet verification, completion
+evidence and strict finish. It omits unconfigured gates instead of inventing
+project policy.
+
 **Check:** confirm the instruction file is either tracked intentionally or is a
 local provider-specific file the project already uses.
 
