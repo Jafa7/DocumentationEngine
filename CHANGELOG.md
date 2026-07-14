@@ -26,6 +26,9 @@ All notable changes to Documentation Engine are documented in this file.
 - Read-only `metadata-inventory` CLI/MCP inspection reports observed metadata
   coverage, YAML types and body-free per-document graph facts while hiding
   additional values unless one field is explicitly requested.
+- Optional project-authored document profiles and read-only `profile-check`
+  CLI/MCP validation cover metadata, semantic anchor roles, relation/status
+  allowlists and history-mode evidence without inferred policy or source writes.
 
 ## [0.2.0] - 2026-07-13
 

@@ -205,6 +205,26 @@ def metadata_inventory(
     return _json_tool(arguments)
 
 
+def profile_check(
+    project: str,
+    source: str | None = None,
+    workspace: str | None = None,
+) -> dict:
+    """Validate documents against project-authored profile policy.
+
+    A successful tool response can contain `valid: false`; violations are
+    structured validation evidence rather than a transport failure.
+    """
+
+    arguments = [
+        "profile-check",
+        project,
+        "--json",
+        *_selection_arguments(source, workspace),
+    ]
+    return _json_tool(arguments, allow_failure_payload=True)
+
+
 def criteria(
     project: str, source: str | None = None, workspace: str | None = None
 ) -> dict:
@@ -599,6 +619,7 @@ _TOOLS = (
     migration_report,
     changes,
     metadata_inventory,
+    profile_check,
     criteria,
     workstream,
     intake,

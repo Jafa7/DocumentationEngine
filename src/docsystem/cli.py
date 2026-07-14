@@ -131,6 +131,7 @@ from docsystem.maintenance import (
     unified_block_diff,
 )
 from docsystem.migration import apply_migration_plan, build_migration_plan, validate_plan
+from docsystem.profiles import ProfileReport, evaluate_profiles
 from docsystem.projection import (
     LoadedProjection,
     build_projection,
@@ -537,6 +538,10 @@ def doctor(project_root: Path, *, verbose_adoption: bool = False) -> int:
         issues, verbose_adoption=verbose_adoption
     ):
         return 1
+    profile_report = evaluate_profiles(markdown_catalog, config)
+    if profile_report.violations:
+        _print_profile_violations(profile_report)
+        return 1
     print("Configuration is valid.")
     print(f"Documentation root: {config.documentation_root}")
     print(f"Language: {config.language}")
@@ -599,6 +604,10 @@ def validate(project_root: Path, *, verbose_adoption: bool = False) -> int:
     if _print_validation_issues(
         issues, verbose_adoption=verbose_adoption
     ):
+        return 1
+    profile_report = evaluate_profiles(markdown_catalog, config)
+    if profile_report.violations:
+        _print_profile_violations(profile_report)
         return 1
     print("Markdown navigation is valid.")
     return 0
@@ -854,6 +863,102 @@ def metadata_inventory(
             report, field_name=field_name, occurrences=occurrences
         )
     return 0
+
+
+def _profile_report_json(report: ProfileReport) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "valid": report.valid,
+        "profiles": [
+            {
+                "name": item.name,
+                "document_types": list(item.document_types),
+                "history_mode": item.history_mode,
+                "documents": item.document_count,
+                "violations": item.violation_count,
+            }
+            for item in report.profiles
+        ],
+        "documents": [
+            {
+                "id": item.document_id,
+                "path": item.path,
+                "type": item.document_type,
+                "status": item.status,
+                "profile": item.profile,
+                "history_mode": item.history_mode,
+                "valid": item.valid,
+            }
+            for item in report.documents
+        ],
+        "unprofiled_documents": list(report.unprofiled_documents),
+        "violations": [
+            {
+                "id": item.document_id,
+                "path": item.path,
+                "profile": item.profile,
+                "code": item.code,
+                "subject": item.subject,
+                "detail": item.detail,
+            }
+            for item in report.violations
+        ],
+    }
+
+
+def _print_profile_violations(report: ProfileReport) -> None:
+    for item in report.violations:
+        print(
+            f"ERROR: {item.path}: profile {item.profile}: "
+            f"{item.code} ({item.subject}): {item.detail}",
+            file=sys.stderr,
+        )
+
+
+def _emit_profile_report_text(report: ProfileReport) -> None:
+    print(f"summary\tvalid\t{'true' if report.valid else 'false'}")
+    for item in report.profiles:
+        print(
+            f"profile\t{item.name}\ttypes={','.join(item.document_types)}\t"
+            f"history={item.history_mode}\tdocuments={item.document_count}\t"
+            f"violations={item.violation_count}"
+        )
+    for item in report.documents:
+        print(
+            f"document\t{item.document_id}\tpath={item.path}\t"
+            f"type={item.document_type or '-'}\tstatus={item.status or '-'}\t"
+            f"profile={item.profile or '-'}\thistory={item.history_mode or '-'}\t"
+            f"valid={('-' if item.valid is None else str(item.valid).lower())}"
+        )
+    for item in report.violations:
+        print(
+            f"violation\t{item.document_id}\tprofile={item.profile}\t"
+            f"code={item.code}\tsubject={item.subject}\tdetail={item.detail}"
+        )
+
+
+def profile_check(project_root: Path, *, json_output: bool = False) -> int:
+    """Validate documents against explicitly configured document profiles."""
+
+    try:
+        config = load_config(project_root)
+        catalog_value = build_catalog(config)
+        issues = _with_graph_issues(
+            validate_catalog(catalog_value, config), catalog_value, config
+        )
+        blocking = tuple(issue for issue in issues if issue.severity != "warning")
+        if blocking:
+            _print_validation_issues(blocking, verbose_adoption=False)
+            return 1
+        report = evaluate_profiles(catalog_value, config)
+    except (OSError, ValueError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    if json_output:
+        _print_json(_profile_report_json(report))
+    else:
+        _emit_profile_report_text(report)
+    return 0 if report.valid else 1
 
 
 def read_document(
@@ -6534,6 +6639,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print a deterministic JSON object instead of tab-separated text.",
     )
 
+    profile_check_parser = subparsers.add_parser(
+        "profile-check",
+        help="Validate documents against project-authored profile policy.",
+    )
+    profile_check_parser.add_argument(
+        "project", nargs="?", type=Path, default=Path.cwd()
+    )
+    profile_check_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print a deterministic JSON object instead of tab-separated text.",
+    )
+
     criteria_parser = subparsers.add_parser(
         "criteria",
         help="List versioned workstream, intake and admission criteria.",
@@ -6859,6 +6978,7 @@ def build_parser() -> argparse.ArgumentParser:
         impact_parser,
         graph_health_parser,
         metadata_inventory_parser,
+        profile_check_parser,
         criteria_parser,
         workstream_parser,
         intake_parser,
@@ -6972,6 +7092,8 @@ def main() -> int:
             show_values=args.values,
             json_output=args.json_output,
         )
+    if args.command == "profile-check":
+        return profile_check(project, json_output=args.json_output)
     if args.command == "criteria":
         return criteria_registry(project, json_output=args.json_output)
     if args.command == "workstream":

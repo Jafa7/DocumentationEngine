@@ -23,6 +23,8 @@ link to that owner rather than repeat commands or policy.
   project-authored advisory thresholds.
 - [Metadata and graph inventory](metadata-inventory.md) — privacy-aware field
   coverage, observed types and body-free per-document graph facts.
+- [Document profile registry](document-profiles.md) — project-authored document
+  type, metadata, semantic-role, relation and lifecycle validation.
 - [Compact context delivery](context-delivery.md) — lossless range
   deduplication, inclusion reasons and diagnostics drill-down.
 - [Bounded workstream evidence](workstream-evidence.md) — versioned completion

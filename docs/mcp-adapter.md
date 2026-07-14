@@ -72,6 +72,9 @@ The adapter is deliberately a wrapper, not a second implementation:
 - `metadata_inventory` returns body-free field coverage and document graph
   facts. Additional values remain hidden unless the caller supplies both one
   `field` and `values: true`.
+- `profile_check` returns project-authored profile assignments and structured
+  violations without document bodies. A profile-invalid result is a valid
+  payload with `valid: false`, not an MCP transport failure.
 
 ## Tools
 
@@ -82,6 +85,7 @@ The adapter is deliberately a wrapper, not a second implementation:
 | `migration_report` | object | `docsystem migration-report PROJECT --json` |
 | `changes` | object | `docsystem changes PROJECT --json` |
 | `metadata_inventory` | object | `docsystem metadata-inventory PROJECT [--field NAME --values] --json` |
+| `profile_check` | object | `docsystem profile-check PROJECT --json` |
 | `criteria` | object | `docsystem criteria PROJECT --json` |
 | `workstream` | object | `docsystem workstream ID PROJECT --record RECORD --json` |
 | `intake` | object | `docsystem intake PROJECT --request REQUEST --json` |

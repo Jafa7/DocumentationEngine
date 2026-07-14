@@ -252,6 +252,8 @@ docsystem graph-health .
 docsystem graph-health . --json
 docsystem metadata-inventory .
 docsystem metadata-inventory . --field owner --values --json
+docsystem profile-check .
+docsystem profile-check . --json
 docsystem criteria .
 docsystem criteria . --json
 docsystem workstream WS-001 . --record workstream-record.json
@@ -393,6 +395,14 @@ drill-down for one field. The result is observed evidence rather than schema
 authority, and invalid catalogs fail closed without partial stdout. See
 [metadata and graph inventory](docs/metadata-inventory.md) for the privacy and
 output contract.
+
+`profile-check PROJECT [--json]` validates matching document types against an
+optional project-authored `[profiles]` registry: required metadata, semantic
+roles expressed through canonical anchor aliases, allowed relations/statuses,
+and declared history mode. Unprofiled types remain visible for gradual
+adoption. The command never infers policy from inventory or changes Markdown.
+See [document profiles](docs/document-profiles.md) for the configuration and
+failure contract.
 
 `references ID[#anchor] PROJECT` is a read-only inspection of the section and
 reference graph: authored metadata relations, observed Markdown links, and

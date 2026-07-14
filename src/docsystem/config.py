@@ -7,7 +7,7 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from docsystem.metadata import DOCUMENT_ID_PATTERN
+from docsystem.metadata import DOCUMENT_ID_PATTERN, PINNED_RELATION, RELATION_FIELDS
 from docsystem.sections import is_valid_anchor
 
 CONFIG_FILENAME = ".docsystem.toml"
@@ -17,6 +17,8 @@ MAINTENANCE_ROLES = frozenset(
 )
 MAINTENANCE_TARGET_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 CONTEXT_VIEW_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
+PROFILE_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+PROFILE_HISTORY_MODES = frozenset({"living", "append-only", "immutable-after-state"})
 WORKSTREAM_CRITERION_ID_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 WORKSTREAM_EVIDENCE_FIELDS = frozenset(
     {"changes", "checks", "review", "omissions", "risks", "returns"}
@@ -72,6 +74,8 @@ snapshot_rules = []
 [graph_health]
 required_metadata = []
 report_orphans = false
+
+[profiles]
 
 [workstreams]
 
@@ -153,6 +157,28 @@ class GraphHealthPolicy:
 
 
 @dataclass(frozen=True)
+class ProfileRole:
+    """One semantic role and its project-authored canonical anchor aliases."""
+
+    name: str
+    anchors: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class DocumentProfile:
+    """A project-owned validation contract for one or more document types."""
+
+    name: str
+    document_types: tuple[str, ...]
+    history_mode: str
+    required_metadata: tuple[str, ...]
+    required_roles: tuple[str, ...]
+    roles: tuple[ProfileRole, ...]
+    allowed_relations: tuple[str, ...] | None
+    allowed_statuses: tuple[str, ...] | None
+
+
+@dataclass(frozen=True)
 class WorkstreamCriterion:
     """One versioned, project-authored completion evidence policy."""
 
@@ -231,6 +257,7 @@ class ProjectConfig:
     snapshot_document_types: tuple[str, ...] = ()
     snapshot_rules: tuple[SnapshotRule, ...] = ()
     graph_health_policy: GraphHealthPolicy = GraphHealthPolicy()
+    document_profiles: tuple[DocumentProfile, ...] = ()
     maintenance_targets: tuple[MaintenanceTarget, ...] = ()
     context_views: tuple[ContextView, ...] = ()
     workstream_criteria: tuple[WorkstreamCriterion, ...] = ()
@@ -443,6 +470,142 @@ def _graph_health_policy(raw: object) -> GraphHealthPolicy:
         required_metadata=tuple(required),
         report_orphans=report_orphans,
     )
+
+
+def _profile_string_list(
+    value: object,
+    field: str,
+    *,
+    required: bool = False,
+    pattern: re.Pattern[str] | None = None,
+) -> tuple[str, ...]:
+    if not isinstance(value, list) or (required and not value):
+        suffix = "non-empty " if required else ""
+        raise ValueError(f"{field} must be a {suffix}list")
+    if any(
+        not isinstance(item, str)
+        or not item
+        or (pattern is not None and pattern.fullmatch(item) is None)
+        for item in value
+    ):
+        raise ValueError(f"{field} contains an invalid value")
+    if len(set(value)) != len(value):
+        raise ValueError(f"{field} must be unique")
+    return tuple(value)
+
+
+def _document_profiles(raw: object) -> tuple[DocumentProfile, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, dict):
+        raise ValueError("profiles must be a table")
+    profiles: list[DocumentProfile] = []
+    type_owners: dict[str, str] = {}
+    relation_names = frozenset((*RELATION_FIELDS, PINNED_RELATION))
+    allowed_keys = {
+        "document_types",
+        "history_mode",
+        "required_metadata",
+        "required_roles",
+        "roles",
+        "allowed_relations",
+        "allowed_statuses",
+    }
+    for name, value in sorted(raw.items()):
+        field = f"profiles.{name}"
+        if not isinstance(name, str) or PROFILE_NAME_PATTERN.fullmatch(name) is None:
+            raise ValueError(f"profile name is invalid: {name!r}")
+        if not isinstance(value, dict):
+            raise ValueError(f"{field} must be a table")
+        unknown = set(value) - allowed_keys
+        if unknown:
+            raise ValueError(f"{field} has unknown key(s): " + ", ".join(sorted(unknown)))
+        document_types = _profile_string_list(
+            value.get("document_types"),
+            f"{field}.document_types",
+            required=True,
+        )
+        for document_type in document_types:
+            owner = type_owners.get(document_type)
+            if owner is not None:
+                raise ValueError(
+                    f"document type {document_type!r} belongs to both "
+                    f"profiles.{owner} and {field}"
+                )
+            type_owners[document_type] = name
+        history_mode = value.get("history_mode", "living")
+        if history_mode not in PROFILE_HISTORY_MODES:
+            raise ValueError(
+                f"{field}.history_mode must be living, append-only or "
+                "immutable-after-state"
+            )
+        required_metadata = _profile_string_list(
+            value.get("required_metadata", []),
+            f"{field}.required_metadata",
+        )
+        required_roles = _profile_string_list(
+            value.get("required_roles", []),
+            f"{field}.required_roles",
+            pattern=PROFILE_NAME_PATTERN,
+        )
+        raw_roles = value.get("roles", {})
+        if not isinstance(raw_roles, dict):
+            raise ValueError(f"{field}.roles must be a table")
+        roles: list[ProfileRole] = []
+        for role_name, aliases in sorted(raw_roles.items()):
+            role_field = f"{field}.roles.{role_name}"
+            if (
+                not isinstance(role_name, str)
+                or PROFILE_NAME_PATTERN.fullmatch(role_name) is None
+            ):
+                raise ValueError(f"{role_field} has an invalid role name")
+            anchors = _profile_string_list(aliases, role_field, required=True)
+            if any(not is_valid_anchor(anchor) for anchor in anchors):
+                raise ValueError(f"{role_field} contains an invalid canonical anchor")
+            roles.append(ProfileRole(role_name, anchors))
+        role_names = {role.name for role in roles}
+        missing_roles = set(required_roles) - role_names
+        if missing_roles:
+            raise ValueError(
+                f"{field}.roles is missing required role(s): "
+                + ", ".join(sorted(missing_roles))
+            )
+        raw_relations = value.get("allowed_relations")
+        allowed_relations = (
+            None
+            if raw_relations is None
+            else _profile_string_list(
+                raw_relations, f"{field}.allowed_relations"
+            )
+        )
+        if allowed_relations is not None and any(
+            relation not in relation_names for relation in allowed_relations
+        ):
+            raise ValueError(
+                f"{field}.allowed_relations may contain only semantic relation names"
+            )
+        raw_statuses = value.get("allowed_statuses")
+        allowed_statuses = (
+            None
+            if raw_statuses is None
+            else _profile_string_list(
+                raw_statuses,
+                f"{field}.allowed_statuses",
+            )
+        )
+        profiles.append(
+            DocumentProfile(
+                name=name,
+                document_types=document_types,
+                history_mode=str(history_mode),
+                required_metadata=required_metadata,
+                required_roles=required_roles,
+                roles=tuple(roles),
+                allowed_relations=allowed_relations,
+                allowed_statuses=allowed_statuses,
+            )
+        )
+    return tuple(profiles)
 
 
 def _context_views(raw: object) -> tuple[ContextView, ...]:
@@ -1092,6 +1255,7 @@ def load_config(project_root: Path) -> ProjectConfig:
     )
     context_views = _context_views(raw.get("context"))
     graph_health_policy = _graph_health_policy(raw.get("graph_health"))
+    document_profiles = _document_profiles(raw.get("profiles"))
     workstream_criteria = _workstream_criteria(raw.get("workstreams"))
     intake_criteria = _intake_criteria(
         raw.get("intake"), normalized_areas, normalized_identifiers
@@ -1119,6 +1283,7 @@ def load_config(project_root: Path) -> ProjectConfig:
         snapshot_document_types=snapshot_document_types,
         snapshot_rules=snapshot_rules,
         graph_health_policy=graph_health_policy,
+        document_profiles=document_profiles,
         maintenance_targets=maintenance_targets,
         context_views=context_views,
         workstream_criteria=workstream_criteria,

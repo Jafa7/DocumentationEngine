@@ -17,11 +17,108 @@ def test_default_config_loads(tmp_path: Path) -> None:
     assert config.snapshot_rules == ()
     assert config.graph_health_policy.required_metadata == ()
     assert config.graph_health_policy.report_orphans is False
+    assert config.document_profiles == ()
     assert config.projection_format == "sharded-json"
     assert config.context_views == ()
     assert config.workstream_criteria == ()
     assert config.intake_criteria == ()
     assert config.admission_criteria == ()
+
+
+def test_document_profiles_load_with_semantic_roles_and_allowlists(
+    tmp_path: Path,
+) -> None:
+    configured = DEFAULT_CONFIG + """
+[profiles.roadmap]
+document_types = ["roadmap", "delivery-plan"]
+history_mode = "immutable-after-state"
+required_metadata = ["status", "owner"]
+required_roles = ["outcome", "acceptance"]
+allowed_relations = ["depends_on", "derived_from", "validated_against"]
+allowed_statuses = ["active", "completed"]
+
+[profiles.roadmap.roles]
+outcome = ["outcome", "product-outcome"]
+acceptance = ["acceptance"]
+"""
+    (tmp_path / CONFIG_FILENAME).write_text(configured, encoding="utf-8")
+    profile = load_config(tmp_path).document_profiles[0]
+    assert profile.name == "roadmap"
+    assert profile.document_types == ("roadmap", "delivery-plan")
+    assert profile.history_mode == "immutable-after-state"
+    assert profile.required_metadata == ("status", "owner")
+    assert profile.required_roles == ("outcome", "acceptance")
+    assert [(role.name, role.anchors) for role in profile.roles] == [
+        ("acceptance", ("acceptance",)),
+        ("outcome", ("outcome", "product-outcome")),
+    ]
+    assert profile.allowed_statuses == ("active", "completed")
+
+
+def test_profile_policy_preserves_project_owned_type_field_and_status_names(
+    tmp_path: Path,
+) -> None:
+    configured = DEFAULT_CONFIG + """
+[profiles.project-specific]
+document_types = ["Architecture Proposal"]
+required_metadata = ["review.owner"]
+allowed_statuses = ["In Review"]
+"""
+    (tmp_path / CONFIG_FILENAME).write_text(configured, encoding="utf-8")
+    profile = load_config(tmp_path).document_profiles[0]
+    assert profile.document_types == ("Architecture Proposal",)
+    assert profile.required_metadata == ("review.owner",)
+    assert profile.allowed_statuses == ("In Review",)
+
+
+@pytest.mark.parametrize(
+    ("profile_toml", "message"),
+    [
+        ("profiles = []\n", "profiles must be a table"),
+        ("[profiles.Bad_Name]\ndocument_types = [\"roadmap\"]\n", "profile name is invalid"),
+        ("[profiles.roadmap]\ndocument_types = []\n", "document_types must be a non-empty list"),
+        (
+            "[profiles.roadmap]\ndocument_types = [\"roadmap\"]\nunknown = true\n",
+            "has unknown key",
+        ),
+        (
+            "[profiles.roadmap]\ndocument_types = [\"roadmap\"]\n"
+            "history_mode = \"mutable\"\n",
+            "history_mode must be",
+        ),
+        (
+            "[profiles.roadmap]\ndocument_types = [\"roadmap\"]\n"
+            "required_roles = [\"outcome\"]\n",
+            "roles is missing required role",
+        ),
+        (
+            "[profiles.roadmap]\ndocument_types = [\"roadmap\"]\n"
+            "[profiles.roadmap.roles]\noutcome = [\"bad anchor\"]\n",
+            "invalid canonical anchor",
+        ),
+        (
+            "[profiles.roadmap]\ndocument_types = [\"roadmap\"]\n"
+            "allowed_relations = [\"implements\"]\n",
+            "may contain only semantic relation names",
+        ),
+        (
+            "[profiles.one]\ndocument_types = [\"roadmap\"]\n"
+            "[profiles.two]\ndocument_types = [\"roadmap\"]\n",
+            "belongs to both",
+        ),
+    ],
+)
+def test_invalid_document_profiles_are_rejected(
+    tmp_path: Path, profile_toml: str, message: str
+) -> None:
+    configured = (
+        profile_toml + DEFAULT_CONFIG.replace("[profiles]\n\n", "")
+        if profile_toml.startswith("profiles =")
+        else DEFAULT_CONFIG + profile_toml
+    )
+    (tmp_path / CONFIG_FILENAME).write_text(configured, encoding="utf-8")
+    with pytest.raises(ValueError, match=message):
+        load_config(tmp_path)
 
 
 def test_workstream_criteria_are_versioned_and_deterministically_ordered(
