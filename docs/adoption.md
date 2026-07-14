@@ -60,6 +60,7 @@ docsystem context PDOC-001 . --depth 1
 docsystem impact PDOC-001 .
 docsystem finish PDOC-001 .
 docsystem report draft . --project-name "Adopter Project" --type adoption-finding --source codex
+docsystem report context-gap . --project-name "Adopter Project" --type adoption-finding --source codex --reason missing_dependency --initial DOC-001#summary --expanded DOC-002#constraints --impact decision
 docsystem index . --write
 docsystem index .
 docsystem changes .
@@ -159,6 +160,9 @@ If adoption exposes a DocumentationEngine runtime problem, compatibility gap,
 core defect or reusable documentation pattern, file it through the
 [adopter reporting](adopter-reporting.md) policy. Reports should use compact
 diagnostics, sanitized profile/config excerpts and stable IDs or anchors rather
-than private document bodies. Start with `docsystem report draft` when the CLI
-is available, then complete the expected/actual/requested-action fields before
-creating the GitHub issue.
+than private document bodies. Start with `docsystem report draft` for a general
+finding. If additional reading materially changes the work because task-sized
+delivery missed a reproducible relation, section or profile rule, use
+`docsystem report context-gap`; normal progressive reading is not an issue.
+Both commands are read-only. Complete the expected, actual and requested-action
+fields before creating the GitHub issue.

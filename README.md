@@ -252,7 +252,9 @@ docsystem readiness .
 docsystem readiness . --json
 docsystem finish DOC-001 .
 docsystem finish DOC-001 . --json
+docsystem finish DOC-001 . --context-expansion material-gap --context-gap-report drafted
 docsystem report draft . --project-name "My Project" --type adoption-finding --source codex
+docsystem report context-gap . --project-name "My Project" --type adoption-finding --source codex --reason missing_dependency --initial DOC-001#summary --expanded DOC-002#constraints --impact decision
 docsystem migrate .
 docsystem migrate . --apply
 docsystem index . --write
@@ -426,6 +428,18 @@ pins. `report draft` produces a privacy-safe GitHub issue body for adopter
 runtime reports, adoption findings, core bugs or documentation pattern
 requests; it is read-only and leaves expected/actual/requested-action fields
 for the reporter to fill in.
+
+When progressive reading exposes a reproducible context-coverage gap that
+materially changes the work, `report context-gap` adds body-free initial and
+expanded address evidence to the same adopter report format. Ordinary
+full-review, follow-up and precautionary reads remain normal behavior and are
+not reported. The agent always retains complete access to authored Markdown;
+the feature measures gaps in task-sized delivery rather than limiting source
+access.
+
+An agent can carry only the classification back in `finish`: `normal` requires
+no report, while `material-gap` requires a `drafted` or `filed` report state.
+The default handoff stays byte-compatible when no classification is supplied.
 
 `agent-instructions` prints a deterministic Markdown snippet — naming the
 configured documentation root, language, areas and identifier namespaces plus

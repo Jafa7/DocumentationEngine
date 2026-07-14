@@ -28,7 +28,8 @@ Every other command — `doctor`, `show-config`, `catalog`, `validate`, `read`,
 `dependencies`, `references`, `change-plan`, `maintenance` with `--check` or
 `--preview`, `context`,
 `impact`, `migration-report`, `migrate` without `--apply`, `readiness`,
-`finish`, `report draft`, and `index`/`changes` without `--write` — is
+`finish`, `report draft`, `report context-gap`, and `index`/`changes` without
+`--write` — is
 read-only. An agent may call any read-only command freely to inspect project
 state before deciding whether a mutating command is warranted.
 
@@ -415,6 +416,52 @@ content, full generated projections, MCP context payloads or unbounded logs.
 is the preferred first step when available. It is read-only: it gathers compact
 diagnostic counts and emits a GitHub issue body draft, but it does not create
 the issue or mutate the adopter project.
+
+Context economy never limits access to authored source. If the initial packet
+is insufficient, expand immediately with an exact section, explicit include,
+greater dependency depth or the full document/corpus required for correctness.
+Complete the primary task before entering a non-blocking reporting workflow.
+
+An additional read is normal when the task requires full review, the agent is
+checking whole-document consistency, the selected omissions contain the next
+needed section, or the read is merely precautionary. Do not report those reads.
+If expansion instead exposes a reproducible missing dependency, section,
+authority, profile rule, reverse reference, navigation path or runtime context
+failure and materially changes the plan, scope, decision, verification or
+result, draft body-free evidence with:
+
+```bash
+docsystem report context-gap PROJECT \
+  --project-name NAME \
+  --type adoption-finding \
+  --source codex \
+  --reason missing_dependency \
+  --initial DOC-001#summary \
+  --expanded DOC-002#constraints \
+  --impact decision
+```
+
+The command validates stable addresses and records revisions, section ranges
+and projection generation, but never copies document bodies. It deliberately
+rejects `task_requires_full_review`, `agent_uncertainty` and
+`manual_inspection` as standalone report reasons. Fill only compact coverage
+counts, the material effect and a sanitized reproduction before filing an
+issue, and create the issue only when external write policy permits it.
+
+Preserve the outcome in the parent handoff without copying the report body:
+
+```bash
+docsystem finish DOC-001 PROJECT \
+  --context-expansion material-gap \
+  --context-gap-report drafted
+```
+
+`--context-expansion` accepts `not-observed` (default), `normal` or
+`material-gap`. `--context-gap-report` accepts `not-needed` (default),
+`drafted` or `filed`. A material gap requires a drafted/filed report; every
+other classification requires `not-needed`. Invalid combinations fail before
+packet output. Default finish output remains unchanged, while an explicit
+classification appears in both Markdown and JSON handoffs.
 
 ## Balanced documentation policy
 

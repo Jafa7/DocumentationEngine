@@ -756,6 +756,50 @@ def test_report_draft_carries_no_source_path_or_document_body(
     assert "Body." not in captured.out
 
 
+def test_context_gap_draft_carries_no_workspace_path_or_document_body(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    workspace = build_workspace(tmp_path)
+    monkeypatch.delenv(WORKSPACE_ENV_VAR, raising=False)
+
+    code = run(
+        [
+            "report",
+            "context-gap",
+            str(tmp_path),
+            "--project-name",
+            "Example",
+            "--type",
+            "adoption-finding",
+            "--source",
+            "codex",
+            "--workspace-source",
+            "alpha",
+            "--workspace",
+            str(workspace),
+            "--reason",
+            "missing_section",
+            "--initial",
+            "DOC-001#purpose",
+            "--expanded",
+            "DOC-001",
+            "--impact",
+            "decision",
+        ],
+        monkeypatch,
+    )
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert (
+        f"docsystem report context-gap {tmp_path} --workspace-source alpha "
+        "--project-name"
+    ) in captured.out
+    assert captured.out.count("--source codex") == 1
+    assert str(workspace) not in captured.out
+    assert "Body." not in captured.out
+
+
 def test_report_draft_without_a_source_keeps_the_project_root(
     tmp_path: Path, capsys
 ) -> None:
@@ -871,21 +915,25 @@ def test_every_project_command_accepts_the_selection_flags() -> None:
         "--workspace",
     } & option_strings(commands["init"])
 
-    # `report draft` keeps `--source` for the reporting host rather than
-    # overloading it, so it takes the long selection spelling only.
-    draft = subcommands(commands["report"])["draft"]
-    source_action = next(
-        action for action in draft._actions if "--source" in action.option_strings
-    )
-    assert source_action.dest == "source"
-    assert source_action.choices == ("codex", "claude", "vscode", "other")
-    assert {"--workspace-source", "--workspace"} <= option_strings(draft)
-    assert "--source" not in {
-        option
-        for action in draft._actions
-        if action.dest == "workspace_source"
-        for option in action.option_strings
-    }
+    # Report commands keep `--source` for the reporting host rather than
+    # overloading it, so they take the long selection spelling only.
+    report_commands = subcommands(commands["report"])
+    for report_command in ("draft", "context-gap"):
+        command = report_commands[report_command]
+        source_action = next(
+            action
+            for action in command._actions
+            if "--source" in action.option_strings
+        )
+        assert source_action.dest == "source"
+        assert source_action.choices == ("codex", "claude", "vscode", "other")
+        assert {"--workspace-source", "--workspace"} <= option_strings(command)
+        assert "--source" not in {
+            option
+            for action in command._actions
+            if action.dest == "workspace_source"
+            for option in action.option_strings
+        }
 
 
 def test_environment_variable_is_ignored_without_a_source(

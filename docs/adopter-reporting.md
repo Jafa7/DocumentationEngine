@@ -70,6 +70,71 @@ body draft, and leaves expected behavior, actual behavior and requested action
 for the reporter to complete. It does not create the GitHub issue and does not
 mutate Markdown, configuration or generated projection state.
 
+## Report a material context coverage gap
+
+Task-sized delivery is progressive: an agent always retains complete access to
+the authored Markdown and should read more immediately when correctness needs
+it. A full-document review, a deliberate follow-up into listed omissions or a
+precautionary read is normal product behavior and does not warrant an issue.
+
+Use `report context-gap` only after an extra read exposed a concrete missing
+dependency, section, authority, reverse reference, navigation/profile rule,
+external boundary or runtime context failure, and the new evidence materially
+changed the plan, scope, decision, verification or result:
+
+```bash
+docsystem report context-gap /path/to/project \
+  --project-name "Example Project" \
+  --type adoption-finding \
+  --source codex \
+  --reason missing_dependency \
+  --initial DOC-001#summary \
+  --expanded DOC-002#constraints \
+  --impact decision \
+  --output /tmp/docsystem-context-gap.md
+```
+
+`--initial`, `--expanded` and `--impact` are repeatable. Addresses must resolve
+to current stable IDs and canonical anchors; duplicates, overlaps and unknown
+anchors fail before stdout or an output file is produced. Material impacts are
+limited to `plan`, `scope`, `decision`, `verification` and `result`. Supported
+reason codes are:
+
+```text
+missing_dependency
+missing_section
+poor_section_granularity
+unresolved_authority
+stale_relation
+missing_reverse_reference
+navigation_insufficient
+profile_gap
+external_boundary
+```
+
+The broader vocabulary also recognizes `task_requires_full_review`,
+`agent_uncertainty` and `manual_inspection`, but the command rejects those as
+standalone report reasons because they are normally local evidence rather than
+a product gap. The generated draft contains only addresses, revisions, section
+ranges, the projection generation and placeholders for compact coverage and
+material-effect evidence. It never embeds document content. Use the existing
+report taxonomy: `core-bug` for a deterministic engine omission,
+`adoption-finding` for a project profile/catalog gap, `runtime-report` for a
+CLI/MCP/projection failure, and `docs-pattern-request` for a reusable pattern.
+
+After drafting or filing a material gap, preserve only its state in the finish
+handoff:
+
+```bash
+docsystem finish DOC-001 /path/to/project \
+  --context-expansion material-gap \
+  --context-gap-report drafted
+```
+
+For an expected expansion use `--context-expansion normal`; its report state
+remains `not-needed`. Omitting both options preserves the existing finish
+output and means no expansion classification was observed for that handoff.
+
 For targeted evidence, prefer JSON where a machine-readable form exists, and
 include exit codes:
 

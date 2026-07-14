@@ -11,6 +11,7 @@ from docsystem.cli import (
     build_parser,
     changes,
     context,
+    context_gap_draft,
     doctor,
     finish,
     impact,
@@ -895,6 +896,145 @@ def test_report_draft_writes_output_and_handles_config_errors(
     assert "project:broken-project" in report
 
 
+def test_context_gap_draft_records_only_body_free_material_evidence(
+    tmp_path: Path, capsys
+) -> None:
+    vertical_project(tmp_path)
+    config = load_config(tmp_path)
+    generation = write_projection(config, build_projection(build_catalog(config), config))
+    capsys.readouterr()
+
+    assert (
+        context_gap_draft(
+            tmp_path,
+            project_name="Example Project",
+            report_type="adoption-finding",
+            source="codex",
+            reason="missing_dependency",
+            initial=("DOC-002#summary",),
+            expanded=("DOC-003#findings",),
+            impacts=("result", "decision"),
+        )
+        == 0
+    )
+    output = capsys.readouterr().out
+    assert "# Adoption Finding: Example Project" in output
+    assert "`component:context`" in output
+    assert "Classification: material unexpected context gap" in output
+    assert "Reason code: `missing_dependency`" in output
+    assert "Materially affected: `decision`, `result`" in output
+    assert f"Projection generation: `{generation}`" in output
+    assert "`DOC-002#summary (revision 2, lines 10-11)`" in output
+    assert "`DOC-003#findings (revision 1, lines 9-10)`" in output
+    assert "Document bodies included in this evidence: no" in output
+    assert "Detailed target content." not in output
+    assert "Finding details." not in output
+
+
+def test_context_gap_draft_rejects_normal_expansion_and_ambiguous_addresses(
+    tmp_path: Path, capsys
+) -> None:
+    vertical_project(tmp_path)
+
+    assert (
+        context_gap_draft(
+            tmp_path,
+            project_name="Example Project",
+            report_type="adoption-finding",
+            source="codex",
+            reason="task_requires_full_review",
+            initial=("DOC-002",),
+            expanded=("DOC-003",),
+            impacts=("verification",),
+        )
+        == 1
+    )
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "normally local evidence" in captured.err
+
+    assert (
+        context_gap_draft(
+            tmp_path,
+            project_name="Example Project",
+            report_type="core-bug",
+            source="codex",
+            reason="missing_section",
+            initial=("DOC-002#summary",),
+            expanded=("DOC-002#summary",),
+            impacts=("result",),
+        )
+        == 1
+    )
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "addresses cannot be both initial and expanded" in captured.err
+
+    assert (
+        context_gap_draft(
+            tmp_path,
+            project_name="Example Project",
+            report_type="core-bug",
+            source="codex",
+            reason="missing_section",
+            initial=("DOC-002#unknown",),
+            expanded=("DOC-003",),
+            impacts=("result",),
+        )
+        == 1
+    )
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "section anchor not found: DOC-002#unknown" in captured.err
+
+    assert (
+        context_gap_draft(
+            tmp_path,
+            project_name="Example Project",
+            report_type="core-bug",
+            source="codex",
+            reason="missing_dependency",
+            initial=("DOC-002", "DOC-002"),
+            expanded=("DOC-003",),
+            impacts=("result",),
+        )
+        == 1
+    )
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "duplicate initial address: DOC-002" in captured.err
+
+
+def test_context_gap_parser_has_controlled_repeatable_evidence() -> None:
+    args = build_parser().parse_args(
+        [
+            "report",
+            "context-gap",
+            ".",
+            "--project-name",
+            "Example",
+            "--type",
+            "core-bug",
+            "--source",
+            "claude",
+            "--reason",
+            "navigation_insufficient",
+            "--initial",
+            "DOC-001",
+            "--expanded",
+            "DOC-002#details",
+            "--impact",
+            "plan",
+            "--impact",
+            "verification",
+        ]
+    )
+    assert args.report_command == "context-gap"
+    assert args.initial == ["DOC-001"]
+    assert args.expanded == ["DOC-002#details"]
+    assert args.impact == ["plan", "verification"]
+
+
 def test_finish_summarizes_return_context_and_snapshot_classification(
     tmp_path: Path, capsys
 ) -> None:
@@ -965,6 +1105,68 @@ def test_finish_json_is_deterministic_and_parser_exposes_new_commands(
     assert report_args.command == "report"
     assert report_args.report_command == "draft"
     assert report_args.report_type == "core-bug"
+
+
+def test_finish_preserves_context_expansion_and_report_state(
+    tmp_path: Path, capsys
+) -> None:
+    vertical_project(tmp_path)
+
+    assert (
+        finish(
+            tmp_path,
+            "DOC-002",
+            context_expansion="material-gap",
+            context_gap_report="drafted",
+        )
+        == 0
+    )
+    output = capsys.readouterr().out
+    assert "## Context expansion" in output
+    assert "- Classification: material-gap" in output
+    assert "- Report state: drafted" in output
+
+    assert (
+        finish(
+            tmp_path,
+            "DOC-002",
+            json_output=True,
+            context_expansion="normal",
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["context_expansion"] == {
+        "classification": "normal",
+        "report_state": "not-needed",
+    }
+
+    assert (
+        finish(
+            tmp_path,
+            "DOC-002",
+            context_expansion="material-gap",
+            context_gap_report="not-needed",
+        )
+        == 1
+    )
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "requires a drafted or filed report" in captured.err
+
+    args = build_parser().parse_args(
+        [
+            "finish",
+            "DOC-002",
+            str(tmp_path),
+            "--context-expansion",
+            "material-gap",
+            "--context-gap-report",
+            "filed",
+        ]
+    )
+    assert args.context_expansion == "material-gap"
+    assert args.context_gap_report == "filed"
 
 
 def test_projection_generation_is_immutable_and_corruption_falls_back(

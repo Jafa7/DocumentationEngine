@@ -365,3 +365,5 @@ and falls back to direct Markdown without weakening Markdown authority.
    any atomic cross-source federation design.
 9. Managed maintenance preview followed by guarded, journaled bounded write
    and conflict-safe explicit recovery.
+10. Agent-declared context coverage feedback that records body-free evidence
+    only when progressive expansion exposes a material reproducible gap.

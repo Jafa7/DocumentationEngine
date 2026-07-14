@@ -133,6 +133,30 @@ REPORT_COMPONENTS = (
     "local-state",
     "privacy",
 )
+CONTEXT_GAP_REASONS = (
+    "task_requires_full_review",
+    "missing_dependency",
+    "missing_section",
+    "poor_section_granularity",
+    "unresolved_authority",
+    "stale_relation",
+    "missing_reverse_reference",
+    "navigation_insufficient",
+    "profile_gap",
+    "external_boundary",
+    "agent_uncertainty",
+    "manual_inspection",
+)
+CONTEXT_GAP_LOCAL_REASONS = frozenset(
+    {
+        "task_requires_full_review",
+        "agent_uncertainty",
+        "manual_inspection",
+    }
+)
+CONTEXT_GAP_IMPACTS = ("plan", "scope", "decision", "verification", "result")
+CONTEXT_EXPANSION_STATES = ("not-observed", "normal", "material-gap")
+CONTEXT_GAP_REPORT_STATES = ("not-needed", "drafted", "filed")
 
 
 @dataclass(frozen=True)
@@ -176,6 +200,17 @@ class _ReferencesOutput:
     results: tuple[TraversalResult, ...]
     boundaries: tuple[Boundary, ...]
     observed_completeness: str
+
+
+@dataclass(frozen=True)
+class _ContextGapEvidence:
+    """Body-free evidence for one agent-declared material context gap."""
+
+    reason: str
+    impacts: tuple[str, ...]
+    initial: tuple[str, ...]
+    expanded: tuple[str, ...]
+    projection: str
 
 
 class _ReferenceGraphInvalid(Exception):
@@ -2076,6 +2111,8 @@ def _report_body(
     report_type: str,
     source: str,
     component: str | None,
+    command_override: str | None = None,
+    extra_section: str = "",
 ) -> str:
     project_root = selection.project_root
     labels = [
@@ -2183,7 +2220,7 @@ def _report_body(
     affected_text = "\n".join(f"- `{item}`" for item in affected) or "- none captured"
     diagnostics_text = "\n".join(f"- {item}" for item in diagnostics) or "- none captured"
     labels_text = ", ".join(f"`{label}`" for label in labels)
-    command = (
+    command = command_override or (
         f"docsystem report draft {selection.report_selector} --project-name "
         f"{project_name!r} --type {report_type} --source {source}"
         + (f" --component {component}" if component else "")
@@ -2223,6 +2260,8 @@ exit: 0
 
 {affected_text}
 
+{extra_section}
+
 ## Expected behavior
 
 <!-- Fill in the expected behavior. -->
@@ -2247,6 +2286,178 @@ exit: 0
 - [ ] Local artifact paths, if any, are pointers only.
 - [ ] A minimal public/synthetic fixture is included when this is a core bug.
 """
+
+
+def _context_gap_address_evidence(
+    selection: _Selection,
+    raw_addresses: tuple[str, ...],
+    *,
+    option: str,
+) -> tuple[str, ...]:
+    """Validate graph addresses and return body-free revision/range evidence."""
+
+    config = load_config(selection.project_root)
+    catalog_value = build_catalog(config)
+    seen: set[str] = set()
+    evidence: list[str] = []
+    for raw in raw_addresses:
+        address = parse_address(raw)
+        if address.text in seen:
+            raise ValueError(f"duplicate {option} address: {address.text}")
+        seen.add(address.text)
+        document = find_document(catalog_value, address.document_id)
+        assert document.metadata is not None
+        detail = f"revision {document.metadata.revision}"
+        if address.anchor is not None:
+            section = next(
+                (
+                    item
+                    for item in document.sections
+                    if item.anchor == address.anchor
+                ),
+                None,
+            )
+            if section is None:
+                raise ValueError(
+                    f"section anchor not found: {address.document_id}#{address.anchor}"
+                )
+            detail += f", lines {section.start_line}-{section.end_line}"
+        evidence.append(f"{address.text} ({detail})")
+    return tuple(evidence)
+
+
+def _context_gap_section(evidence: _ContextGapEvidence) -> str:
+    initial = "\n".join(f"- `{item}`" for item in evidence.initial)
+    expanded = "\n".join(f"- `{item}`" for item in evidence.expanded)
+    impacts = ", ".join(f"`{item}`" for item in evidence.impacts)
+    return f"""## Context expansion evidence
+
+- Classification: material unexpected context gap
+- Reason code: `{evidence.reason}`
+- Materially affected: {impacts}
+- Projection generation: `{evidence.projection}`
+- Document bodies included in this evidence: no
+
+### Initial addresses
+
+{initial}
+
+### Additional reads
+
+{expanded}
+
+### Initial packet coverage
+
+<!-- Add a sanitized task category, packet mode/depth, compact included/omitted
+counts and the completeness claim. Do not paste the original prompt. -->
+
+### Material effect and missing information category
+
+<!-- Explain what changed after expansion and name the missing relation, section,
+profile rule, authority or engine behavior. Do not paste private source text. -->
+"""
+
+
+def context_gap_draft(
+    project_root: Path,
+    *,
+    project_name: str,
+    report_type: str,
+    source: str,
+    reason: str,
+    initial: tuple[str, ...],
+    expanded: tuple[str, ...],
+    impacts: tuple[str, ...],
+    output: Path | None = None,
+    selection: _Selection | None = None,
+) -> int:
+    """Draft a report only for an agent-declared material context gap.
+
+    Normal progressive reads remain local behavior. The command validates
+    stable addresses and emits revisions/ranges, never document bodies.
+    """
+
+    if reason not in CONTEXT_GAP_REASONS:
+        print(f"ERROR: unsupported context gap reason: {reason}", file=sys.stderr)
+        return 1
+    if reason in CONTEXT_GAP_LOCAL_REASONS:
+        print(
+            f"ERROR: context expansion reason {reason!r} is normally local "
+            "evidence, not a reportable product gap",
+            file=sys.stderr,
+        )
+        return 1
+    if not initial or not expanded or not impacts:
+        print(
+            "ERROR: context gap requires initial, expanded and impact evidence",
+            file=sys.stderr,
+        )
+        return 1
+    invalid_impacts = sorted(set(impacts) - set(CONTEXT_GAP_IMPACTS))
+    if invalid_impacts:
+        print(
+            "ERROR: unsupported context gap impact: " + ", ".join(invalid_impacts),
+            file=sys.stderr,
+        )
+        return 1
+    if len(set(impacts)) != len(impacts):
+        print("ERROR: duplicate context gap impact", file=sys.stderr)
+        return 1
+    selected = selection or _Selection(project_root)
+    try:
+        initial_evidence = _context_gap_address_evidence(
+            selected, initial, option="initial"
+        )
+        expanded_evidence = _context_gap_address_evidence(
+            selected, expanded, option="expanded"
+        )
+        overlap = {parse_address(item).text for item in initial} & {
+            parse_address(item).text for item in expanded
+        }
+        if overlap:
+            raise ValueError(
+                "addresses cannot be both initial and expanded: "
+                + ", ".join(sorted(overlap))
+            )
+        config = load_config(selected.project_root)
+        loaded, projection_reason = load_verified_projection(config)
+    except (OSError, ValueError) as error:
+        print(f"ERROR: {_sanitize_local_error(error, selected)}", file=sys.stderr)
+        return 1
+
+    ordered_impacts = tuple(
+        item for item in CONTEXT_GAP_IMPACTS if item in set(impacts)
+    )
+    projection = (
+        loaded.generation
+        if loaded is not None
+        else _sanitize_local_error(ValueError(projection_reason), selected)
+    )
+    evidence = _ContextGapEvidence(
+        reason=reason,
+        impacts=ordered_impacts,
+        initial=initial_evidence,
+        expanded=expanded_evidence,
+        projection=projection,
+    )
+    repeated = " ".join(f"--initial {item}" for item in initial)
+    repeated += " " + " ".join(f"--expanded {item}" for item in expanded)
+    repeated += " " + " ".join(f"--impact {item}" for item in impacts)
+    command = (
+        f"docsystem report context-gap {selected.report_selector} --project-name "
+        f"{project_name!r} --type {report_type} --source {source} "
+        f"--reason {reason} {repeated.strip()}"
+    )
+    text = _report_body(
+        selection=selected,
+        project_name=project_name,
+        report_type=report_type,
+        source=source,
+        component="context",
+        command_override=command,
+        extra_section=_context_gap_section(evidence),
+    )
+    return _write_text_or_stdout(text, output)
 
 
 def report_draft(
@@ -2279,7 +2490,33 @@ def finish(
     depth: int = 1,
     include_related: bool = False,
     json_output: bool = False,
+    context_expansion: str = "not-observed",
+    context_gap_report: str = "not-needed",
 ) -> int:
+    if context_expansion not in CONTEXT_EXPANSION_STATES:
+        print(
+            f"ERROR: unsupported context expansion state: {context_expansion}",
+            file=sys.stderr,
+        )
+        return 1
+    if context_gap_report not in CONTEXT_GAP_REPORT_STATES:
+        print(
+            f"ERROR: unsupported context gap report state: {context_gap_report}",
+            file=sys.stderr,
+        )
+        return 1
+    valid_report_state = (
+        context_gap_report in {"drafted", "filed"}
+        if context_expansion == "material-gap"
+        else context_gap_report == "not-needed"
+    )
+    if not valid_report_state:
+        print(
+            "ERROR: material-gap expansion requires a drafted or filed report; "
+            "other expansion states require not-needed",
+            file=sys.stderr,
+        )
+        return 1
     try:
         config = load_config(project_root)
         views, _, catalog_value = _load_views(config)
@@ -2330,26 +2567,30 @@ def finish(
         for relation, value, reason in views[selected_id].boundaries
     ]
     if json_output:
-        _print_json(
-            {
-                "target": document_id,
-                "path": target.path.as_posix(),
-                "depth": depth,
-                "include_related": include_related,
-                "included_documents": [
-                    {
-                        "id": selected_id,
-                        "path": views[selected_id].path.as_posix(),
-                        "relations": sorted(included[selected_id]),
-                        "omitted_h2": omitted_by_document[selected_id],
-                    }
-                    for selected_id in ordered
-                ],
-                "freshness": freshness,
-                "migrations": migrations,
-                "boundaries": boundaries,
+        payload: dict[str, object] = {
+            "target": document_id,
+            "path": target.path.as_posix(),
+            "depth": depth,
+            "include_related": include_related,
+            "included_documents": [
+                {
+                    "id": selected_id,
+                    "path": views[selected_id].path.as_posix(),
+                    "relations": sorted(included[selected_id]),
+                    "omitted_h2": omitted_by_document[selected_id],
+                }
+                for selected_id in ordered
+            ],
+            "freshness": freshness,
+            "migrations": migrations,
+            "boundaries": boundaries,
+        }
+        if context_expansion != "not-observed":
+            payload["context_expansion"] = {
+                "classification": context_expansion,
+                "report_state": context_gap_report,
             }
-        )
+        _print_json(payload)
         return 0
 
     print(f"# Finish handoff: {document_id}")
@@ -2401,6 +2642,12 @@ def finish(
             )
     else:
         print("- No unresolved/resource boundaries among included documents.")
+    if context_expansion != "not-observed":
+        print()
+        print("## Context expansion")
+        print()
+        print(f"- Classification: {context_expansion}")
+        print(f"- Report state: {context_gap_report}")
     print()
     print("## Return protocol")
     print()
@@ -3860,6 +4107,13 @@ def _agent_instructions_text(selection: _Selection, config: ProjectConfig) -> st
         "instead of assuming an omitted document or section is irrelevant."
     )
     out.append(
+        "- If an additional read materially changes the plan, scope, decision, "
+        "verification or result, finish the task and draft a sanitized "
+        "`docsystem report context-gap`, then preserve its classification and "
+        "report state in `docsystem finish`; ordinary precautionary expansion "
+        "is not a product issue."
+    )
+    out.append(
         "- Never run `docsystem init`, `docsystem migrate --apply`, "
         "`docsystem index --write`, `docsystem maintenance --write` or "
         "`docsystem maintenance-recover` without explicit approval."
@@ -4172,6 +4426,16 @@ def build_parser() -> argparse.ArgumentParser:
     finish_parser.add_argument("--depth", type=int, choices=range(0, 6), default=1)
     finish_parser.add_argument("--include-related", action="store_true")
     finish_parser.add_argument(
+        "--context-expansion",
+        choices=CONTEXT_EXPANSION_STATES,
+        default="not-observed",
+    )
+    finish_parser.add_argument(
+        "--context-gap-report",
+        choices=CONTEXT_GAP_REPORT_STATES,
+        default="not-needed",
+    )
+    finish_parser.add_argument(
         "--json",
         action="store_true",
         dest="json_output",
@@ -4204,6 +4468,40 @@ def build_parser() -> argparse.ArgumentParser:
     )
     draft_parser.add_argument("--component")
     draft_parser.add_argument("--output", type=Path)
+
+    context_gap_parser = report_subparsers.add_parser(
+        "context-gap",
+        help="Draft a body-free report for a material unexpected context gap.",
+    )
+    context_gap_parser.add_argument(
+        "project", nargs="?", type=Path, default=Path.cwd()
+    )
+    context_gap_parser.add_argument("--project-name", required=True)
+    context_gap_parser.add_argument(
+        "--type",
+        required=True,
+        choices=tuple(REPORT_TYPES),
+        dest="report_type",
+    )
+    context_gap_parser.add_argument(
+        "--source", required=True, choices=REPORT_SOURCES
+    )
+    context_gap_parser.add_argument(
+        "--reason", required=True, choices=CONTEXT_GAP_REASONS
+    )
+    context_gap_parser.add_argument(
+        "--initial", required=True, action="append", metavar="ID[#ANCHOR]"
+    )
+    context_gap_parser.add_argument(
+        "--expanded", required=True, action="append", metavar="ID[#ANCHOR]"
+    )
+    context_gap_parser.add_argument(
+        "--impact",
+        required=True,
+        action="append",
+        choices=CONTEXT_GAP_IMPACTS,
+    )
+    context_gap_parser.add_argument("--output", type=Path)
 
     agent_instructions_parser = subparsers.add_parser(
         "agent-instructions",
@@ -4271,6 +4569,7 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         _add_source_options(command_parser)
     _add_source_options(draft_parser, short_flag=False)
+    _add_source_options(context_gap_parser, short_flag=False)
     return parser
 
 
@@ -4375,6 +4674,8 @@ def main() -> int:
             depth=args.depth,
             include_related=args.include_related,
             json_output=args.json_output,
+            context_expansion=args.context_expansion,
+            context_gap_report=args.context_gap_report,
         )
     if args.command == "agent-instructions":
         return agent_instructions(
@@ -4388,6 +4689,19 @@ def main() -> int:
                 report_type=args.report_type,
                 source=args.source,
                 component=args.component,
+                output=args.output,
+                selection=selection,
+            )
+        if args.report_command == "context-gap":
+            return context_gap_draft(
+                project,
+                project_name=args.project_name,
+                report_type=args.report_type,
+                source=args.source,
+                reason=args.reason,
+                initial=tuple(args.initial),
+                expanded=tuple(args.expanded),
+                impacts=tuple(args.impact),
                 output=args.output,
                 selection=selection,
             )

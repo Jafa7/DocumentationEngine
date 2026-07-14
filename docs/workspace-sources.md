@@ -103,8 +103,8 @@ docsystem index . --source example-project --write
 
 `--workspace` is normally omitted after installing the local pointer. On a
 project command it is valid only together with `--source`. The `report draft`
-command already uses `--source` for the reporting host, so its workspace
-selector is spelled `--workspace-source`:
+and `report context-gap` commands already use `--source` for the reporting
+host, so their workspace selector is spelled `--workspace-source`:
 
 ```bash
 docsystem report draft . \
