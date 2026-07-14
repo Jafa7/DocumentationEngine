@@ -15,6 +15,9 @@ All notable changes to Documentation Engine are documented in this file.
 - Versioned A0–A2 execution-admission policy and read-only `admission` CLI/MCP
   evaluation for bounded workstream targets, actions, risk and authorization
   evidence.
+- Read-only `execution-handoff` CLI/MCP packet generation and verification with
+  mandate/target hashes, section ranges, graph impact, visible completeness and
+  no embedded authored bodies.
 
 ## [0.2.0] - 2026-07-13
 

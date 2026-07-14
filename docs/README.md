@@ -29,6 +29,8 @@ link to that owner rather than repeat commands or policy.
   through bounded evidence and versioned project policy without source writes.
 - [Bounded execution admission](execution-admission.md) — validate A0–A2
   workstream intent, scope, risk and evidence before an external executor acts.
+- [Immutable execution handoff](execution-handoff.md) — freeze admitted intent,
+  target snapshots and graph impact for an external executor without bodies.
 
 ## Integrations and project structure
 

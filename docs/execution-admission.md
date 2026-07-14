@@ -117,6 +117,11 @@ request/outcome hashes and a catalog guard. It is admission evidence for the
 calling workflow, not an execution command. The caller must compare the guard
 before acting and re-evaluate after catalog or mandate changes.
 
+For a portable pre-execution boundary, turn the admitted request into an
+[immutable execution handoff](execution-handoff.md). That packet binds the
+admission to exact mandate, target, section and graph evidence and can be
+reverified immediately before an external executor acts.
+
 ## Trust boundary
 
 Authorization objects are signed-off assertions, not authenticated identity.

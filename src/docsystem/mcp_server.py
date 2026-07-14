@@ -258,6 +258,30 @@ def admission(
     return _json_tool(arguments)
 
 
+def execution_handoff(
+    project: str,
+    document_id: str,
+    admission_request: str,
+    verify_packet: str | None = None,
+    source: str | None = None,
+    workspace: str | None = None,
+) -> dict:
+    """Build or verify an immutable provider-neutral execution packet."""
+
+    arguments = [
+        "execution-handoff",
+        document_id,
+        project,
+        "--admission",
+        admission_request,
+        "--json",
+    ]
+    if verify_packet is not None:
+        arguments.extend(["--verify", verify_packet])
+    arguments.extend(_selection_arguments(source, workspace))
+    return _json_tool(arguments)
+
+
 def finish_handoff(
     project: str,
     document_id: str,
@@ -532,6 +556,7 @@ _TOOLS = (
     workstream,
     intake,
     admission,
+    execution_handoff,
     finish_handoff,
     context,
     read_document,

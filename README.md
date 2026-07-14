@@ -256,6 +256,7 @@ docsystem workstream WS-001 . --record workstream-record.json
 docsystem workstream WS-001 . --record workstream-record.json --json
 docsystem intake . --request idea-intake-request.json --json
 docsystem admission WS-001 . --request execution-admission-request.json --json
+docsystem execution-handoff WS-001 . --admission execution-admission-request.json --json
 docsystem migration-report .
 docsystem migration-report . --json
 docsystem readiness .
@@ -509,6 +510,13 @@ or changing source. Commit, push, merge and release are deliberately outside
 this initial contract. See
 [bounded execution admission](docs/execution-admission.md).
 
+`execution-handoff` freezes an admitted intent, mandate, exact target hashes
+and graph-derived read/review manifest into a bounded, body-free packet for an
+external executor. Verify the saved packet immediately before execution; any
+source, graph, policy or admission drift fails closed. Original Markdown
+remains fully available on demand. See
+[immutable execution handoff](docs/execution-handoff.md).
+
 `report draft` produces a privacy-safe GitHub issue body for adopter
 runtime reports, adoption findings, core bugs or documentation pattern
 requests; it is read-only and leaves expected/actual/requested-action fields
@@ -538,7 +546,8 @@ is missing, so the pasted snippet can never drift from
 `docs/setup-guide.md` Step 7 by hand-copying.
 
 `readiness`, `migration-report`, `catalog --explain`, `changes`, `context`,
-`criteria`, `workstream`, `intake`, `admission` and `agent-instructions` accept
+`criteria`, `workstream`, `intake`, `admission`, `execution-handoff` and
+`agent-instructions` accept
 `--json` and print one
 deterministic JSON value
 (sorted keys, stable field names) instead of text, carrying the same

@@ -64,7 +64,8 @@ The adapter is deliberately a wrapper, not a second implementation:
   diagnostics, so a client never mistakes a failure for data. The one
   exception is `readiness`, whose "not ready" state is a legitimate answer:
   it returns the payload with `"ready": false` instead of raising.
-- `criteria`, `workstream`, `intake`, `admission` and `finish_handoff` expose the same read-only
+- `criteria`, `workstream`, `intake`, `admission`, `execution_handoff` and
+  `finish_handoff` expose the same read-only
   versioned workstream policy, record validation and optional strict finish
   gate plus idea-placement and A0–A2 admission policy as the CLI. Request and
   record paths are local to the MCP server host.
@@ -81,6 +82,7 @@ The adapter is deliberately a wrapper, not a second implementation:
 | `workstream` | object | `docsystem workstream ID PROJECT --record RECORD --json` |
 | `intake` | object | `docsystem intake PROJECT --request REQUEST --json` |
 | `admission` | object | `docsystem admission ID PROJECT --request REQUEST --json` |
+| `execution_handoff` | object | `docsystem execution-handoff ID PROJECT --admission REQUEST [--verify PACKET] --json` |
 | `finish_handoff` | object | `docsystem finish ID PROJECT [--workstream-record RECORD] --json` |
 | `context` | object | `docsystem context ID PROJECT --json ...` |
 | `read_document` | text | `docsystem read ID PROJECT [--anchor/--navigation/--list]` |

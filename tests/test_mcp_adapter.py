@@ -242,6 +242,20 @@ def test_workstream_tools_delegate_to_read_only_json_cli(
         "--json",
     ]
 
+    assert mcp_server.execution_handoff(
+        "/project", "WS-001", "/tmp/admission.json", "/tmp/packet.json"
+    ) == {"schema_version": 1}
+    assert calls.pop() == [
+        "execution-handoff",
+        "WS-001",
+        "/project",
+        "--admission",
+        "/tmp/admission.json",
+        "--json",
+        "--verify",
+        "/tmp/packet.json",
+    ]
+
     assert mcp_server.finish_handoff(
         "/project",
         "DOC-002",

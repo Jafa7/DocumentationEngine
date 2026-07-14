@@ -415,6 +415,14 @@ workers, authenticates the asserted authority or performs the admitted action.
 Deletion, privacy boundaries, permission expansion and external commitments
 remain escalation boundaries in this initial contract.
 
+An immutable execution handoff is the read-only bridge from admitted intent
+to an external executor. It snapshots the mandate, stable target addresses,
+source and section hashes, forward/reverse change-plan evidence and a compact
+read/review context manifest without embedding document bodies. A packet is
+integrity-sealed and bounded; verification rebuilds it from current Markdown
+and fails closed on any drift. The core still does not dispatch, mutate,
+authenticate authority or grant permissions.
+
 ## Product sequence
 
 1. Configuration contract, bootstrap and diagnostics.
@@ -441,3 +449,5 @@ remain escalation boundaries in this initial contract.
     mutation.
 15. Provider-neutral bounded A0–A2 execution admission before external
     orchestration or implementation.
+16. Immutable, body-free execution handoff with exact pre-execution drift
+    verification and explicit graph coverage.

@@ -118,6 +118,11 @@ context handoff contract. Projects can therefore adopt strict evidence only
 for milestones where the additional assurance is worth its documentation
 cost.
 
+An [immutable execution handoff](execution-handoff.md) packet hash may be
+recorded as provenance for what was authorized and verified before execution.
+It is not completion evidence: checks, review, corrections and returned
+artifacts must still be recorded here after the work.
+
 ## Responsibility boundary
 
 Documentation Engine does not choose product semantics, run workers, approve

@@ -58,11 +58,13 @@ from docsystem.config import (
     is_historical_snapshot,
     load_config,
 )
+from docsystem.execution import ExecutionPacketError, load_packet, seal_packet
 from docsystem.graph import (
     Address,
     Boundary,
     GraphEdge,
     ProjectionUnavailable,
+    SectionReferenceGraph,
     TraversalResult,
     build_reference_graph,
     graph_validation_issues,
@@ -3751,6 +3753,65 @@ def _admission_payload(
     }
 
 
+def _evaluate_execution_admission(
+    project_root: Path,
+    document_id: str,
+    request_path: Path,
+) -> tuple[
+    ProjectConfig,
+    MarkdownCatalog,
+    AdmissionRequest,
+    AdmissionCriterion,
+    AdmissionEvaluation,
+]:
+    config = load_config(project_root)
+    catalog_value = build_catalog(config)
+    blocking = [
+        issue
+        for issue in validate_catalog(catalog_value, config)
+        if issue.severity != "warning"
+    ]
+    if blocking:
+        first = blocking[0]
+        raise AdmissionError(
+            f"catalog validation blocks execution admission: "
+            f"{first.path.as_posix()}: {first.message}"
+        )
+    request = load_admission_request(request_path)
+    if request.workstream_id != document_id:
+        raise AdmissionError(
+            f"request workstream_id {request.workstream_id!r} does not match "
+            f"{document_id!r}"
+        )
+    criterion = _admission_criterion_by_reference(config, request.criterion)
+    evaluation = evaluate_admission_request(request, criterion)
+    document = find_document(catalog_value, document_id)
+    if (
+        document.metadata is None
+        or document.metadata.document_type != "workstream"
+    ):
+        raise AdmissionError(
+            f"document {document_id} must declare metadata.type 'workstream'"
+        )
+    if document.metadata.status in {"completed", "cancelled", "failed"}:
+        raise AdmissionError(
+            f"workstream {document_id} has terminal status "
+            f"{document.metadata.status!r}"
+        )
+    anchors = {section.anchor for section in document.sections}
+    missing_sections = sorted(set(criterion.required_sections) - anchors)
+    if missing_sections:
+        raise AdmissionError(
+            f"workstream {document_id} is missing required section(s): "
+            + ", ".join(missing_sections)
+        )
+    for index, target in enumerate(request.targets):
+        _validate_evidence_address(
+            catalog_value, target, field=f"targets[{index}]"
+        )
+    return config, catalog_value, request, criterion, evaluation
+
+
 def execution_admission(
     project_root: Path,
     document_id: str,
@@ -3761,51 +3822,11 @@ def execution_admission(
     """Evaluate one bounded A0-A2 intent without executing or writing it."""
 
     try:
-        config = load_config(project_root)
-        catalog_value = build_catalog(config)
-        blocking = [
-            issue
-            for issue in validate_catalog(catalog_value, config)
-            if issue.severity != "warning"
-        ]
-        if blocking:
-            first = blocking[0]
-            raise AdmissionError(
-                f"catalog validation blocks execution admission: "
-                f"{first.path.as_posix()}: {first.message}"
+        _, catalog_value, request, criterion, evaluation = (
+            _evaluate_execution_admission(
+                project_root, document_id, request_path
             )
-        request = load_admission_request(request_path)
-        if request.workstream_id != document_id:
-            raise AdmissionError(
-                f"request workstream_id {request.workstream_id!r} does not match "
-                f"{document_id!r}"
-            )
-        criterion = _admission_criterion_by_reference(config, request.criterion)
-        evaluation = evaluate_admission_request(request, criterion)
-        document = find_document(catalog_value, document_id)
-        if (
-            document.metadata is None
-            or document.metadata.document_type != "workstream"
-        ):
-            raise AdmissionError(
-                f"document {document_id} must declare metadata.type 'workstream'"
-            )
-        if document.metadata.status in {"completed", "cancelled", "failed"}:
-            raise AdmissionError(
-                f"workstream {document_id} has terminal status "
-                f"{document.metadata.status!r}"
-            )
-        anchors = {section.anchor for section in document.sections}
-        missing_sections = sorted(set(criterion.required_sections) - anchors)
-        if missing_sections:
-            raise AdmissionError(
-                f"workstream {document_id} is missing required section(s): "
-                + ", ".join(missing_sections)
-            )
-        for index, target in enumerate(request.targets):
-            _validate_evidence_address(
-                catalog_value, target, field=f"targets[{index}]"
-            )
+        )
         payload = _admission_payload(
             catalog_value, request, criterion, evaluation
         )
@@ -3827,6 +3848,215 @@ def execution_admission(
     for target in request.targets:
         print(f"target\t{target}")
     print(f"catalog_guard\t{payload['catalog_guard']}")
+    return 0
+
+
+def _execution_address_snapshot(
+    catalog_value: MarkdownCatalog, raw_address: str
+) -> dict[str, object]:
+    address = parse_address(raw_address)
+    document = find_document(catalog_value, address.document_id)
+    assert document.metadata is not None
+    snapshot: dict[str, object] = {
+        "address": address.text,
+        "document_id": address.document_id,
+        "revision": document.metadata.revision,
+        "path": document.path.as_posix(),
+        "document_sha256": hashlib.sha256(document.content.encode()).hexdigest(),
+    }
+    if address.anchor is None:
+        snapshot["section"] = None
+        return snapshot
+    section = next(item for item in document.sections if item.anchor == address.anchor)
+    lines = document.content.splitlines()
+    section_text = "\n".join(lines[section.start_line - 1 : section.end_line])
+    snapshot["section"] = {
+        "anchor": section.anchor,
+        "title": section.title,
+        "level": section.level,
+        "start_line": section.start_line,
+        "end_line": section.end_line,
+        "sha256": hashlib.sha256(section_text.encode()).hexdigest(),
+    }
+    return snapshot
+
+
+def _execution_change_plan(
+    reference_graph: SectionReferenceGraph,
+    raw_address: str,
+) -> ChangePlan:
+    address = parse_address(raw_address)
+
+    def _forward(current: Address) -> tuple[GraphEdge, ...]:
+        return reference_graph.forward(current)
+
+    def _reverse(current: Address) -> tuple[GraphEdge, ...]:
+        return reference_graph.reverse_edges(current)
+
+    forward_reasons = graph_traverse_reasons(
+        address,
+        forward=_forward,
+        reverse_edges=_reverse,
+        reverse=False,
+        transitive=True,
+    )
+    reverse_reasons = graph_traverse_reasons(
+        address,
+        forward=_forward,
+        reverse_edges=_reverse,
+        reverse=True,
+        transitive=True,
+    )
+    touched = (address, *dict.fromkeys(item.address for item in forward_reasons))
+    boundaries = tuple(
+        boundary
+        for source in touched
+        for boundary in reference_graph.boundaries_from(source)
+    )
+    return build_change_plan(
+        address,
+        reverse=True,
+        transitive=True,
+        forward_reasons=forward_reasons,
+        reverse_reasons=reverse_reasons,
+        boundaries=boundaries,
+    )
+
+
+def _execution_plan_json(plan: ChangePlan) -> dict[str, object]:
+    return {
+        "address": plan.address.text,
+        "reverse": plan.reverse,
+        "transitive": plan.transitive,
+        "items": [_change_plan_item_json(item) for item in plan.items],
+        "boundaries": [
+            _references_boundary_json(boundary) for boundary in plan.boundaries
+        ],
+        "completeness": {
+            "authored": plan.completeness.authored,
+            "observed": plan.completeness.observed,
+            "generated": plan.completeness.generated,
+        },
+    }
+
+
+def _build_execution_handoff(
+    project_root: Path,
+    document_id: str,
+    admission_path: Path,
+) -> dict[str, object]:
+    config, catalog_value, request, criterion, evaluation = (
+        _evaluate_execution_admission(project_root, document_id, admission_path)
+    )
+    if evaluation.blocked:
+        raise ExecutionPacketError(
+            "execution admission is blocked: " + ", ".join(evaluation.reasons)
+        )
+    mandate = find_document(catalog_value, document_id)
+    assert mandate.metadata is not None
+    required_sections = [
+        _execution_address_snapshot(catalog_value, f"{document_id}#{anchor}")
+        for anchor in criterion.required_sections
+    ]
+    reference_graph = build_reference_graph(catalog_value, config)
+    plan_groups: list[list[ChangePlan]] = []
+    for target in request.targets:
+        target_address = parse_address(target)
+        plan_addresses = [target]
+        if target_address.anchor is not None:
+            plan_addresses.append(target_address.document_id)
+        plan_groups.append(
+            [
+                _execution_change_plan(reference_graph, address)
+                for address in plan_addresses
+            ]
+        )
+    target_rows = [
+        {
+            "snapshot": _execution_address_snapshot(catalog_value, target),
+            "change_plans": [_execution_plan_json(plan) for plan in plans],
+        }
+        for target, plans in zip(request.targets, plan_groups, strict=True)
+    ]
+    dispositions: dict[str, set[str]] = {
+        "read": {
+            f"{document_id}#{anchor}" for anchor in criterion.required_sections
+        },
+        "review": set(),
+    }
+    for plans in plan_groups:
+        for plan in plans:
+            for item in plan.items:
+                dispositions[item.disposition].add(item.address.text)
+    dispositions["review"].difference_update(dispositions["read"])
+    admission_payload = _admission_payload(
+        catalog_value, request, criterion, evaluation
+    )
+    return seal_packet(
+        {
+            "kind": "execution-handoff",
+            "workstream_id": document_id,
+            "admission": admission_payload,
+            "mandate": {
+                "id": document_id,
+                "revision": mandate.metadata.revision,
+                "status": mandate.metadata.status,
+                "path": mandate.path.as_posix(),
+                "document_sha256": hashlib.sha256(
+                    mandate.content.encode()
+                ).hexdigest(),
+                "required_sections": required_sections,
+            },
+            "targets": target_rows,
+            "context_manifest": {
+                "read": sorted(dispositions["read"]),
+                "review": sorted(dispositions["review"]),
+                "content_embedded": False,
+                "expansion": "on-demand-by-stable-address",
+            },
+        }
+    )
+
+
+def execution_handoff(
+    project_root: Path,
+    document_id: str,
+    *,
+    admission_path: Path,
+    verify_path: Path | None = None,
+    json_output: bool = False,
+) -> int:
+    """Build or verify an immutable handoff without executing the workstream."""
+
+    try:
+        current = _build_execution_handoff(
+            project_root, document_id, admission_path
+        )
+        if verify_path is not None:
+            supplied = load_packet(verify_path)
+            if supplied != current:
+                raise ExecutionPacketError(
+                    "execution packet is stale or does not match the admitted intent"
+                )
+    except (OSError, ValueError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    if json_output:
+        if verify_path is None:
+            print(json.dumps(current, ensure_ascii=False, sort_keys=True, indent=2))
+        else:
+            _print_json(
+                {
+                    "workstream_id": document_id,
+                    "packet_sha256": current["packet_sha256"],
+                    "current": True,
+                }
+            )
+        return 0
+    print(f"workstream\t{document_id}")
+    print(f"packet_sha256\t{current['packet_sha256']}")
+    print(f"targets\t{len(current['targets'])}")
+    print(f"verified\t{str(verify_path is not None).lower()}")
     return 0
 
 
@@ -6011,6 +6241,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print a deterministic JSON decision instead of tab-separated text.",
     )
 
+    execution_handoff_parser = subparsers.add_parser(
+        "execution-handoff",
+        help="Build or verify an immutable provider-neutral execution packet.",
+    )
+    execution_handoff_parser.add_argument("document_id")
+    execution_handoff_parser.add_argument(
+        "project", nargs="?", type=Path, default=Path.cwd()
+    )
+    execution_handoff_parser.add_argument(
+        "--admission",
+        required=True,
+        type=Path,
+        dest="admission_path",
+        help="Read-only path to the bounded admitted intent.",
+    )
+    execution_handoff_parser.add_argument(
+        "--verify",
+        type=Path,
+        dest="verify_path",
+        help="Verify a previously captured packet against current Markdown.",
+    )
+    execution_handoff_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print the packet or verification result as deterministic JSON.",
+    )
+
     migration_report_parser = subparsers.add_parser(
         "migration-report", help="Report legacy relation adoption mappings."
     )
@@ -6215,6 +6473,7 @@ def build_parser() -> argparse.ArgumentParser:
         workstream_parser,
         intake_parser,
         admission_parser,
+        execution_handoff_parser,
         migration_report_parser,
         migrate_parser,
         readiness_parser,
@@ -6335,6 +6594,14 @@ def main() -> int:
             project,
             args.document_id,
             request_path=args.request_path,
+            json_output=args.json_output,
+        )
+    if args.command == "execution-handoff":
+        return execution_handoff(
+            project,
+            args.document_id,
+            admission_path=args.admission_path,
+            verify_path=args.verify_path,
             json_output=args.json_output,
         )
     if args.command == "migration-report":

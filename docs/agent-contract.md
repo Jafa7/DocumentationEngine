@@ -102,6 +102,15 @@ tokens minted by Documentation Engine. The A0–A2 contract never authorizes
 commit, push, merge, release, authored deletion or scope expansion. See
 [bounded execution admission](execution-admission.md).
 
+After an admitted result, build an immutable execution packet with
+`docsystem execution-handoff ID PROJECT --admission REQUEST --json`. The
+packet is body-free planning and integrity evidence, not permission to act or
+a substitute for reading listed source addresses. Verify the exact saved
+packet immediately before execution with `--verify PACKET`; stop if current
+Markdown, graph, mandate, policy or admission evidence no longer reproduces
+it. Enforce write permissions and authorization outside Documentation Engine.
+See [immutable execution handoff](execution-handoff.md).
+
 When installing or adopting Documentation Engine for a project that will keep
 important state outside git, the agent must ask the user where backups should
 be stored and then write that choice only to local ignored policy, such as
