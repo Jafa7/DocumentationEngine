@@ -1,14 +1,12 @@
-# Paradigmarium integration
+# AI client integration
 
-Documentation Engine is provider-neutral; Paradigmarium is its first
-downstream consumer, not a dependency of the core package. This document is
-public integration guidance only — it never embeds private Paradigmarium
-planning content, and the core package (`src/docsystem/`) never contains
-Paradigmarium-specific behavior.
+Documentation Engine is provider- and adopter-neutral. This document describes
+how a project-local wrapper can consume its public CLI and JSON contracts
+without coupling the core package to one host, provider or project workflow.
 
 ## Consumer install, not a source checkout
 
-A Paradigmarium-style wrapper depends on `docsystem` as an ordinary installed
+A project-local wrapper depends on `docsystem` as an ordinary installed
 package and invokes the `docsystem` console script produced by the build. It
 never sets `PYTHONPATH` and never imports this repository's `src/` directly.
 See the top-level README's [Installation](../README.md#installation) section
@@ -18,16 +16,16 @@ reproducible installed-consumer check.
 
 ## Example profile
 
-[`examples/paradigmarium-profile/`](../examples/paradigmarium-profile/) is a
+[`examples/generic-adopter/`](../examples/generic-adopter/) is a
 small, public, runnable `.docsystem.toml` and Markdown tree that demonstrates
 the profile shape described in [`docs/adoption.md`](adoption.md): logical
 areas, an identifier namespace, and one intentionally unmigrated legacy
-relation. It is a fixture for exercising the CLI, not the private
-Paradigmarium plan tree.
+relation. It is a synthetic fixture for exercising the CLI and contains no
+private adopter content.
 
 ## Machine-readable output for AI-agent wrappers
 
-A Paradigmarium wrapper that drives `docsystem` from an AI agent should
+A project-local wrapper that drives `docsystem` from an AI agent should
 prefer `--json` over parsing the default human-readable text, so it never has
 to depend on prose wording remaining stable. `--json` is available on the
 adoption-oriented, read-only commands:
@@ -116,7 +114,6 @@ full read-only/mutating command classification an AI client should follow.
 
 ## Non-goals
 
-Registry synchronization, finish orchestration, private history/backup and
-any other Paradigmarium-specific orchestration remain project-local to
-Paradigmarium. They are not, and will not become, part of this public
-package or its documentation.
+Registry synchronization, project-specific orchestration and private history
+or backup policy remain project-local. They are not part of the provider- and
+adopter-neutral core contract.

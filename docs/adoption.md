@@ -24,15 +24,15 @@ reviews = "reviews"
 experiments = "experiments"
 
 [identifiers]
-document = "PDOC"
-decision = "PDEC"
-roadmap = "PRM"
+document = "DOC"
+decision = "DEC"
+roadmap = "RM"
 
 [catalog]
 exclude = ["templates/*-template.md"]
 
 [navigation]
-extend_through = ["резюме", "содержание", "summary", "contents"]
+extend_through = ["summary", "contents"]
 
 [relations]
 legacy_paths = "resolve-with-warning"
@@ -84,11 +84,11 @@ docsystem validate .
 docsystem validate . --verbose-adoption
 docsystem migration-report .
 docsystem migrate .
-docsystem context PDOC-001 . --depth 1
-docsystem context PDOC-001 . --view map --json
-docsystem context PDOC-001 . --view task --json
-docsystem impact PDOC-001 .
-docsystem finish PDOC-001 .
+docsystem context DOC-001 . --depth 1
+docsystem context DOC-001 . --view map --json
+docsystem context DOC-001 . --view task --json
+docsystem impact DOC-001 .
+docsystem finish DOC-001 .
 docsystem report draft . --project-name "Adopter Project" --type adoption-finding --source codex
 docsystem report context-gap . --project-name "Adopter Project" --type adoption-finding --source codex --reason missing_dependency --initial DOC-001#summary --expanded DOC-002#constraints --impact decision
 docsystem index . --write
@@ -98,16 +98,17 @@ docsystem changes .
 
 `catalog --explain`, `readiness`, `migration-report`, `changes` and `context`
 also accept `--json` for a deterministic, machine-readable form of the same
-report; see [the Paradigmarium integration guide](paradigmarium-integration.md)
-and [`examples/paradigmarium-profile/`](../examples/paradigmarium-profile/)
-for a runnable profile and a wrapper-oriented walkthrough.
+report; see [the AI client integration guide](client-integration.md) and
+[`examples/generic-adopter/`](../examples/generic-adopter/) for a runnable
+synthetic profile and a wrapper-oriented walkthrough.
 
-Every command above is read-only. `readiness` is the single compact entry
-point: it distinguishes blocking structural/configuration errors, resolvable
-legacy relation migrations, explicit unresolved/resource boundaries, stale
-freshness pins and projection state (absent/stale/current), and prints the
-one safe next command — it never writes Markdown, configuration or the
-projection cache itself.
+The inspection commands and `migrate` preview above do not edit Markdown.
+`index --write` creates only a disposable derived projection. `readiness` is
+the single compact entry point: it distinguishes blocking structural or
+configuration errors, resolvable legacy relation migrations, explicit
+unresolved/resource boundaries, stale freshness pins and projection state
+(absent/stale/current), and prints the one safe next command — it never writes
+Markdown, configuration or the projection cache itself.
 
 The migration report uses tab-separated records:
 

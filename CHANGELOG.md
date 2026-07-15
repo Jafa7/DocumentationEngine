@@ -53,6 +53,11 @@ All notable changes to Documentation Engine are documented in this file.
   host-persisted execution packet, authoritative changed-file result and
   completed workstream record into one fail-closed, body-free evidence lineage.
 
+### Changed
+
+- Replaced the named adopter integration guide and CI profile with a synthetic
+  client-integration contract and generic adopter fixture.
+
 ## [0.2.0] - 2026-07-13
 
 ### Highlights

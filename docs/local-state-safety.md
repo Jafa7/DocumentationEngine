@@ -16,7 +16,7 @@ Common local-only paths include:
   local;
 - `.docsystem/`, including projection cache generations;
 - project-local orchestration/runtime directories such as `.orchestrator/` or
-  `.paradigmarium/`;
+  `.project-runtime/`;
 - provider-local files such as `.claude/`, `.codex/` or other adapter state;
 - uncommitted work in tracked files.
 

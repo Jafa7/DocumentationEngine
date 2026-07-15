@@ -6,8 +6,8 @@ Documentation Engine is a provider-neutral toolkit for maintaining structured
 Markdown knowledge that remains usable by humans and AI clients as a project
 grows.
 
-The published `documentation-engine` package is pre-1.0. Paradigmarium remains
-the first real-project integration fixture for its adoption contracts.
+The published `documentation-engine` package is pre-1.0. Public contracts may
+still evolve as adopter evidence exposes reusable compatibility requirements.
 
 ## Complete access. Task-sized reads.
 
@@ -727,8 +727,8 @@ incompatible, reads visibly fall back to direct Markdown with a stderr
 diagnostic and identical output. Markdown remains the only editable truth.
 
 See [the adoption guide](docs/adoption.md) for a complete profile and migration
-sequence, [the Paradigmarium integration guide](docs/paradigmarium-integration.md)
-for downstream consumer guidance, and [the agent contract](docs/agent-contract.md)
+sequence, [the AI client integration guide](docs/client-integration.md) for
+downstream consumer guidance, and [the agent contract](docs/agent-contract.md)
 for how an AI client should safely drive this CLI.
 Projects that keep private documentation or local configuration outside git
 should also define a local backup command; see

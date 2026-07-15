@@ -46,8 +46,8 @@ link to that owner rather than repeat commands or policy.
   configuration.
 - [Workspace source selection](workspace-sources.md) — address independent
   local profiles by stable source name.
-- [Paradigmarium integration](paradigmarium-integration.md) — real adopter
-  compatibility profile and wrapper contract.
+- [AI client integration](client-integration.md) — generic wrapper and
+  machine-readable output contract.
 - [Workstream branching](workstream-branching.md) — preserve context when work
   splits into another chat, module or repository.
 

@@ -10,5 +10,4 @@ __pycache__/
 .docsystem/
 .docsystem.local.toml
 /.claude/
-/.paradigmarium/
 /.orchestrator/

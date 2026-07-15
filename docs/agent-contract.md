@@ -1,7 +1,7 @@
 # Agent contract
 
 This document describes how an AI client (a coding agent, an MCP adapter, or
-a Paradigmarium-style wrapper) should safely drive the `docsystem` CLI. It is
+a project-local wrapper) should safely drive the `docsystem` CLI. It is
 provider-neutral: it describes the core CLI's contract, not any specific
 provider's orchestration.
 
@@ -161,10 +161,9 @@ to branch on the result programmatically, rather than parsing the default
 human-readable output, which is free to add explanatory text over time.
 Every `--json` root is an object carrying `"schema_version": 1`; an agent
 should check it before assuming field semantics, since it is bumped only on
-breaking changes while new fields may appear without a bump. See
-[`docs/paradigmarium-integration.md`](paradigmarium-integration.md) for the
-schema each command's `--json` output follows. MCP clients get the same
-read-only commands as typed tools via
+breaking changes while new fields may appear without a bump. The public
+documentation for each command defines its command-specific payload. MCP
+clients get the same read-only commands as typed tools via
 [the MCP adapter](mcp-adapter.md); it never exposes a mutating command. For
 text commands whose exact stdout matters, MCP clients should prefer the
 structured packet variants when they also need non-fatal diagnostics such as

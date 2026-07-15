@@ -113,9 +113,9 @@ def test_ci_keeps_every_gate_and_the_adoption_walkthrough(ci: dict) -> None:
         "uv run ruff check .",
         "uv lock --check",
         "./scripts/installed_cli_smoke.sh",
-        "examples/paradigmarium-profile",
+        "examples/generic-adopter",
         "python -m docsystem migrate",
-        "python -m docsystem context PDOC-002",
+        "python -m docsystem context DOC-002",
     ):
         assert gate in body, f"CI lost the {gate!r} gate"
 
