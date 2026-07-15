@@ -147,6 +147,13 @@ from docsystem.maintenance import (
 )
 from docsystem.migration import apply_migration_plan, build_migration_plan, validate_plan
 from docsystem.profiles import ProfileReport, evaluate_profiles
+from docsystem.program_plan import (
+    ProgramMilestone,
+    ProgramPlan,
+    evaluate_program_plans,
+    select_milestone,
+    select_program_plan,
+)
 from docsystem.projection import (
     LoadedProjection,
     build_projection,
@@ -1099,6 +1106,10 @@ def doctor(project_root: Path, *, verbose_adoption: bool = False) -> int:
     if delivery_report.violations:
         _print_delivery_violations(delivery_report)
         return 1
+    program_plans = evaluate_program_plans(markdown_catalog)
+    if any(plan.violations for plan in program_plans):
+        _print_program_plan_violations(program_plans)
+        return 1
     print("Configuration is valid.")
     print(f"Documentation root: {config.documentation_root}")
     print(f"Language: {config.language}")
@@ -1169,6 +1180,10 @@ def validate(project_root: Path, *, verbose_adoption: bool = False) -> int:
     delivery_report = evaluate_delivery(markdown_catalog, config)
     if delivery_report.violations:
         _print_delivery_violations(delivery_report)
+        return 1
+    program_plans = evaluate_program_plans(markdown_catalog)
+    if any(plan.violations for plan in program_plans):
+        _print_program_plan_violations(program_plans)
         return 1
     print("Markdown navigation is valid.")
     return 0
@@ -1565,6 +1580,195 @@ def _print_delivery_violations(report: DeliveryReport) -> None:
             f"({item.subject}): {item.detail}",
             file=sys.stderr,
         )
+
+
+def _print_program_plan_violations(plans: tuple[ProgramPlan, ...]) -> None:
+    for plan in plans:
+        for item in plan.violations:
+            print(
+                f"ERROR: {item.path}: program-plan {item.code} "
+                f"({item.subject}): {item.detail}",
+                file=sys.stderr,
+            )
+
+
+def _program_milestone_json(item: ProgramMilestone) -> dict[str, object]:
+    return {
+        "id": item.key,
+        "title": item.title,
+        "order": item.order,
+        "priority": item.priority,
+        "state": item.state,
+        "roadmap": item.roadmap_id,
+        "prerequisites": list(item.prerequisites),
+        "source_contracts": list(item.source_contracts),
+        "unlocks": list(item.unlocks),
+        "reason": item.reason,
+        "waiting_for": item.waiting_for,
+        "reopen_when": item.reopen_when,
+    }
+
+
+def _program_plan_json(plan: ProgramPlan) -> dict[str, object]:
+    return {
+        "program": {
+            "id": plan.program_id,
+            "revision": plan.revision,
+            "path": plan.path,
+            "action": plan.action,
+            "recommended": list(plan.recommended),
+        },
+        "milestones": [_program_milestone_json(item) for item in plan.milestones],
+    }
+
+
+def _load_program_plan(
+    project_root: Path, program_id: str | None
+) -> ProgramPlan | None:
+    try:
+        config = load_config(project_root)
+        catalog_value = build_catalog(config)
+        issues = _with_graph_issues(
+            validate_catalog(catalog_value, config), catalog_value, config
+        )
+        blockers = tuple(issue for issue in issues if issue.severity != "warning")
+        if blockers:
+            _print_validation_issues(blockers, verbose_adoption=False)
+            return None
+        plans = evaluate_program_plans(catalog_value)
+        plan = select_program_plan(plans, program_id)
+    except (OSError, ValueError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return None
+    if plan.violations:
+        _print_program_plan_violations((plan,))
+        return None
+    return plan
+
+
+def roadmap_status(
+    project_root: Path, *, program_id: str | None = None, json_output: bool = False
+) -> int:
+    """Show the complete deterministic state of one authored program plan."""
+
+    plan = _load_program_plan(project_root, program_id)
+    if plan is None:
+        return 1
+    if json_output:
+        _print_json(_program_plan_json(plan))
+        return 0
+    print(
+        f"program\t{plan.program_id}\trevision={plan.revision}\t"
+        f"action={plan.action}"
+    )
+    for item in plan.milestones:
+        print(
+            f"milestone\t{item.key}\tstate={item.state}\torder={item.order}\t"
+            f"priority={item.priority}\troadmap={item.roadmap_id or '-'}\t"
+            f"reason={item.reason or '-'}"
+        )
+    for key in plan.recommended:
+        print(f"recommended\t{key}\taction={plan.action}")
+    return 0
+
+
+def roadmap_next(
+    project_root: Path, *, program_id: str | None = None, json_output: bool = False
+) -> int:
+    """Show active work or the highest authored-priority ready milestone."""
+
+    plan = _load_program_plan(project_root, program_id)
+    if plan is None:
+        return 1
+    selected = tuple(
+        item for item in plan.milestones if item.key in plan.recommended
+    )
+    ready = tuple(item for item in plan.milestones if item.state == "ready")
+    blocked = tuple(
+        item
+        for item in plan.milestones
+        if item.state in {"waiting", "blocked", "failed"}
+    )
+    deferred = tuple(item for item in plan.milestones if item.state == "deferred")
+    if json_output:
+        _print_json(
+            {
+                "program": {
+                    "id": plan.program_id,
+                    "revision": plan.revision,
+                    "action": plan.action,
+                },
+                "recommended": [
+                    _program_milestone_json(item) for item in selected
+                ],
+                "ready": [_program_milestone_json(item) for item in ready],
+                "blocked": [_program_milestone_json(item) for item in blocked],
+                "deferred": [_program_milestone_json(item) for item in deferred],
+            }
+        )
+        return 0
+    print(f"program\t{plan.program_id}\taction={plan.action}")
+    for item in selected:
+        print(
+            f"recommended\t{item.key}\tstate={item.state}\t"
+            f"roadmap={item.roadmap_id or '-'}\treason={item.reason or '-'}"
+        )
+    for item in ready:
+        if item.key not in plan.recommended:
+            print(
+                f"ready\t{item.key}\tpriority={item.priority}\t"
+                f"roadmap={item.roadmap_id or '-'}"
+            )
+    for item in blocked:
+        print(f"blocked\t{item.key}\treason={item.reason or '-'}")
+    for item in deferred:
+        print(f"deferred\t{item.key}\treason={item.reason or '-'}")
+    return 0
+
+
+def roadmap_explain(
+    project_root: Path,
+    milestone: str,
+    *,
+    program_id: str | None = None,
+    json_output: bool = False,
+) -> int:
+    """Explain one milestone by local key or assigned stable roadmap ID."""
+
+    plan = _load_program_plan(project_root, program_id)
+    if plan is None:
+        return 1
+    try:
+        item = select_milestone(plan, milestone)
+    except ValueError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    if json_output:
+        _print_json(
+            {
+                "program": {"id": plan.program_id, "revision": plan.revision},
+                "milestone": _program_milestone_json(item),
+                "recommended": item.key in plan.recommended,
+            }
+        )
+        return 0
+    print(f"program\t{plan.program_id}\trevision={plan.revision}")
+    print(f"milestone\t{item.key}\ttitle={item.title}")
+    print(f"state\t{item.state}\treason={item.reason or '-'}")
+    print(f"roadmap\t{item.roadmap_id or '-'}")
+    print(f"order\t{item.order}\tpriority={item.priority}")
+    for prerequisite in item.prerequisites:
+        print(f"prerequisite\t{prerequisite}")
+    for source in item.source_contracts:
+        print(f"source-contract\t{source}")
+    for unlocked in item.unlocks:
+        print(f"unlocks\t{unlocked}")
+    if item.waiting_for is not None:
+        print(f"waiting-for\t{item.waiting_for}")
+    if item.reopen_when is not None:
+        print(f"reopen-when\t{item.reopen_when}")
+    print(f"recommended\t{'true' if item.key in plan.recommended else 'false'}")
+    return 0
 
 
 def _emit_delivery_report_text(report: DeliveryReport) -> None:
@@ -7076,6 +7280,12 @@ def _agent_instructions_text(selection: _Selection, config: ProjectConfig) -> st
         "graph diagnosis, not as mandatory overhead for every edit; metrics are "
         "facts and configured signals remain advisory."
     )
+    out.append(
+        "- If the catalog contains an authored `program_plan`, run `docsystem "
+        "roadmap next PROJECT --json` before creating another bounded roadmap; "
+        "continue active work first and never treat the recommendation as "
+        "execution or write permission."
+    )
     if config.intake_criteria:
         out.append(
             "- Convert a new human idea into a bounded request, run `docsystem "
@@ -7502,6 +7712,46 @@ def build_parser() -> argparse.ArgumentParser:
         dest="json_output",
         help="Print a deterministic JSON object instead of tab-separated text.",
     )
+
+    roadmap_parser = subparsers.add_parser(
+        "roadmap",
+        help="Inspect an authored program plan and its deterministic next work.",
+    )
+    roadmap_subparsers = roadmap_parser.add_subparsers(
+        dest="roadmap_command", required=True
+    )
+
+    def add_roadmap_common(command_parser: argparse.ArgumentParser) -> None:
+        command_parser.add_argument(
+            "project", nargs="?", type=Path, default=Path.cwd()
+        )
+        command_parser.add_argument(
+            "--program",
+            dest="program_id",
+            metavar="ID",
+            help="Select one program document when the catalog contains several.",
+        )
+        command_parser.add_argument(
+            "--json",
+            action="store_true",
+            dest="json_output",
+            help="Print deterministic JSON instead of tab-separated text.",
+        )
+        _add_source_options(command_parser)
+
+    roadmap_status_parser = roadmap_subparsers.add_parser(
+        "status", help="Show every milestone in deterministic authored order."
+    )
+    add_roadmap_common(roadmap_status_parser)
+    roadmap_next_parser = roadmap_subparsers.add_parser(
+        "next", help="Show active work or the highest-priority ready milestone."
+    )
+    add_roadmap_common(roadmap_next_parser)
+    roadmap_explain_parser = roadmap_subparsers.add_parser(
+        "explain", help="Explain one milestone, its prerequisites and unlocks."
+    )
+    roadmap_explain_parser.add_argument("milestone", metavar="MILESTONE|ROADMAP-ID")
+    add_roadmap_common(roadmap_explain_parser)
 
     workstream_parser = subparsers.add_parser(
         "workstream",
@@ -8088,6 +8338,27 @@ def main() -> int:
         )
     if args.command == "criteria":
         return criteria_registry(project, json_output=args.json_output)
+    if args.command == "roadmap":
+        if args.roadmap_command == "status":
+            return roadmap_status(
+                project,
+                program_id=args.program_id,
+                json_output=args.json_output,
+            )
+        if args.roadmap_command == "next":
+            return roadmap_next(
+                project,
+                program_id=args.program_id,
+                json_output=args.json_output,
+            )
+        if args.roadmap_command == "explain":
+            return roadmap_explain(
+                project,
+                args.milestone,
+                program_id=args.program_id,
+                json_output=args.json_output,
+            )
+        raise AssertionError(f"unknown roadmap command: {args.roadmap_command}")
     if args.command == "workstream":
         return workstream_status(
             project,

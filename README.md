@@ -260,6 +260,9 @@ docsystem delivery-map . --json
 docsystem delivery-map . --contract DOC-001#purpose --json
 docsystem criteria .
 docsystem criteria . --json
+docsystem roadmap status .
+docsystem roadmap next . --json
+docsystem roadmap explain automated-validation .
 docsystem workstream WS-001 . --record workstream-record.json
 docsystem workstream WS-001 . --record workstream-record.json --json
 docsystem intake . --request idea-intake-request.json --json
@@ -320,6 +323,14 @@ multi-catalog workspace may additionally author quoted `source::ID` and
 `source::ID@revision` targets for [federated reads](docs/federation.md). Unknown fields are
 preserved for project-specific policy. Duplicate YAML mapping keys are invalid
 at every nesting level.
+
+An overall roadmap may opt into the [`program_plan` contract](docs/program-plans.md).
+`roadmap status/next/explain` then derives active, ready, waiting, delivered and
+deferred work from authored prerequisites and bounded roadmap lifecycle state.
+It provides a deterministic sequence for agents without creating a parallel
+task database or granting execution permission. Its source contracts are
+non-exclusive planning scope; verified delivery ownership remains in
+`delivers` and `delivery-map`.
 
 `read` resolves a whole document, navigation prefix or ATX section by stable
 ID. `read --list` emits `anchor`, `Hn`, `start:end` and `title` as tab-separated

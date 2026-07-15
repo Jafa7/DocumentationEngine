@@ -105,6 +105,13 @@ as passing.
 ## What a change must satisfy
 
 - Public documentation and code comments are English.
+- Public product documentation, contracts, fixtures and examples are
+  adopter-neutral and use synthetic identities by default. Do not publish
+  private adopter prompts, logs, document bodies, planning or roadmap material,
+  local runtime state or credentials. Put an explicitly authorized real
+  adopter example in a clearly labeled integration guide, case study or
+  compatibility profile, separate from the canonical generic contract. Follow
+  the full rule in [`AGENTS.md`](AGENTS.md).
 - The core package (`src/docsystem/`) stays provider-neutral; do not add
   Claude-, Copilot- or any other agent-specific behavior there. Provider
   adapters live outside the core (see `docs/mcp-adapter.md` for the pattern).

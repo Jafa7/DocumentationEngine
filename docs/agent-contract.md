@@ -629,6 +629,18 @@ If completed roadmap pins are historical evidence, configure a narrow
 `relations.snapshot_rules` type/status match instead of rewriting revisions or
 silencing active-roadmap freshness warnings.
 
+Before creating a new bounded roadmap, inspect the authored program with
+`docsystem roadmap next PROJECT`. Continue an active milestone before starting
+another one. If there is no active milestone, use the lowest project-authored
+priority among ready entries; equal-priority entries remain explicit choices
+rather than a hidden model preference. Use `roadmap explain MILESTONE PROJECT`
+to verify prerequisites, exact source contracts and downstream unlocks.
+
+The recommendation is read-only planning evidence, not permission to execute
+or write. A malformed program plan, unknown prerequisite, cycle or inconsistent
+roadmap state fails closed. Do not bypass that result by reconstructing an
+informal sequence from chat memory.
+
 ## Federated workspace reads
 
 When a task depends on more than one registered workspace source, use

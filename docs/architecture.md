@@ -480,3 +480,6 @@ completion evidence provide the post-execution linkage instead.
 17. End-to-end lifecycle evidence that binds admission, the persisted
     before-state packet, changed-file result, corrective lineage and strict
     finish readiness without executing the workstream.
+18. Authored program-plan sequencing that derives active/ready/waiting/
+    delivered state, deterministic next work and prerequisite explanations
+    without a parallel task database or hidden AI priority.

@@ -6,6 +6,12 @@ All notable changes to Documentation Engine are documented in this file.
 
 ### Added
 
+- Authored `program_plan` sequencing with fail-closed `roadmap status`,
+  `roadmap next` and `roadmap explain` CLI/MCP inspection. Recommendations
+  derive lifecycle state from bounded roadmap documents, prerequisites and
+  explicit priority without reading bodies or granting execution authority;
+  deferred ideas remain visible and never produce a false complete state.
+
 - Read-only multi-catalog federation with qualified `source::ID[#anchor]`
   identities, authored cross-source relations, complete catalog/dependency/
   reference/context/impact CLI queries and matching thin MCP tools.

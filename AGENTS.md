@@ -3,6 +3,15 @@
 ## Working rules
 
 - Keep product documentation and code comments in English.
+- Keep public product documentation, contracts, fixtures and examples
+  adopter-neutral by default. Use synthetic project names, IDs, paths and
+  scenarios. Do not publish private adopter prompts, logs, document bodies,
+  planning or roadmap material, local runtime state or credentials, and do not
+  present one adopter project's policy as a universal product rule. Real
+  project names and project-specific behavior are allowed only when the user
+  explicitly authorizes publication and the content is clearly labeled as an
+  integration guide, case study or compatibility profile; keep the generic
+  contract in a separate canonical document.
 - Treat Markdown as source of truth and generated data as disposable.
 - Do not add provider-specific behavior to the core package.
 - Prefer deterministic scripts for mechanical documentation maintenance.

@@ -280,6 +280,52 @@ def criteria(
     return _json_tool(arguments)
 
 
+def roadmap_status(
+    project: str,
+    program: str | None = None,
+    source: str | None = None,
+    workspace: str | None = None,
+) -> dict:
+    """Show every milestone in one authored program plan."""
+
+    arguments = ["roadmap", "status", project, "--json"]
+    if program is not None:
+        arguments.extend(("--program", program))
+    arguments.extend(_selection_arguments(source, workspace))
+    return _json_tool(arguments)
+
+
+def roadmap_next(
+    project: str,
+    program: str | None = None,
+    source: str | None = None,
+    workspace: str | None = None,
+) -> dict:
+    """Show active work or the highest authored-priority ready milestone."""
+
+    arguments = ["roadmap", "next", project, "--json"]
+    if program is not None:
+        arguments.extend(("--program", program))
+    arguments.extend(_selection_arguments(source, workspace))
+    return _json_tool(arguments)
+
+
+def roadmap_explain(
+    project: str,
+    milestone: str,
+    program: str | None = None,
+    source: str | None = None,
+    workspace: str | None = None,
+) -> dict:
+    """Explain one sequenced milestone, its prerequisites and unlocks."""
+
+    arguments = ["roadmap", "explain", milestone, project, "--json"]
+    if program is not None:
+        arguments.extend(("--program", program))
+    arguments.extend(_selection_arguments(source, workspace))
+    return _json_tool(arguments)
+
+
 def workstream(
     project: str,
     document_id: str,
@@ -777,6 +823,9 @@ _TOOLS = (
     delivery_map,
     change_plan,
     criteria,
+    roadmap_status,
+    roadmap_next,
+    roadmap_explain,
     workstream,
     intake,
     admission,

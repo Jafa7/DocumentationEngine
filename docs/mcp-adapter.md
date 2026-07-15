@@ -64,7 +64,8 @@ The adapter is deliberately a wrapper, not a second implementation:
   diagnostics, so a client never mistakes a failure for data. The one
   exception is `readiness`, whose "not ready" state is a legitimate answer:
   it returns the payload with `"ready": false` instead of raising.
-- `criteria`, `workstream`, `intake`, `admission`, `execution_handoff`,
+- `criteria`, `roadmap_status`, `roadmap_next`, `roadmap_explain`, `workstream`,
+  `intake`, `admission`, `execution_handoff`,
   `execution_result`, `lifecycle` and `finish_handoff` expose the same read-only
   versioned workstream policy, record validation and optional strict finish
   gate plus idea-placement and A0–A2 admission policy as the CLI. Request and
@@ -89,6 +90,9 @@ The adapter is deliberately a wrapper, not a second implementation:
 | `delivery_map` | object | `docsystem delivery-map PROJECT [--contract ID#anchor ...] --json` |
 | `change_plan` | object | `docsystem change-plan ID[#anchor] PROJECT [--reverse] [--transitive] [--with-delivery] --json` |
 | `criteria` | object | `docsystem criteria PROJECT --json` |
+| `roadmap_status` | object | `docsystem roadmap status PROJECT [--program ID] --json` |
+| `roadmap_next` | object | `docsystem roadmap next PROJECT [--program ID] --json` |
+| `roadmap_explain` | object | `docsystem roadmap explain MILESTONE PROJECT [--program ID] --json` |
 | `workstream` | object | `docsystem workstream ID PROJECT --record RECORD --json` |
 | `intake` | object | `docsystem intake PROJECT --request REQUEST --json` |
 | `admission` | object | `docsystem admission ID PROJECT --request REQUEST --json` |

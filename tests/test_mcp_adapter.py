@@ -207,6 +207,34 @@ def test_workstream_tools_delegate_to_read_only_json_cli(
     assert mcp_server.criteria("/project") == {"schema_version": 1}
     assert calls.pop() == ["criteria", "/project", "--json"]
 
+    assert mcp_server.roadmap_status("/project", program="RM-001") == {
+        "schema_version": 1
+    }
+    assert calls.pop() == [
+        "roadmap",
+        "status",
+        "/project",
+        "--json",
+        "--program",
+        "RM-001",
+    ]
+
+    assert mcp_server.roadmap_next("/project") == {"schema_version": 1}
+    assert calls.pop() == ["roadmap", "next", "/project", "--json"]
+
+    assert mcp_server.roadmap_explain(
+        "/project", "federated-projection", source="docs"
+    ) == {"schema_version": 1}
+    assert calls.pop() == [
+        "roadmap",
+        "explain",
+        "federated-projection",
+        "/project",
+        "--json",
+        "--source",
+        "docs",
+    ]
+
     assert mcp_server.workstream(
         "/project", "DOC-002", "/tmp/record.json"
     ) == {"schema_version": 1}
@@ -601,6 +629,7 @@ def test_agent_instructions_returns_the_cli_json_envelope(tmp_path: Path) -> Non
     assert payload["text"].startswith("## Documentation with Documentation Engine\n")
     assert "workspace -> ." in payload["text"]
     assert f"docsystem readiness {project} --json" in payload["text"]
+    assert "docsystem roadmap next PROJECT --json" in payload["text"]
 
     buffer = io.StringIO()
     with redirect_stdout(buffer):
