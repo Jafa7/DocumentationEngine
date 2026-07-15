@@ -205,6 +205,27 @@ def metadata_inventory(
     return _json_tool(arguments)
 
 
+def promotion(
+    project: str,
+    request: str,
+    source: str | None = None,
+    workspace: str | None = None,
+) -> dict:
+    """Plan an evidence-backed authority update without writing Markdown."""
+
+    return _json_tool(
+        [
+            "promotion",
+            project,
+            "--request",
+            request,
+            "--json",
+            *_selection_arguments(source, workspace),
+        ],
+        allow_failure_payload=True,
+    )
+
+
 def profile_check(
     project: str,
     source: str | None = None,
@@ -861,6 +882,7 @@ _TOOLS = (
     migration_report,
     changes,
     metadata_inventory,
+    promotion,
     profile_check,
     delivery_map,
     change_plan,

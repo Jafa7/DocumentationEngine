@@ -676,6 +676,38 @@ def test_federation_finish_adapter_is_a_thin_read_only_cli_call(
     }
 
 
+def test_promotion_adapter_preserves_blocked_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_json_tool(arguments, *, allow_failure_payload=False):
+        observed["arguments"] = arguments
+        observed["allow_failure_payload"] = allow_failure_payload
+        return {"state": "blocked"}
+
+    monkeypatch.setattr(mcp_server, "_json_tool", fake_json_tool)
+    assert mcp_server.promotion(
+        "/project", "/tmp/request.json", "example", "/workspace"
+    ) == {
+        "state": "blocked"
+    }
+    assert observed == {
+        "arguments": [
+            "promotion",
+            "/project",
+            "--request",
+            "/tmp/request.json",
+            "--json",
+            "--source",
+            "example",
+            "--workspace",
+            "/workspace",
+        ],
+        "allow_failure_payload": True,
+    }
+
+
 def test_agent_instructions_returns_the_cli_json_envelope(tmp_path: Path) -> None:
     project = adapter_project(tmp_path)
 

@@ -262,6 +262,7 @@ docsystem metadata-inventory .
 docsystem metadata-inventory . --field owner --values --json
 docsystem profile-check .
 docsystem profile-check . --json
+docsystem promotion . --request promotion-request.json --json
 docsystem delivery-map .
 docsystem delivery-map . --json
 docsystem delivery-map . --contract DOC-001#purpose --json
@@ -428,6 +429,13 @@ and declared history mode. Unprofiled types remain visible for gradual
 adoption. The command never infers policy from inventory or changes Markdown.
 See [document profiles](docs/document-profiles.md) for the configuration and
 failure contract.
+
+`promotion PROJECT --request PATH [--json]` builds a body-free,
+evidence-backed plan for moving reviewed knowledge into its unique canonical
+owner. It uses explicit `authority_for` metadata and the destination profile's
+history mode, reports competing owners and impacted consumers, and never
+writes or deletes Markdown. See
+[knowledge promotion](docs/knowledge-promotion.md).
 
 `delivery-map PROJECT [--contract ID#anchor ...] [--json]` uses optional project-authored traceability
 metadata to map exact `ID#anchor` source contracts to delivery ownership and a

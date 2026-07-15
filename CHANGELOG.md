@@ -6,6 +6,10 @@ All notable changes to Documentation Engine are documented in this file.
 
 ### Added
 
+- Read-only knowledge-promotion planning combines explicit `authority_for`
+  ownership, project-authored history modes, exact evidence pins, conflict
+  detection and reverse impact without returning bodies or writing Markdown.
+
 - An ignored `.docsystem.project.local.toml` pointer can route ordinary
   project commands to one validated external documentation root without
   exposing its absolute path in generated agent instructions. The generated

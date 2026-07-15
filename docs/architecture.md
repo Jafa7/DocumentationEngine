@@ -442,6 +442,13 @@ gate and does not replace the existing lightweight finish handoff. The engine
 does not execute workers, approve its own result, authenticate a declared
 reviewer or infer product semantics.
 
+Knowledge promotion reuses document profiles as authored authority policy.
+An exact destination section declares an `authority_for` slug; the read-only
+planner rejects competing owners and maps the destination profile's history
+mode to revise, append or supersede. Exact evidence sections become revision
+pins and reverse metadata consumers become the review set. The planner never
+includes bodies in its packet, generates a semantic merge or writes the owner.
+
 Versioned `intake.criteria` provide a separate, read-only idea-placement
 policy. An AI agent translates a human idea into a bounded JSON request with
 stable candidate addresses and explicit semantic signals. The core validates

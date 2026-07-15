@@ -180,6 +180,12 @@ from docsystem.projection import (
 from docsystem.projection import (
     changes as projection_changes,
 )
+from docsystem.promotion import (
+    PromotionError,
+    PromotionPlan,
+    build_promotion_plan,
+    load_promotion_request,
+)
 from docsystem.readiness import evaluate_readiness
 from docsystem.sections import MarkdownSection, extract_navigation, extract_section
 from docsystem.shared_finish import SharedFinishError, load_shared_finish_record
@@ -1752,6 +1758,73 @@ def metadata_inventory(
             report, field_name=field_name, occurrences=occurrences
         )
     return 0
+
+
+def _promotion_payload(plan: PromotionPlan) -> dict[str, object]:
+    return {
+        "state": plan.state,
+        "ready_to_promote": plan.state == "ready",
+        "action": plan.action,
+        "reason": plan.reason,
+        "authority_key": plan.authority_key,
+        "source": plan.source,
+        "destination": plan.destination,
+        "evidence": list(plan.evidence),
+        "provenance_pins": list(plan.provenance_pins),
+        "impacted_documents": list(plan.impacted_documents),
+        "impact_scope": plan.impact_scope,
+        "conflicts": list(plan.conflicts),
+        "omissions": list(plan.omissions),
+    }
+
+
+def knowledge_promotion(
+    project_root: Path,
+    *,
+    request_path: Path,
+    json_output: bool = False,
+) -> int:
+    """Plan one evidence-backed promotion without returning section bodies."""
+
+    try:
+        config = load_config(project_root)
+        catalog_value = build_catalog(config)
+        issues = _with_graph_issues(
+            validate_catalog(catalog_value, config), catalog_value, config
+        )
+        blocking = tuple(issue for issue in issues if issue.severity != "warning")
+        if blocking:
+            first = blocking[0]
+            raise PromotionError(
+                "catalog validation blocks promotion: "
+                f"{first.path.as_posix()}: {first.message}"
+            )
+        request = load_promotion_request(request_path)
+        plan = build_promotion_plan(catalog_value, config, request)
+        payload = _promotion_payload(plan)
+    except (OSError, ValueError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    if json_output:
+        _print_json(payload)
+    else:
+        print(f"state\t{plan.state}")
+        print(f"action\t{plan.action}")
+        print(f"reason\t{plan.reason}")
+        print(f"authority\t{plan.authority_key}")
+        print(f"source\t{plan.source['address']}")
+        print(f"destination\t{plan.destination['address']}")
+        for item in plan.evidence:
+            print(f"evidence\t{item}")
+        for item in plan.provenance_pins:
+            print(f"provenance-pin\t{item}")
+        for item in plan.impacted_documents:
+            print(f"impact\t{item}")
+        for item in plan.conflicts:
+            print(f"conflict\t{item}")
+        for item in plan.omissions:
+            print(f"omission\t{item}")
+    return 0 if plan.state == "ready" else 2
 
 
 def _profile_report_json(report: ProfileReport) -> dict[str, object]:
@@ -8257,6 +8330,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print a deterministic JSON object instead of tab-separated text.",
     )
 
+    promotion_parser = subparsers.add_parser(
+        "promotion",
+        help="Plan evidence-backed knowledge promotion without writing Markdown.",
+    )
+    promotion_parser.add_argument(
+        "project", nargs="?", type=Path, default=Path.cwd()
+    )
+    promotion_parser.add_argument(
+        "--request",
+        required=True,
+        type=Path,
+        dest="request_path",
+        help="Read-only path to the bounded JSON promotion request.",
+    )
+    promotion_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print a deterministic JSON plan instead of tab-separated text.",
+    )
+
     profile_check_parser = subparsers.add_parser(
         "profile-check",
         help="Validate documents against project-authored profile policy.",
@@ -8791,6 +8885,7 @@ def build_parser() -> argparse.ArgumentParser:
         impact_parser,
         graph_health_parser,
         metadata_inventory_parser,
+        promotion_parser,
         profile_check_parser,
         delivery_map_parser,
         criteria_parser,
@@ -8976,6 +9071,12 @@ def main() -> int:
             project,
             field_name=args.field_name,
             show_values=args.values,
+            json_output=args.json_output,
+        )
+    if args.command == "promotion":
+        return knowledge_promotion(
+            project,
+            request_path=args.request_path,
             json_output=args.json_output,
         )
     if args.command == "profile-check":

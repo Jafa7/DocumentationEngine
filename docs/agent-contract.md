@@ -31,7 +31,7 @@ Every other command — `doctor`, `show-config`, `catalog`, `validate`, `read`,
 `dependencies`, `references`, `change-plan`, `graph-health`, `maintenance` with `--check` or
 `--preview`, `context`,
 `impact`, `migration-report`, `migrate` without `--apply`, `readiness`,
-`finish`, `report draft`, `report context-gap`, and `index`/`changes` without
+`finish`, `promotion`, `report draft`, `report context-gap`, and `index`/`changes` without
 `--write` — is
 read-only. An agent may call any read-only command freely to inspect project
 state before deciding whether a mutating command is warranted.
@@ -664,6 +664,21 @@ The recommendation is read-only planning evidence, not permission to execute
 or write. A malformed program plan, unknown prerequisite, cycle or inconsistent
 roadmap state fails closed. Do not bypass that result by reconstructing an
 informal sequence from chat memory.
+
+## Promote reviewed knowledge through its owner
+
+Before turning a finding, experiment, inference or decision into current
+documentation, run `docsystem promotion PROJECT --request REQUEST --json`.
+The destination must explicitly declare the request's `authority_for` slug
+and have a project-authored profile/history mode. Treat authority conflicts as
+hard blockers. A ready result identifies whether the agent should revise a
+living owner, append a record or create a superseding document; it is a plan,
+not write permission and not a generated semantic merge.
+
+Preserve the reported provenance pins, inspect every impacted consumer and do
+not remove the source evidence. Exit 2 is a valid blocked plan. Exit 1 means
+the request or authority model is invalid and produces no plan. See
+[knowledge promotion](knowledge-promotion.md) for the strict request contract.
 
 ## Federated workspace reads
 
