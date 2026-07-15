@@ -191,6 +191,25 @@ use sandbox/filesystem boundaries for untrusted callers.
 - Mechanical maintenance is automated; semantic decisions remain reviewable.
 - AI integrations are adapters around a provider-neutral core.
 
+### Capability levels
+
+Documentation Engine installs one package, but its capabilities are opt-in by
+task rather than one mandatory process:
+
+| Level | Purpose | Typical use |
+| --- | --- | --- |
+| Core retrieval | Discover, read and inspect context/impact | Default for routine work |
+| Adoption | Connect or migrate an existing Markdown corpus | Setup and compatibility work |
+| Governed delivery | Roadmaps, admission, handoff and lifecycle evidence | Multi-stage, delegated or risk-bearing work |
+| Bounded mutation | Journaled managed-block synchronization and recovery | Explicitly approved mechanical writes |
+| Multi-source | Workspace selection and federation | Deliberate cross-project documentation queries |
+
+Start with core retrieval. The presence of configured governance does not make
+a routine correction follow the full lifecycle. See the
+[architecture capability map](docs/architecture.md#capability-map) and
+[proportional agent contract](docs/agent-contract.md#keep-workflow-evidence-proportional)
+for exact boundaries.
+
 For work that splits into a new chat, module, repository or long-running idea,
 use the [Workstream / Idea Branching](docs/workstream-branching.md) pattern so
 the child context carries its inherited context, boundaries and return
@@ -217,6 +236,11 @@ Contributor workflow and risk-based checks are defined in
 `docsystem` command. `scripts/installed_cli_smoke.sh` verifies that boundary.
 
 ## CLI overview
+
+This is a command reference, not a required sequence. Most routine tasks need
+only `readiness`, task-sized `context`/`read`, and optionally `change-plan`.
+Use the advanced capability groups above only when their applicability
+condition is present.
 
 ```bash
 docsystem init .

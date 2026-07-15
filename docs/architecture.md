@@ -2,7 +2,7 @@
 
 ## Product boundary
 
-Documentation Engine owns deterministic documentation mechanics:
+The core owns deterministic documentation retrieval mechanics:
 
 - project configuration and logical area mapping;
 - Markdown metadata and stable IDs;
@@ -10,9 +10,21 @@ Documentation Engine owns deterministic documentation mechanics:
 - dependency and reverse-dependency graphs;
 - inspectable context packets with explicit coverage and omissions;
 - impact and changed-section analysis;
-- versioned, sharded machine projections;
-- bootstrap, diagnostics, adoption readiness reporting and migration tooling;
-- guarded managed-block maintenance preview, journaled write and recovery.
+- versioned, sharded machine projections and diagnostics.
+
+The package also ships optional extensions over that same core:
+
+- adoption and migration policy;
+- governed planning, execution evidence and knowledge promotion;
+- guarded managed-block maintenance, journaled write and recovery;
+- local workspace selection and multi-source federation;
+- CLI and MCP adapters.
+
+Shipping an extension in the same package does not make it part of every task.
+Routine work uses core retrieval and the project's ordinary implementation and
+verification workflow. Governance, mutation and federation apply only when the
+task and project policy require them. The extensions do not create another
+source of truth or raise their own authority above authored Markdown.
 
 It does not decide whether an architectural claim is correct, whether a review
 is persuasive, or whether selected context is semantically sufficient.
@@ -22,9 +34,11 @@ is persuasive, or whether selected context is semantically sufficient.
 ```text
 Human / AI client
         |
-Provider adapter (Codex, Claude Code, MCP, CLI)
+Provider adapter (MCP, CLI, project-local wrapper)
         |
-Documentation Engine core
+Task-selected capability
+        |
+Core retrieval | Optional extension
         |
 Project policy and profile
         |
@@ -35,6 +49,25 @@ Generated sharded projection
 
 The core must work without an AI client. Integrations translate client actions
 into stable core operations.
+
+## Capability map
+
+The capability groups are progressive, not an execution checklist:
+
+| Capability | Typical commands | When it applies |
+| --- | --- | --- |
+| Core discovery and retrieval | `readiness`, `catalog`, `validate`, `read`, `context`, `dependencies`, `references`, `impact`, `change-plan` | Default path for understanding and changing documentation-backed work |
+| Adoption and derived state | `migration-report`, `migrate`, `profile-check`, `index`, `changes`, `report` | Connecting an existing corpus, checking policy or refreshing disposable projections |
+| Governed delivery | `roadmap`, `intake`, `admission`, `execution-handoff`, `execution-result`, `workstream`, `lifecycle`, `finish`, `promotion` | Genuinely multi-stage, delegated or risk-bearing work that requires bounded evidence |
+| Bounded mutation | `maintenance`, `maintenance-recover` | Explicitly approved mechanical synchronization with journal and recovery guarantees |
+| Multi-source operation | `workspace`, `federation` | A task that deliberately spans independently owned documentation sources |
+
+The ordinary agent path is `readiness` followed by task-sized `context` or
+`read`, then `change-plan` when impact evidence is useful, implementation and
+risk-based verification. A routine correction does not acquire intake,
+admission or lifecycle artifacts merely because those commands are available.
+See the [agent contract](agent-contract.md#keep-workflow-evidence-proportional)
+for the work classification and escalation rules.
 
 ## Configuration model
 

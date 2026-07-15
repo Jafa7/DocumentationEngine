@@ -14,8 +14,8 @@ link to that owner rather than repeat commands or policy.
 
 ## Product contracts
 
-- [Architecture](architecture.md) — boundaries, layers, configuration,
-  projection and catalog model.
+- [Architecture](architecture.md) — core retrieval, opt-in capability
+  boundaries, layers, configuration, projection and catalog model.
 - [Agent contract](agent-contract.md) — safe command behavior for AI clients.
 - [Context measurement](context-efficiency.md) — measured reduction method,
   quality guard and limitations.
