@@ -4,6 +4,22 @@ All notable changes to Documentation Engine are documented in this file.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-15
+
+### Highlights
+
+- Task-sized AI-agent workflows now combine section references, explainable
+  change planning, context-gap feedback and proportional evidence without
+  making advanced governance mandatory for routine work.
+- Project-authored profiles, delivery mappings, program plans and
+  workstream/execution contracts provide deterministic, fail-closed evidence
+  for genuinely governed, delegated or risk-bearing delivery.
+- Read-only federation and workspace-owned incremental projections let agents
+  inspect multiple independently owned documentation sources while preserving
+  source-qualified identities and default-deny write authority.
+- Guarded maintenance adds preview hashes, bounded writes, immutable journals
+  and recovery without replacing Markdown as the source of truth.
+
 ### Added
 
 - Read-only knowledge-promotion planning combines explicit `authority_for`
@@ -165,6 +181,8 @@ documentation-engine` starts working only after the first successful release.
 - Measured context-reduction methodology and a reproducible consumer-install
   smoke test.
 
+[Unreleased]: https://github.com/Jafa7/DocumentationEngine/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Jafa7/DocumentationEngine/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Jafa7/DocumentationEngine/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/Jafa7/DocumentationEngine/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/Jafa7/DocumentationEngine/compare/v0.1.0...v0.1.1
