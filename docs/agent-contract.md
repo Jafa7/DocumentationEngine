@@ -7,7 +7,7 @@ provider's orchestration.
 
 ## Read-only vs. mutating commands
 
-Five operations write anything:
+Six operations write anything:
 
 - `docsystem init PROJECT` creates `.docsystem.toml` and the documentation
   root. It refuses to overwrite an existing configuration, but it is a
@@ -50,6 +50,31 @@ should treat `--apply`, `--write`, and the explicit `maintenance-recover`
 command as mutating authority signals, and surface that distinction to the
 human or calling system before using them, exactly like any other
 hard-to-reverse action.
+
+## Keep workflow evidence proportional
+
+Documentation Engine exposes optional governance and safety capabilities, but
+their presence in one package or project configuration does not make every
+task a governed workstream. An agent should use the smallest evidence path that
+still proves the result:
+
+| Work class | Default evidence path |
+| --- | --- |
+| Routine correction or internal refactor without a contract change | Task-sized reads, implementation, risk-based verification and Git/tests history |
+| Observable CLI, configuration, schema, compatibility or behavior change | Read/change-plan the owning contract, update that owner, implement and verify |
+| Genuinely multi-stage delivery | One program entry, one bounded roadmap/workstream and the necessary completion evidence |
+| Governed, delegated or risk-bearing write | Admission, immutable handoff, authoritative result inventory and lifecycle evidence |
+
+If scope, write risk or a delegation boundary grows, move to the stronger
+path. Never move to a weaker path merely to save tokens. Conversely, do not
+create intake requests, packets, results and records for a routine task merely
+because the project has criteria configured.
+
+Use `intake` when a new durable idea needs an owner or placement decision, not
+for an already-scoped correction. Use `admission`, `execution-handoff`,
+`execution-result` and `lifecycle` together when the task is actually governed,
+delegated or risk-bearing. Existing explicit approval, backup, authority and
+fail-closed rules apply at every level.
 
 ## Protect local-only state before risky work
 

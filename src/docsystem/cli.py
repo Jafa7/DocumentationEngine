@@ -7936,48 +7936,46 @@ def _agent_instructions_text(selection: _Selection, config: ProjectConfig) -> st
         "continue active work first and never treat the recommendation as "
         "execution or write permission."
     )
+    out.append(
+        "- Keep evidence proportional: routine corrections use "
+        "task-sized reads, implementation, risk-based verification and Git/tests "
+        "history; contract changes update their owner; only genuinely multi-stage "
+        "delivery needs a bounded roadmap."
+    )
     if config.intake_criteria:
         out.append(
-            "- Convert a new human idea into a bounded request, run `docsystem "
-            "intake PROJECT --request REQUEST --json`, and follow only its "
-            "explicit decision; a blocked result requires owner input."
+            "- Use `docsystem intake PROJECT --request REQUEST --json` only when "
+            "a new durable idea needs an owner or placement; routine fixes and "
+            "scoped contract changes skip it. Stop on `blocked`."
         )
     if config.admission_criteria:
         out.append(
-            "- Before implementation, validate the bounded workstream intent "
-            "with `docsystem admission ID PROJECT --request REQUEST --json`; "
-            "do not execute a blocked intent or treat authorization assertions "
-            "as authenticated identity."
+            "- Use `docsystem admission ID PROJECT --request REQUEST --json` only "
+            "for governed, delegated or risk-bearing work; configured criteria "
+            "alone do not expand routine work. Stop on `blocked`; assertions are "
+            "not authenticated permission."
         )
         out.append(
-            "- Immediately before an external executor acts, build the "
-            "immutable packet with `docsystem execution-handoff ID PROJECT "
-            "--admission REQUEST --json`, save that output as `PACKET`, then "
-            "give the executor the exact "
-            "`docsystem execution-handoff ID PROJECT --admission REQUEST "
-            "--verify PACKET --json` re-check to run first; a failed or "
-            "non-zero verification stops the executor before any edit, and "
-            "neither the admission nor the packet is itself a permission grant."
+            "- Before an admitted external executor edits, save `docsystem "
+            "execution-handoff ID PROJECT --admission REQUEST --json` as `PACKET` "
+            "and rerun that request with `--verify PACKET`; stop on failure or "
+            "drift. Admission and packet evidence are not permission grants."
         )
         out.append(
-            "- When the packet carries `source_scope`, require a machine-readable "
-            "`RESULT` from the runtime after execution and run `docsystem "
+            "- When that packet carries `source_scope`, validate an authoritative "
+            "runtime `RESULT` with `docsystem "
             "execution-result ID PROJECT --packet PACKET --result RESULT --json`; "
-            "treat it as caller-declared inventory, stop on omitted scoped or "
-            "out-of-scope paths, and do not replace an authoritative host diff "
-            "with worker prose."
+            "stop on omitted or out-of-scope paths and never substitute worker prose."
         )
     if config.workstream_criteria:
         out.append(
-            "- For governed workstreams, inspect `docsystem criteria PROJECT "
-            "--json`, validate `RECORD` with `docsystem workstream ID PROJECT "
-            "--record RECORD --json`, require `ready_to_finish` to be true, "
-            "then run `docsystem finish ID PROJECT --workstream-record RECORD "
-            "--json`; never claim completion from an in-progress record."
+            "- For governed completion, validate `RECORD` with `docsystem "
+            "workstream ID PROJECT --record RECORD --json`; require "
+            "`ready_to_finish` before `finish --workstream-record RECORD`."
         )
     if config.admission_criteria and config.workstream_criteria:
         out.append(
-            "- Before strict finish, validate one cross-artifact lineage with "
+            "- When both governed criteria apply, validate lineage with "
             "`docsystem lifecycle ID PROJECT --admission REQUEST --packet "
             "PACKET --result RESULT --record RECORD --json`; stop on any "
             "mismatch and never regenerate the immutable before-state packet "

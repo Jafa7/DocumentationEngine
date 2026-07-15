@@ -634,7 +634,10 @@ without approval, follow local backup policy) — for pasting
 into an adopting project's `AGENTS.md`/`CLAUDE.md`. It is read-only, reads
 only project configuration and works even when the documentation root itself
 is missing, so the pasted snippet can never drift from
-`docs/setup-guide.md` Step 7 by hand-copying.
+`docs/setup-guide.md` Step 7 by hand-copying. Configured intake, admission and
+lifecycle guidance is emitted as conditional policy for durable ideas or
+governed/delegated/risk-bearing work; it does not turn a routine correction
+into a full evidence lifecycle merely because criteria exist.
 
 `readiness`, `migration-report`, `catalog --explain`, `changes`, `context`,
 `criteria`, `workstream`, `intake`, `admission`, `execution-handoff`,

@@ -80,6 +80,11 @@ All notable changes to Documentation Engine are documented in this file.
 
 ### Changed
 
+- Generated agent instructions now keep routine corrections on a proportional
+  read/implement/verify path and scope optional intake, admission, immutable
+  handoff, result and lifecycle evidence to durable ideas or genuinely
+  governed, delegated and risk-bearing work.
+
 - `workspace list` rows and JSON now expose each source's body-free write
   policy so operators can inspect the default-deny boundary.
 
