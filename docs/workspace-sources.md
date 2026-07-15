@@ -145,12 +145,12 @@ source mutation.
 
 This milestone does not provide:
 
-- a workspace-level projection;
 - remote/network sources, authentication or authorization;
 - concurrent-write locking;
 - Git synchronization, import, copy or deletion;
 - a documentation web server or UI.
 
-Write federation, projection and remote-service capabilities require separate
-bounded designs. Read-only federation is direct-Markdown and fails closed
-unless every registered source is available and valid.
+Write federation and remote-service capabilities require separate bounded
+designs. Read-only federation may use a verified workspace-owned projection
+and falls back visibly to direct Markdown; both paths fail closed unless every
+registered source is available and valid.
