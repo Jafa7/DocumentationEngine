@@ -9,7 +9,7 @@ not continue past a failing check — fix it or report the blocker to the user.
 Documentation Engine gives a project a stable Markdown documentation contract:
 
 - project-local `.docsystem.toml` configuration;
-- a configured documentation root such as `plan/`;
+- a configured documentation root inside or outside the repository;
 - stable document IDs and relation metadata;
 - deterministic validation, context packets and projection cache;
 - local-only backup policy for private/ignored documentation state.
@@ -23,15 +23,43 @@ adopting project owns its local policy.
 Establish these before touching files. Ask the user rather than guessing.
 
 1. **Project root** — absolute path of the project to adopt.
-2. **Documentation root** — where the project's Markdown knowledge should live
-   (for example `plan/`, `docs/plan/` or an existing private docs folder).
+2. **Documentation root** — whether private Markdown should remain inside the
+   repository or use a dedicated external project directory, and its exact
+   absolute path. Recommend the external option for private documentation, but
+   do not invent or create a shared workspace path.
 3. **Language** — language of private/local documentation.
 4. **Public vs. private split** — which docs are allowed to be committed and
    which must remain local/ignored.
 5. **Backup destination** — where local disaster-recovery snapshots should be
    stored for ignored documentation/configuration/runtime files.
 
-Ask the backup question explicitly:
+Before creating or moving private documentation, ask these placement questions
+explicitly and in English:
+
+```text
+Where should this project's private documentation be stored?
+
+The recommended option is a dedicated directory outside the project repository,
+for example:
+
+<external-documentation-root>/projects/<project-slug>/
+
+Please provide the exact path. I will not create, move, replace, or delete any
+documentation until the location and migration procedure are explicitly
+confirmed.
+
+Does private documentation already exist inside the project, for example in
+plan/? If so, I will copy and verify it first. The original directory will
+remain untouched until you explicitly authorize its removal.
+```
+
+The path above is a neutral placeholder, not a directory to create literally.
+The user may select an in-repository, local, mounted or network location. Do
+not treat a parent directory as readable authority: an external project root
+authorizes only that exact scope unless the user separately authorizes another
+path.
+
+Ask the backup question separately:
 
 ```text
 Where should this project store local disaster-recovery backups for ignored

@@ -84,6 +84,15 @@ Those files are still source-of-truth operational state. An agent must not
 use a clean git status as evidence that broad filesystem operations are safe:
 ignored files can be destroyed while git remains clean.
 
+Before creating or moving private documentation, the agent must ask the user
+in English for the exact storage path and whether an existing in-repository
+documentation tree must be copied and verified. Recommend a dedicated external
+project directory, but do not infer or create a shared workspace path. Never
+remove the original tree without a separate explicit authorization. Use the
+canonical questions and neutral placeholder from
+[the setup guide](setup-guide.md#step-0-gather-facts) rather than inventing a
+machine-specific example.
+
 Before recursive copy, move, delete or sync commands; generated migrations;
 bulk rewrites; cross-OS shell snippets; or any task that touches ignored
 local-only documentation, the agent must run the project's local backup

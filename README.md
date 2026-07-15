@@ -142,7 +142,8 @@ disposable projection. It does not require MCP.
 [docs/setup-guide.md](docs/setup-guide.md) step by step. It contains the
 connection/adoption flow, required user questions, backup-policy setup and
 checks.
-Do not improvise a local backup path or commit private planning paths.
+Do not improvise a private documentation root or local backup path, and do not
+commit private planning paths.
 
 **If you are a human using an AI agent**, paste this in the project you want to
 connect:
@@ -151,6 +152,11 @@ connect:
 Connect Documentation Engine to this project.
 Repository: https://github.com/Jafa7/DocumentationEngine
 Read docs/setup-guide.md in that repository and follow it exactly.
+Ask me for the exact private-documentation location before creating or moving
+documents. Recommend a dedicated external project directory, but do not invent
+or create a shared workspace path. If private documents already exist inside
+the project, copy and verify them first and leave the original untouched until
+I explicitly authorize its removal.
 Ask me where local disaster-recovery backups should be stored before touching
 ignored/private documentation or local configuration.
 ```
