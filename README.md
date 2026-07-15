@@ -745,12 +745,16 @@ docsystem federation references project-a::DOC-001#purpose . \
   --workspace /path/to/workspace --transitive --json
 docsystem federation impact shared-guides::GUIDE-004 . \
   --workspace /path/to/workspace --json
+docsystem federation index . --workspace /path/to/workspace --write
+docsystem federation changes . --workspace /path/to/workspace --json
 ```
 
 Cross-source relations stay in Markdown as authored `"source::ID"` metadata.
 Federated queries require every registered source to be available and valid,
 preserve task-sized source text with visible omissions, and never grant write
-authority. See [read-only multi-catalog federation](docs/federation.md).
+authority. A workspace-owned incremental projection reuses unchanged source
+objects and skips repeated parsing while keeping direct/projected output
+identical. See [read-only multi-catalog federation](docs/federation.md).
 
 ## Deliberate project-local boundaries
 

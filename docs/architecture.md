@@ -70,8 +70,12 @@ graph and projection unchanged. The separate read-only federation layer
 qualifies identities as `source::ID[#anchor]`, resolves authored qualified
 metadata relations, qualifies each source's observed/generated section graph
 and builds complete direct-Markdown context/impact/reference queries across all
-available sources. It never merges ownership or grants write authority;
-see [workspace source selection](workspace-sources.md) and
+available sources. It never merges ownership or grants write authority. It may
+derive a workspace-owned, content-addressed projection that reuses
+unchanged per-source objects. The projection never writes source-owned caches
+and verifies workspace membership, visibility, source configuration and
+Markdown hashes before serving the same complete graph as the direct path.
+See [workspace source selection](workspace-sources.md) and
 [multi-catalog federation](federation.md).
 
 ## Scalable projection

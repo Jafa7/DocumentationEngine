@@ -18,6 +18,9 @@ Five operations write anything:
   values in place.
 - `docsystem index PROJECT --write` writes a new projection generation
   below `.docsystem/cache`.
+- `docsystem federation index PROJECT --workspace PATH --write` writes a new
+  disposable projection generation below the workspace root, without writing
+  any registered source.
 - `docsystem maintenance TARGET PROJECT --write` applies only declared,
   drifted `current` managed blocks through an immutable journal.
 - `docsystem maintenance-recover GENERATION PROJECT` restores verified before
@@ -648,6 +651,14 @@ When a task depends on more than one registered workspace source, use
 claim that their union is a complete cross-project graph. A qualified metadata
 relation is an explicit boundary in single-source mode and becomes an edge
 only after the federation resolves its named source and target ID.
+
+Prefer `docsystem federation index PROJECT --workspace PATH` as a read-only
+freshness check. The `--write` form is an explicit derived-state mutation and
+requires the same caller authority as single-source `index --write`.
+`federation changes` is read-only and reports source-level drift. A current
+workspace projection skips repeated parsing but does not relax the all-source
+freshness and completeness gate; stale or corrupt state falls back visibly to
+the byte-identical direct result.
 
 Federated context preserves source Markdown, lists omitted H2 anchors and
 allows exact qualified `--include` expansion. Treat unavailable sources,

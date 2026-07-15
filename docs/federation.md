@@ -55,6 +55,9 @@ docsystem federation context project-a::DOC-001 . \
   --workspace /path/to/workspace --include shared-guides::GUIDE-004#security
 docsystem federation impact shared-guides::GUIDE-004 . \
   --workspace /path/to/workspace --json
+docsystem federation index . --workspace /path/to/workspace --write
+docsystem federation index . --workspace /path/to/workspace
+docsystem federation changes . --workspace /path/to/workspace --json
 ```
 
 The positional project is used only to discover `.docsystem.local.toml` when
@@ -75,13 +78,40 @@ an unavailable or invalid source produces diagnostics on stderr, exit code 1
 and no partial stdout. Revision pins remain visible as current, stale or
 historical snapshot evidence.
 
+## Workspace projection
+
+`federation index --write` builds a disposable projection below the workspace
+root. It writes no source-owned cache and never modifies source Markdown or
+configuration. The projection uses immutable content-addressed generations,
+an atomic current pointer, per-source objects and one aggregate graph object.
+An unchanged source keeps the same object identity across generations, so a
+one-source update does not rewrite every other source shard.
+
+`federation index` checks whether the selected generation is current.
+`federation changes` reports source-level `added`, `removed` and `modified`
+states without returning document bodies or private absolute paths. Workspace
+membership, source visibility, projection-relevant configuration and every
+Markdown source hash are bound into the generation.
+
+Existing federation queries prefer a verified workspace projection. They
+still prove freshness across every registered source before serving a complete
+answer, but skip repeated Markdown, YAML and graph parsing. When the projection
+is absent they use direct Markdown normally. A stale, incompatible or corrupt
+projection produces one bounded stderr warning and a complete direct rebuild;
+direct and projected stdout remain byte-identical.
+
+The stable `projection: direct-markdown` JSON field and `Source mode: direct
+Markdown` text label describe Markdown as the authoritative content source;
+they are not execution-provenance fields. Projection fallback provenance is
+reported separately on stderr so the semantic packet stays byte-identical.
+
 ## Trust and write boundaries
 
-Federation is read-only and currently reads authoritative Markdown directly.
-It does not create a workspace projection, copy or synchronize sources,
-authorize cross-source writes, acquire concurrent-write locks, authenticate
-remote users or run a server. Existing single-source commands and projections
-are unchanged.
+Federated queries are read-only. The explicit `federation index --write`
+operation writes only disposable workspace projection state. Federation does
+not copy or synchronize sources, authorize cross-source writes, acquire
+concurrent-write locks, authenticate remote users or run a server. Existing
+single-source commands and projections are unchanged.
 
 Future bounded write support must retain per-source authorization and separate
 change journals. A federated read never grants permission to modify another

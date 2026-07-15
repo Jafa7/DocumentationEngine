@@ -68,6 +68,13 @@ from docsystem.execution import (
     seal_packet,
     validate_execution_result,
 )
+from docsystem.federated_projection import (
+    build_current_federated_projection,
+    evaluate_federated_changes,
+    federated_projection_status,
+    load_verified_federated_projection,
+    write_federated_projection,
+)
 from docsystem.federation import (
     FederationError,
     build_federated_catalog,
@@ -529,7 +536,86 @@ def _load_federation(project_root: Path, workspace_option: Path | None):
         workspace_option=workspace_option,
         project_root=project_root,
     )
-    return build_federated_catalog(workspace)
+    projected, reason = load_verified_federated_projection(workspace)
+    if projected is not None:
+        return projected
+    direct = build_federated_catalog(workspace)
+    if reason != "federated projection absent":
+        print(f"WARNING: {reason}; using direct Markdown", file=sys.stderr)
+    return direct
+
+
+def federation_index(
+    project_root: Path,
+    *,
+    workspace_option: Path | None = None,
+    write: bool = False,
+    json_output: bool = False,
+) -> int:
+    """Check or publish the workspace-owned federated projection."""
+
+    try:
+        workspace = resolve_workspace(
+            workspace_option=workspace_option,
+            project_root=project_root,
+        )
+        _, current = build_current_federated_projection(workspace)
+        valid, reason = federated_projection_status(workspace, current)
+        if write:
+            generation = write_federated_projection(workspace, current)
+            if json_output:
+                _print_json({"generation": generation, "status": "written"})
+            else:
+                print(f"Federated projection generation written: {generation}")
+            return 0
+        if json_output:
+            _print_json(
+                {
+                    "current": valid,
+                    "generation": current["generation"] if valid else None,
+                    "reason": reason,
+                }
+            )
+        elif valid:
+            print("Federated projection is current.")
+        else:
+            print(f"ERROR: {reason}", file=sys.stderr)
+        return 0 if valid else 1
+    except (FederationError, WorkspaceError, OSError, ValueError) as error:
+        for line in str(error).splitlines():
+            print(f"ERROR: {line}", file=sys.stderr)
+        return 1
+
+
+def federation_changes(
+    project_root: Path,
+    *,
+    workspace_option: Path | None = None,
+    json_output: bool = False,
+) -> int:
+    """Report body-free source-level drift from the selected generation."""
+
+    try:
+        workspace = resolve_workspace(
+            workspace_option=workspace_option,
+            project_root=project_root,
+        )
+        report = evaluate_federated_changes(workspace)
+    except (WorkspaceError, OSError, ValueError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    rows = [
+        {"source": item.source, "kind": item.kind}
+        for item in report.changes
+    ]
+    if json_output:
+        _print_json({"status": report.status, "changes": rows})
+    else:
+        if report.status != "compared":
+            print(f"status\t{report.status}")
+        for row in rows:
+            print(f"{row['kind']}\t{row['source']}")
+    return 1 if report.status == "unavailable" else 0
 
 
 def federation_catalog(
@@ -8157,6 +8243,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_federation_common(federation_impact_parser)
 
+    federation_index_parser = federation_subparsers.add_parser(
+        "index", help="Check or write the workspace-owned projection."
+    )
+    federation_index_parser.add_argument(
+        "project", nargs="?", type=Path, default=Path.cwd()
+    )
+    federation_index_parser.add_argument("--write", action="store_true")
+    add_federation_common(federation_index_parser)
+
+    federation_changes_parser = federation_subparsers.add_parser(
+        "changes", help="Report source drift from the selected projection."
+    )
+    federation_changes_parser.add_argument(
+        "project", nargs="?", type=Path, default=Path.cwd()
+    )
+    add_federation_common(federation_changes_parser)
+
     for command_parser in (
         read_parser,
         dependencies_parser,
@@ -8246,6 +8349,19 @@ def main() -> int:
             return federation_impact(
                 args.project,
                 args.address,
+                workspace_option=args.workspace,
+                json_output=args.json_output,
+            )
+        if args.federation_command == "index":
+            return federation_index(
+                args.project,
+                workspace_option=args.workspace,
+                write=args.write,
+                json_output=args.json_output,
+            )
+        if args.federation_command == "changes":
+            return federation_changes(
+                args.project,
                 workspace_option=args.workspace,
                 json_output=args.json_output,
             )

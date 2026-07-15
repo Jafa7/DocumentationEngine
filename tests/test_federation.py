@@ -7,9 +7,11 @@ from docsystem.catalog import build_catalog, validate_metadata
 from docsystem.cli import (
     context,
     federation_catalog,
+    federation_changes,
     federation_context,
     federation_dependencies,
     federation_impact,
+    federation_index,
     federation_references,
     main,
 )
@@ -192,6 +194,67 @@ def test_federated_catalog_json_is_deterministic(
         "beta::DOC-001",
     ]
     assert str(tmp_path) not in first.out
+
+
+def test_federated_projection_serves_byte_identical_context_without_reparsing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    workspace = make_workspace(tmp_path)
+
+    assert federation_context(
+        tmp_path, "alpha::DOC-001#details", workspace_option=workspace
+    ) == 0
+    direct = capsys.readouterr()
+    assert federation_index(tmp_path, workspace_option=workspace, write=True) == 0
+    capsys.readouterr()
+
+    def unexpected_direct_build(*_args, **_kwargs):
+        raise AssertionError("current projection must skip direct federation parsing")
+
+    monkeypatch.setattr(
+        "docsystem.cli.build_federated_catalog", unexpected_direct_build
+    )
+    assert federation_context(
+        tmp_path, "alpha::DOC-001#details", workspace_option=workspace
+    ) == 0
+    projected = capsys.readouterr()
+
+    assert projected == direct
+
+
+def test_stale_federated_projection_falls_back_once_and_reports_changes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    workspace = make_workspace(tmp_path)
+    assert federation_index(tmp_path, workspace_option=workspace, write=True) == 0
+    capsys.readouterr()
+    source = workspace / "sources" / "alpha" / "plan" / "README.md"
+    source.write_text(
+        source.read_text(encoding="utf-8") + "\nNew source detail.\n",
+        encoding="utf-8",
+    )
+
+    assert federation_context(
+        tmp_path, "alpha::DOC-001", workspace_option=workspace, json_output=True
+    ) == 0
+    fallback = capsys.readouterr()
+    assert fallback.err == (
+        "WARNING: federated projection stale: source alpha changed; "
+        "using direct Markdown\n"
+    )
+    assert json.loads(fallback.out)["complete"] is True
+
+    assert federation_changes(
+        tmp_path, workspace_option=workspace, json_output=True
+    ) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "changes": [{"kind": "modified", "source": "alpha"}],
+        "schema_version": 1,
+        "status": "compared",
+    }
 
 
 def test_federated_dependencies_forward_and_reverse(
@@ -583,3 +646,45 @@ def test_federation_cli_parser_routes_context(
 
     assert main() == 0
     assert json.loads(capsys.readouterr().out)["target"] == "alpha::DOC-001"
+
+
+def test_federation_cli_parser_routes_projection_commands(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    workspace = make_workspace(tmp_path)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "docsystem",
+            "federation",
+            "index",
+            str(tmp_path),
+            "--workspace",
+            str(workspace),
+            "--write",
+            "--json",
+        ],
+    )
+    assert main() == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "written"
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "docsystem",
+            "federation",
+            "changes",
+            str(tmp_path),
+            "--workspace",
+            str(workspace),
+            "--json",
+        ],
+    )
+    assert main() == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "changes": [],
+        "schema_version": 1,
+        "status": "compared",
+    }

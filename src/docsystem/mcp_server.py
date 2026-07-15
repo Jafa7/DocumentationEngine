@@ -591,6 +591,26 @@ def federation_impact(
     return _json_tool(arguments)
 
 
+def federation_index_status(
+    project: str, workspace: str | None = None
+) -> dict:
+    """Check the workspace-owned federated projection without writing it."""
+
+    arguments = ["federation", "index", project, "--json"]
+    if workspace is not None:
+        arguments.extend(["--workspace", workspace])
+    return _json_tool(arguments, allow_failure_payload=True)
+
+
+def federation_changes(project: str, workspace: str | None = None) -> dict:
+    """Report body-free source drift from the federated projection."""
+
+    arguments = ["federation", "changes", project, "--json"]
+    if workspace is not None:
+        arguments.extend(["--workspace", workspace])
+    return _json_tool(arguments, allow_failure_payload=True)
+
+
 def context(
     project: str,
     document_id: str,
@@ -846,6 +866,8 @@ _TOOLS = (
     federation_context,
     federation_references,
     federation_impact,
+    federation_index_status,
+    federation_changes,
 )
 
 

@@ -419,6 +419,30 @@ def test_federation_tools_delegate_to_read_only_json_cli(
         "--json",
     ]
 
+    assert mcp_server.federation_index_status("/project", "/workspace") == {
+        "schema_version": 1
+    }
+    assert calls.pop() == [
+        "federation",
+        "index",
+        "/project",
+        "--json",
+        "--workspace",
+        "/workspace",
+    ]
+
+    assert mcp_server.federation_changes("/project", "/workspace") == {
+        "schema_version": 1
+    }
+    assert calls.pop() == [
+        "federation",
+        "changes",
+        "/project",
+        "--json",
+        "--workspace",
+        "/workspace",
+    ]
+
 
 def test_cli_errors_surface_as_exceptions(tmp_path: Path) -> None:
     project = adapter_project(tmp_path)

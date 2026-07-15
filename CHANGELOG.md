@@ -11,6 +11,9 @@ All notable changes to Documentation Engine are documented in this file.
   derive lifecycle state from bounded roadmap documents, prerequisites and
   explicit priority without reading bodies or granting execution authority;
   deferred ideas remain visible and never produce a false complete state.
+- Workspace-owned federated projection generations reuse unchanged per-source
+  objects, verify all registered source/config/Markdown inputs and accelerate
+  complete federation queries without writing source caches.
 
 - Read-only multi-catalog federation with qualified `source::ID[#anchor]`
   identities, authored cross-source relations, complete catalog/dependency/
