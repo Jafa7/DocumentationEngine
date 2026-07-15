@@ -6,6 +6,12 @@ All notable changes to Documentation Engine are documented in this file.
 
 ### Added
 
+- An ignored `.docsystem.project.local.toml` pointer can route ordinary
+  project commands to one validated external documentation root without
+  exposing its absolute path in generated agent instructions. The generated
+  contract limits trusted agents to that exact private scope and forbids
+  parent/sibling discovery unless separately authorized.
+
 - Source-qualified bounded maintenance for local workspaces: sources default
   to `write = "none"` and may opt into `managed-maintenance`; selected writes
   require a deterministic reviewed preview hash, selected recovery requires

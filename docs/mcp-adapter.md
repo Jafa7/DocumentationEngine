@@ -119,6 +119,12 @@ The adapter is deliberately a wrapper, not a second implementation:
 Every tool takes the project root explicitly; none relies on the server
 process working directory.
 
+If that project path contains an ignored `.docsystem.project.local.toml`,
+ordinary project-oriented tools follow its validated external project root.
+Generated commands and agent instructions do not embed the pointer target.
+Filesystem-oriented operator output remains sensitive, and this routing does
+not replace host filesystem permissions.
+
 Project-oriented tools also accept optional `source` and `workspace`
 parameters for [workspace source selection](workspace-sources.md). They append
 the corresponding CLI flags only when provided, so existing MCP calls remain

@@ -168,11 +168,18 @@ docsystem readiness /path/to/project
 
 #### Independent local documentation sources
 
-If public documentation stays in product repositories while private profiles
-live in one local directory, use [workspace source selection](docs/workspace-sources.md)
-to register those independent profiles and address one by name. This removes
-machine-specific paths from routine commands without claiming a federated
-cross-project graph.
+For one project's external private documentation, place its complete profile
+in a local or mounted folder and use the ignored
+`.docsystem.project.local.toml` pointer. Commands and generated agent rules keep
+using the checkout path; generated rules do not embed the private absolute
+target, and the agent is instructed not to inspect parent or sibling
+directories. Filesystem-oriented operator output such as `doctor` remains
+private and may identify the resolved documentation root.
+
+If several independently owned profiles need trusted cross-project queries,
+use [workspace source selection](docs/workspace-sources.md) to register and
+address them by name. Folder separation and instructions are not OS security;
+use sandbox/filesystem boundaries for untrusted callers.
 
 ## Principles
 

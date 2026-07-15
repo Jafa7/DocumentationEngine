@@ -64,6 +64,14 @@ Project policy may configure:
 - legacy path-relation migration and historical snapshot document types;
 - provider adapters.
 
+For one external private profile, an ignored
+`.docsystem.project.local.toml` binds the consuming checkout to one exact
+absolute project root. Ordinary commands resolve that pointer fail-closed,
+validate that documentation/cache paths remain contained and keep generated
+commands anchored to the checkout so private paths are not disclosed. This is
+a trusted-agent scope contract, not authentication; parent/sibling denial must
+be enforced by the host filesystem or sandbox for untrusted callers.
+
 A local workspace registry maps stable source names to contained project
 roots. Ordinary source selection applies one project's configuration, catalog,
 graph and projection unchanged. The separate read-only federation layer

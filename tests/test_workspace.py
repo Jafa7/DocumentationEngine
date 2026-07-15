@@ -16,11 +16,13 @@ from docsystem.cli import (
 from docsystem.config import CONFIG_FILENAME, DEFAULT_CONFIG
 from docsystem.workspace import (
     LOCAL_POINTER_FILENAME,
+    LOCAL_PROJECT_POINTER_FILENAME,
     WORKSPACE_ENV_VAR,
     WORKSPACE_FILENAME,
     WorkspaceError,
     discover_workspace_root,
     load_workspace,
+    resolve_local_project_root,
     resolve_source,
     resolve_source_root,
     source_statuses,
@@ -418,6 +420,64 @@ def test_no_workspace_is_discovered_without_wiring(tmp_path: Path) -> None:
     )
 
 
+def test_direct_project_pointer_is_separate_from_workspace_discovery(
+    tmp_path: Path,
+) -> None:
+    external = write_project(tmp_path / "external")
+    anchor = tmp_path / "anchor"
+    anchor.mkdir()
+    (anchor / LOCAL_PROJECT_POINTER_FILENAME).write_text(
+        f'project_root = "{external.as_posix()}"\n', encoding="utf-8"
+    )
+
+    assert resolve_local_project_root(anchor) == external.resolve()
+    assert (
+        discover_workspace_root(
+            workspace_option=None,
+            project_root=anchor,
+            environ={},
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "pointer",
+    [
+        pytest.param('project_root = "relative/path"\n', id="relative-path"),
+        pytest.param('project_root = ""\n', id="empty-path"),
+        pytest.param("project_root = 1\n", id="non-string"),
+        pytest.param('project_root = "/tmp/project"\nextra = 1\n', id="unknown-key"),
+        pytest.param("not toml\n", id="malformed-toml"),
+    ],
+)
+def test_invalid_direct_project_pointer_is_rejected(
+    tmp_path: Path, pointer: str
+) -> None:
+    (tmp_path / LOCAL_PROJECT_POINTER_FILENAME).write_text(pointer, encoding="utf-8")
+
+    with pytest.raises(WorkspaceError):
+        resolve_local_project_root(tmp_path)
+
+
+def test_direct_project_pointer_rejects_unsafe_documentation_escape(
+    tmp_path: Path,
+) -> None:
+    external = tmp_path / "external"
+    external.mkdir()
+    (external / CONFIG_FILENAME).write_text(PROJECT_CONFIG, encoding="utf-8")
+    (external / "plan").symlink_to(tmp_path / "outside", target_is_directory=True)
+    (tmp_path / "outside").mkdir()
+    anchor = tmp_path / "anchor"
+    anchor.mkdir()
+    (anchor / LOCAL_PROJECT_POINTER_FILENAME).write_text(
+        f'project_root = "{external.as_posix()}"\n', encoding="utf-8"
+    )
+
+    with pytest.raises(WorkspaceError, match="unsafe-local-path"):
+        resolve_local_project_root(anchor)
+
+
 @pytest.mark.parametrize(
     "pointer",
     [
@@ -658,6 +718,77 @@ def test_no_source_argv_never_loads_workspace_state(
     captured = capsys.readouterr()
     assert captured.out == "documentation\tREADME.md\n"
     assert captured.err == ""
+
+
+def test_local_project_pointer_routes_plain_command_without_path_disclosure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    external = write_project(tmp_path / "private" / "external")
+    anchor = tmp_path / "checkout"
+    anchor.mkdir()
+    (anchor / LOCAL_PROJECT_POINTER_FILENAME).write_text(
+        f'project_root = "{external.as_posix()}"\n', encoding="utf-8"
+    )
+
+    assert run(["catalog", str(anchor)], monkeypatch) == 0
+
+    captured = capsys.readouterr()
+    assert captured.out == "documentation\tREADME.md\n"
+    assert captured.err == ""
+    assert str(external) not in captured.out
+
+
+def test_unavailable_local_project_pointer_fails_closed_without_path_disclosure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    missing = tmp_path / "private" / "missing"
+    anchor = tmp_path / "checkout"
+    anchor.mkdir()
+    (anchor / LOCAL_PROJECT_POINTER_FILENAME).write_text(
+        f'project_root = "{missing.as_posix()}"\n', encoding="utf-8"
+    )
+
+    assert run(["catalog", str(anchor)], monkeypatch) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "ERROR: local project root is unavailable (missing-root)\n"
+    assert str(missing) not in captured.err
+
+
+def test_local_project_pointer_agent_rules_keep_anchor_and_scope_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    external = write_project(tmp_path / "private" / "external")
+    anchor = tmp_path / "checkout"
+    anchor.mkdir()
+    (anchor / LOCAL_PROJECT_POINTER_FILENAME).write_text(
+        f'project_root = "{external.as_posix()}"\n', encoding="utf-8"
+    )
+
+    assert run(["agent-instructions", str(anchor)], monkeypatch) == 0
+
+    output = capsys.readouterr().out
+    assert f"docsystem readiness {anchor} --json" in output
+    assert "only authorized private documentation scope" in output
+    assert "parent or sibling directories" in output
+    assert str(external) not in output
+
+
+def test_local_project_pointer_mutation_stays_inside_external_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    external = write_project(tmp_path / "private" / "external")
+    anchor = tmp_path / "checkout"
+    anchor.mkdir()
+    (anchor / LOCAL_PROJECT_POINTER_FILENAME).write_text(
+        f'project_root = "{external.as_posix()}"\n', encoding="utf-8"
+    )
+
+    assert run(["index", str(anchor), "--write"], monkeypatch) == 0
+
+    assert (external / ".docsystem" / "cache").is_dir()
+    assert not (anchor / ".docsystem").exists()
 
 
 def test_unknown_source_exits_one_with_empty_stdout(

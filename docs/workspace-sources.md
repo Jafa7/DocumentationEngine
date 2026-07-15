@@ -23,6 +23,37 @@ Markdown ownership remains with the selected source. In particular, moving a
 profile into a workspace is a separate, owner-controlled, copy-only migration:
 the engine never authorizes removal of the original source tree.
 
+## One external project root
+
+A project that needs only its own external private documentation does not need
+a multi-source workspace. Put a complete Documentation Engine profile in a
+local or mounted directory and create this ignored file in the consuming
+checkout:
+
+```toml
+# .docsystem.project.local.toml
+project_root = "/absolute/path/to/this-project-documentation"
+```
+
+Ordinary project commands given the checkout path then operate on that exact
+external root. `init` remains a direct-path bootstrap command, while
+`workspace` and `federation` commands retain their separate workspace
+discovery. The pointer must be absolute; the target must contain a valid
+`.docsystem.toml`, and its documentation/cache paths must remain inside the
+target after symlink resolution. Invalid or unavailable wiring fails closed.
+
+This is routing plus an agent policy boundary, not OS authorization. Generated
+agent instructions keep using the checkout path, never disclose the private
+absolute target, and tell the agent not to enumerate, read, search or modify
+parent and sibling directories. A trusted local agent should receive only
+this exact project path. Use filesystem permissions, sandbox mounts or network
+ACLs if the caller is not trusted.
+
+The external root may be on a mounted filesystem for reads. Before enabling
+mutating commands on network storage, independently verify its atomic rename,
+locking and durability semantics; local authoritative storage plus backup is
+the safer default.
+
 ## Registry
 
 Create `workspace.toml` at the root of the local workspace:
@@ -78,7 +109,8 @@ closed.
 
 ## Local project pointer
 
-For routine use, place this ignored file in the consuming checkout:
+For routine multi-source use, place this separate ignored file in the consuming
+checkout:
 
 ```toml
 # .docsystem.local.toml

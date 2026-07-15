@@ -155,6 +155,15 @@ replaced with the positional project. The local pointer and absolute workspace
 path are private machine wiring and must not be committed. See
 [workspace source selection](workspace-sources.md).
 
+For a checkout carrying `.docsystem.project.local.toml`, ordinary commands may
+resolve to one external project root while generated commands continue to use
+the checkout path. Treat that configured target as the only authorized private
+documentation scope: do not enumerate, read, search or modify its parent or
+sibling directories without explicit authorization for another exact path.
+This instruction is a trust boundary, not authentication; untrusted callers
+require filesystem or sandbox enforcement. The pointer is ignored local
+wiring and must never be committed or printed in a report.
+
 ## Prefer `--json` over parsing text
 
 `readiness`, `migration-report`, `catalog --explain`, `changes` and

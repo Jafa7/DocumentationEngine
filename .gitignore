@@ -9,5 +9,6 @@ __pycache__/
 /.docsystem/
 .docsystem/
 .docsystem.local.toml
+.docsystem.project.local.toml
 /.claude/
 /.orchestrator/

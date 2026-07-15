@@ -179,6 +179,11 @@ documentation directory, register them with
 ordinary profile by name; it does not merge catalogs or authorize deleting an
 original `plan/` after a copy-only migration.
 
+When a checkout needs only its own external private profile, prefer the
+smaller `.docsystem.project.local.toml` direct pointer described in the same
+guide. Keep it ignored, grant the agent only that exact scope, and do not rely
+on the instruction alone for untrusted execution.
+
 Project-specific registry synchronization, `finish` orchestration, private
 history/backup, and provider adapters remain outside this adoption profile.
 

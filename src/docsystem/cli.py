@@ -183,6 +183,7 @@ from docsystem.sections import MarkdownSection, extract_navigation, extract_sect
 from docsystem.workspace import (
     WORKSPACE_FILENAME,
     WorkspaceError,
+    resolve_local_project_root,
     resolve_source,
     resolve_workspace,
     source_statuses,
@@ -269,6 +270,7 @@ class _Selection:
     write_policy: str = "none"
     workspace_manifest_sha256: str | None = None
     workspace_manifest_path: Path | None = None
+    local_project_pointer: bool = False
 
     @property
     def project_argument(self) -> Path:
@@ -331,8 +333,9 @@ class _ReferenceGraphInvalid(Exception):
 def _resolve_selection(args: argparse.Namespace) -> _Selection | None:
     """Resolve the effective project, or print one diagnostic and fail closed.
 
-    Workspace state is neither loaded nor validated when `--source` is absent,
-    so an unrelated broken workspace can never affect a plain project command.
+    Without `--source`, an optional ignored direct-project pointer may redirect
+    the command while keeping generated instructions anchored to the caller's
+    positional discovery root. A workspace-only pointer remains inert.
     """
 
     source = getattr(args, "workspace_source", None)
@@ -343,7 +346,20 @@ def _resolve_selection(args: argparse.Namespace) -> _Selection | None:
                 file=sys.stderr,
             )
             return None
-        return _Selection(args.project)
+        if args.command == "init":
+            return _Selection(args.project)
+        try:
+            local_project = resolve_local_project_root(args.project)
+        except WorkspaceError as error:
+            print(f"ERROR: {error}", file=sys.stderr)
+            return None
+        if local_project is None:
+            return _Selection(args.project)
+        return _Selection(
+            project_root=local_project,
+            discovery_root=args.project,
+            local_project_pointer=True,
+        )
     try:
         selected = resolve_source(
             source,
@@ -7630,6 +7646,13 @@ def _agent_instructions_text(selection: _Selection, config: ProjectConfig) -> st
         "- Always pass the project root explicitly; do not rely on the "
         "current working directory matching the intended project."
     )
+    if selection.local_project_pointer:
+        out.append(
+            "- Treat the locally configured external project root as the only "
+            "authorized private documentation scope. Do not enumerate, read, "
+            "search or modify its parent or sibling directories unless the "
+            "user explicitly authorizes another exact path."
+        )
     out.append(
         "- Start read-only with `docsystem readiness "
         f"{selection.selector} --json` and follow its `next_command` field."
@@ -7759,8 +7782,9 @@ def agent_instructions(
     documentation root itself is missing, since only configuration is read.
 
     Under a selected source the snippet addresses the project as
-    `--source NAME`, so a snippet pasted into a committed AGENTS.md never
-    carries the private workspace path it was generated from.
+    `--source NAME`. Under a local direct-project pointer it keeps the
+    positional discovery root and adds an exact-scope rule. Neither form puts
+    the private absolute path into generated instructions.
     """
     try:
         config = load_config(project_root)

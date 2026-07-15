@@ -25,6 +25,7 @@ from docsystem.config import CONFIG_FILENAME, load_config
 
 WORKSPACE_FILENAME = "workspace.toml"
 LOCAL_POINTER_FILENAME = ".docsystem.local.toml"
+LOCAL_PROJECT_POINTER_FILENAME = ".docsystem.project.local.toml"
 WORKSPACE_ENV_VAR = "DOCSYSTEM_WORKSPACE"
 
 SOURCE_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
@@ -34,6 +35,7 @@ WRITE_POLICIES = ("none", "managed-maintenance")
 _MANIFEST_KEYS = frozenset({"version", "sources"})
 _SOURCE_KEYS = frozenset({"name", "root", "visibility", "write"})
 _POINTER_KEYS = frozenset({"workspace"})
+_PROJECT_POINTER_KEYS = frozenset({"project_root"})
 
 # Availability reasons are fixed slugs, never rendered from a local path or a
 # document body, so a listing can be shared without leaking private wiring.
@@ -222,17 +224,17 @@ def load_workspace(workspace_root: Path) -> Workspace:
     )
 
 
-def evaluate_source(source: WorkspaceSource) -> SourceStatus:
-    """Classify one source as selectable, or name the fixed reason it is not."""
+def _project_root_reason(project_root: Path) -> str | None:
+    """Return a body-free availability reason for one exact project root."""
 
     reason: str | None = None
-    if not source.project_root.is_dir():
+    if not project_root.is_dir():
         reason = REASON_MISSING_ROOT
-    elif not (source.project_root / CONFIG_FILENAME).is_file():
+    elif not (project_root / CONFIG_FILENAME).is_file():
         reason = REASON_MISSING_CONFIGURATION
     else:
         try:
-            config = load_config(source.project_root)
+            config = load_config(project_root)
         except (OSError, ValueError):
             reason = REASON_INVALID_CONFIGURATION
         else:
@@ -243,17 +245,24 @@ def evaluate_source(source: WorkspaceSource) -> SourceStatus:
             # the source and remain valid for normal bootstrap/readiness.
             writable_roots = (
                 config.documentation_root,
-                source.project_root / ".docsystem" / "cache",
+                project_root / ".docsystem" / "cache",
             )
             try:
                 contained = all(
-                    path.resolve().is_relative_to(source.project_root)
+                    path.resolve().is_relative_to(project_root)
                     for path in writable_roots
                 )
             except (OSError, RuntimeError):
                 contained = False
             if not contained:
                 reason = REASON_UNSAFE_LOCAL_PATH
+    return reason
+
+
+def evaluate_source(source: WorkspaceSource) -> SourceStatus:
+    """Classify one source as selectable, or name the fixed reason it is not."""
+
+    reason = _project_root_reason(source.project_root)
     return SourceStatus(
         name=source.name,
         visibility=source.visibility,
@@ -269,45 +278,70 @@ def source_statuses(workspace: Workspace) -> tuple[SourceStatus, ...]:
     return tuple(evaluate_source(source) for source in workspace.sources)
 
 
-def read_local_pointer(project_root: Path) -> Path | None:
-    """Read `.docsystem.local.toml` from a discovery root, if present.
+def _read_absolute_pointer(
+    project_root: Path,
+    *,
+    filename: str,
+    key: str,
+    allowed_keys: frozenset[str],
+) -> Path | None:
+    """Read one exact absolute local pointer without consulting parent paths."""
 
-    The pointer is local machine wiring, never public project policy, so it
-    carries exactly one key and is rejected outright when it carries anything
-    else.
-    """
-
-    pointer_path = project_root / LOCAL_POINTER_FILENAME
+    pointer_path = project_root / filename
     if not pointer_path.is_file():
         return None
     try:
         with pointer_path.open("rb") as handle:
             raw = tomllib.load(handle)
     except tomllib.TOMLDecodeError as error:
-        raise WorkspaceError(
-            f"invalid {LOCAL_POINTER_FILENAME}: {error}"
-        ) from error
+        raise WorkspaceError(f"invalid {filename}: {error}") from error
     except OSError as error:
-        raise WorkspaceError(
-            f"{LOCAL_POINTER_FILENAME} is unreadable"
-        ) from error
+        raise WorkspaceError(f"{filename} is unreadable") from error
 
-    unknown = sorted(set(raw) - _POINTER_KEYS)
+    unknown = sorted(set(raw) - allowed_keys)
     if unknown:
         raise WorkspaceError(
-            f"{LOCAL_POINTER_FILENAME} has unknown key(s): {', '.join(unknown)}"
+            f"{filename} has unknown key(s): {', '.join(unknown)}"
         )
-    value = raw.get("workspace")
+    value = raw.get(key)
     if not isinstance(value, str) or not value:
-        raise WorkspaceError(
-            f"{LOCAL_POINTER_FILENAME} must set workspace to a non-empty string"
-        )
+        raise WorkspaceError(f"{filename} must set {key} to a non-empty string")
     pointer = Path(value).expanduser()
     if not pointer.is_absolute():
-        raise WorkspaceError(
-            f"{LOCAL_POINTER_FILENAME} workspace must be an absolute path"
-        )
+        raise WorkspaceError(f"{filename} {key} must be an absolute path")
     return pointer
+
+
+def read_local_pointer(project_root: Path) -> Path | None:
+    """Return the ignored local workspace pointer, if configured."""
+
+    return _read_absolute_pointer(
+        project_root,
+        filename=LOCAL_POINTER_FILENAME,
+        key="workspace",
+        allowed_keys=_POINTER_KEYS,
+    )
+
+
+def resolve_local_project_root(project_root: Path) -> Path | None:
+    """Resolve one ignored direct-project pointer and validate its exact scope."""
+
+    pointer = _read_absolute_pointer(
+        project_root,
+        filename=LOCAL_PROJECT_POINTER_FILENAME,
+        key="project_root",
+        allowed_keys=_PROJECT_POINTER_KEYS,
+    )
+    if pointer is None:
+        return None
+    try:
+        resolved = pointer.resolve()
+    except (OSError, RuntimeError) as error:
+        raise WorkspaceError("local project root cannot be resolved safely") from error
+    reason = _project_root_reason(resolved)
+    if reason is not None:
+        raise WorkspaceError(f"local project root is unavailable ({reason})")
+    return resolved
 
 
 def discover_workspace_root(
