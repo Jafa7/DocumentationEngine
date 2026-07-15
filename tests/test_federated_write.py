@@ -372,6 +372,288 @@ def test_same_workstream_id_remains_source_qualified(
         ).read_text(encoding="utf-8")
 
 
+def _write_shared_generations(
+    tmp_path: Path,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> dict[str, dict]:
+    results: dict[str, dict] = {}
+    for source in ("alpha", "beta"):
+        preview = _preview(tmp_path, workspace, monkeypatch, capsys, source)
+        assert (
+            _run(
+                monkeypatch,
+                "maintenance",
+                "shared-value",
+                str(tmp_path),
+                "--source",
+                source,
+                "--workspace",
+                str(workspace),
+                "--write",
+                "--expect-source-hash",
+                preview["source"]["block_hash"],
+                "--expect-preview-hash",
+                preview["preview_sha256"],
+                "--workstream-id",
+                "WS-SHARED",
+                "--json",
+            )
+            == 0
+        )
+        result = json.loads(capsys.readouterr().out)["write"]
+        results[source] = {
+            "generation": result["generation"],
+            "manifest_sha256": result["manifest_hash"],
+        }
+    return results
+
+
+def _finish_record(path: Path, participants: list[dict]) -> Path:
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "workstream_id": "WS-SHARED",
+                "participants": participants,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_shared_finish_verifies_independent_source_journals(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    workspace = _workspace(tmp_path, beta_write="managed-maintenance")
+    results = _write_shared_generations(tmp_path, workspace, monkeypatch, capsys)
+    record = _finish_record(
+        tmp_path / "finish.json",
+        [
+            {
+                "source": source,
+                "status": "applied",
+                "generation": results[source]["generation"],
+                "manifest_sha256": results[source]["manifest_sha256"],
+            }
+            for source in ("beta", "alpha")
+        ],
+    )
+
+    assert (
+        _run(
+            monkeypatch,
+            "federation",
+            "finish",
+            "WS-SHARED",
+            str(tmp_path),
+            "--record",
+            str(record),
+            "--workspace",
+            str(workspace),
+            "--json",
+        )
+        == 0
+    )
+    output = capsys.readouterr()
+    payload = json.loads(output.out)
+    assert output.err == ""
+    assert payload["state"] == "complete"
+    assert payload["ready_to_finish"] is True
+    assert [item["source"] for item in payload["participants"]] == ["alpha", "beta"]
+    assert payload["non_participants"] == []
+    assert len(payload["packet_sha256"]) == 64
+    assert str(tmp_path) not in output.out
+    assert "current value" not in output.out
+
+
+def test_shared_finish_reports_partial_declared_scope_without_false_completion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    workspace = _workspace(tmp_path, beta_write="managed-maintenance")
+    results = _write_shared_generations(tmp_path, workspace, monkeypatch, capsys)
+    record = _finish_record(
+        tmp_path / "finish.json",
+        [
+            {
+                "source": "alpha",
+                "status": "applied",
+                "generation": results["alpha"]["generation"],
+                "manifest_sha256": results["alpha"]["manifest_sha256"],
+            },
+            {"source": "beta", "status": "blocked", "reason": "owner-review"},
+        ],
+    )
+
+    assert (
+        _run(
+            monkeypatch,
+            "federation",
+            "finish",
+            "WS-SHARED",
+            str(tmp_path),
+            "--record",
+            str(record),
+            "--workspace",
+            str(workspace),
+            "--json",
+        )
+        == 2
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["state"] == "partial"
+    assert payload["ready_to_finish"] is False
+    assert payload["scope_authority"] == "caller-declared-participants"
+
+
+@pytest.mark.parametrize(
+    ("record_text", "message"),
+    [
+        (
+            '{"schema_version":1,"workstream_id":"WS-SHARED",'
+            '"participants":[],"participants":[]}',
+            "duplicate JSON key: participants",
+        ),
+        (
+            '{"schema_version":1,"workstream_id":"WS-SHARED",'
+            '"participants":[{"source":"alpha","status":"blocked",'
+            '"reason":"Needs review"}]}',
+            "reason must be a lowercase reason slug",
+        ),
+    ],
+)
+def test_shared_finish_rejects_ambiguous_records_without_stdout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    record_text: str,
+    message: str,
+) -> None:
+    workspace = _workspace(tmp_path, beta_write="managed-maintenance")
+    record = tmp_path / "finish.json"
+    record.write_text(record_text, encoding="utf-8")
+    assert (
+        _run(
+            monkeypatch,
+            "federation",
+            "finish",
+            "WS-SHARED",
+            str(tmp_path),
+            "--record",
+            str(record),
+            "--workspace",
+            str(workspace),
+            "--json",
+        )
+        == 1
+    )
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert message in output.err
+
+
+def test_shared_finish_rejects_stale_workspace_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    workspace = _workspace(tmp_path, beta_write="managed-maintenance")
+    results = _write_shared_generations(tmp_path, workspace, monkeypatch, capsys)
+    record = _finish_record(
+        tmp_path / "finish.json",
+        [
+            {
+                "source": "alpha",
+                "status": "applied",
+                "generation": results["alpha"]["generation"],
+                "manifest_sha256": results["alpha"]["manifest_sha256"],
+            }
+        ],
+    )
+    manifest = workspace / WORKSPACE_FILENAME
+    manifest.write_text(manifest.read_text() + "\n# changed authority\n", encoding="utf-8")
+
+    assert (
+        _run(
+            monkeypatch,
+            "federation",
+            "finish",
+            "WS-SHARED",
+            str(tmp_path),
+            "--record",
+            str(record),
+            "--workspace",
+            str(workspace),
+            "--json",
+        )
+        == 1
+    )
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "workspace_manifest_sha256 is stale or mismatched" in output.err
+
+
+def test_shared_finish_rejects_an_explicitly_recovered_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    workspace = _workspace(tmp_path, beta_write="managed-maintenance")
+    results = _write_shared_generations(tmp_path, workspace, monkeypatch, capsys)
+    record = _finish_record(
+        tmp_path / "finish.json",
+        [
+            {
+                "source": "alpha",
+                "status": "applied",
+                "generation": results["alpha"]["generation"],
+                "manifest_sha256": results["alpha"]["manifest_sha256"],
+            }
+        ],
+    )
+    assert (
+        _run(
+            monkeypatch,
+            "maintenance-recover",
+            results["alpha"]["generation"],
+            str(tmp_path),
+            "--source",
+            "alpha",
+            "--workspace",
+            str(workspace),
+            "--expect-manifest-hash",
+            results["alpha"]["manifest_sha256"],
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    assert (
+        _run(
+            monkeypatch,
+            "federation",
+            "finish",
+            "WS-SHARED",
+            str(tmp_path),
+            "--record",
+            str(record),
+            "--workspace",
+            str(workspace),
+            "--json",
+        )
+        == 1
+    )
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "generation was explicitly recovered" in output.err
+
+
 def test_selected_preview_is_byte_identical_direct_and_projected(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

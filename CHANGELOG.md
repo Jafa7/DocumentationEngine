@@ -12,6 +12,11 @@ All notable changes to Documentation Engine are documented in this file.
   contract limits trusted agents to that exact private scope and forbids
   parent/sibling discovery unless separately authorized.
 
+- Read-only shared workstream finish packets verify caller-declared outcomes
+  across independent source journals, preserve partial/blocked states and
+  reject stale source/config/workspace authority without reading document
+  bodies or claiming cross-source atomicity.
+
 - Source-qualified bounded maintenance for local workspaces: sources default
   to `write = "none"` and may opt into `managed-maintenance`; selected writes
   require a deterministic reviewed preview hash, selected recovery requires

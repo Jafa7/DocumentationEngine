@@ -611,6 +611,28 @@ def federation_changes(project: str, workspace: str | None = None) -> dict:
     return _json_tool(arguments, allow_failure_payload=True)
 
 
+def federation_finish(
+    project: str,
+    workstream_id: str,
+    record: str,
+    workspace: str | None = None,
+) -> dict:
+    """Verify caller-declared source outcomes without reading document bodies."""
+
+    arguments = [
+        "federation",
+        "finish",
+        workstream_id,
+        project,
+        "--record",
+        record,
+        "--json",
+    ]
+    if workspace is not None:
+        arguments.extend(["--workspace", workspace])
+    return _json_tool(arguments, allow_failure_payload=True)
+
+
 def context(
     project: str,
     document_id: str,
@@ -868,6 +890,7 @@ _TOOLS = (
     federation_impact,
     federation_index_status,
     federation_changes,
+    federation_finish,
 )
 
 

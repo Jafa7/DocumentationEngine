@@ -425,6 +425,14 @@ independent: there is no cross-source atomicity. A successful source write
 stales the aggregate federation projection until an explicit federation
 rebuild; complete reads fall back visibly to direct Markdown meanwhile.
 
+The read-only `federation finish` command can aggregate caller-declared
+outcomes after those independent writes. It verifies each applied immutable
+journal against its exact workstream, manifest, source, workspace, config and
+write-policy authority, while blocked/skipped sources carry bounded reason
+slugs. The resulting body-free packet labels its participant scope and lists
+non-participants. It is evidence aggregation, not a distributed transaction,
+shared lifecycle database or authentication layer.
+
 Versioned `workstreams.criteria` are authored completion policy, not projection
 data or hidden prompt instructions. A bounded JSON workstream record may be
 produced by any agent or orchestration runtime; the core validates lifecycle

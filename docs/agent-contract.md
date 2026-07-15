@@ -687,3 +687,13 @@ allows exact qualified `--include` expansion. Treat unavailable sources,
 invalid catalogs and unresolved qualified relations as hard completeness
 failures. A read-only federated result grants no write permission; any future
 change must be authorized and journaled independently by the owning source.
+
+After independently authorized source writes for one workstream, use
+`docsystem federation finish WORKSTREAM PROJECT --record PATH --json` to
+verify the declared participant outcomes. The participant list is caller
+authority, not inferred truth: inspect `scope_authority` and
+`non_participants`, and never describe `complete` as covering undeclared
+sources. Exit 2 is a valid partial/blocked packet, not success. Exit 1 means
+the declaration or immutable journal evidence is invalid and produces no
+packet. The command is read-only and never coordinates, compensates or rolls
+back source writes.

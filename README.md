@@ -762,6 +762,8 @@ docsystem federation impact shared-guides::GUIDE-004 . \
   --workspace /path/to/workspace --json
 docsystem federation index . --workspace /path/to/workspace --write
 docsystem federation changes . --workspace /path/to/workspace --json
+docsystem federation finish WS-001 . --workspace /path/to/workspace \
+  --record shared-finish.json --json
 ```
 
 Cross-source relations stay in Markdown as authored `"source::ID"` metadata.
@@ -770,12 +772,13 @@ preserve task-sized source text with visible omissions, and never grant
 cross-source write authority. A workspace-owned incremental projection reuses
 unchanged source objects and skips repeated parsing while keeping
 direct/projected output identical. Narrow selected-source managed maintenance
-is opt-in and separately guarded; see
+is opt-in and separately guarded. A read-only shared finish packet can verify
+caller-declared independent source outcomes without claiming atomicity; see
 [multi-catalog federation](docs/federation.md).
 
 ## Deliberate project-local boundaries
 
-Registry synchronization, finish orchestration, private history/backup and
+Registry synchronization, distributed write orchestration, private history/backup and
 provider-specific adapters are not generalized by this vertical slice. They
 remain project-local until reusable contracts are proven.
 

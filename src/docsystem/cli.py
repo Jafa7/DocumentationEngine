@@ -130,8 +130,10 @@ from docsystem.journal import (
     AuthorityFileGuard,
     FileEdit,
     FileGuard,
+    GenerationEvidence,
     JournalError,
     LineRange,
+    inspect_generation,
     recover_generation,
     run_bounded_transaction,
     validate_workstream_id,
@@ -180,6 +182,7 @@ from docsystem.projection import (
 )
 from docsystem.readiness import evaluate_readiness
 from docsystem.sections import MarkdownSection, extract_navigation, extract_section
+from docsystem.shared_finish import SharedFinishError, load_shared_finish_record
 from docsystem.workspace import (
     WORKSPACE_FILENAME,
     WorkspaceError,
@@ -662,6 +665,184 @@ def federation_changes(
         for row in rows:
             print(f"{row['kind']}\t{row['source']}")
     return 1 if report.status == "unavailable" else 0
+
+
+def _canonical_packet_sha256(payload: dict[str, object]) -> str:
+    raw = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _verified_finish_evidence(
+    evidence: GenerationEvidence,
+    *,
+    source: str,
+    workstream_id: str,
+    manifest_sha256: str,
+    workspace_manifest_sha256: str,
+    project_config_sha256: str,
+) -> dict[str, object]:
+    if evidence.workstream_id != workstream_id:
+        raise SharedFinishError(
+            f"source {source!r}: generation belongs to another workstream"
+        )
+    if evidence.status != "applied":
+        raise SharedFinishError(f"source {source!r}: generation is not applied")
+    if evidence.recovered:
+        raise SharedFinishError(f"source {source!r}: generation was explicitly recovered")
+    if evidence.manifest_sha256 != manifest_sha256:
+        raise SharedFinishError(f"source {source!r}: manifest hash does not match")
+    authority = evidence.authority
+    if authority is None:
+        raise SharedFinishError(
+            f"source {source!r}: generation has no source-qualified authority"
+        )
+    expected = {
+        "source": source,
+        "workspace_manifest_sha256": workspace_manifest_sha256,
+        "project_config_sha256": project_config_sha256,
+        "write_policy": "managed-maintenance",
+    }
+    for field, value in expected.items():
+        if authority.get(field) != value:
+            raise SharedFinishError(
+                f"source {source!r}: generation authority {field} is stale or mismatched"
+            )
+    return {
+        "source": source,
+        "status": "applied",
+        "generation": evidence.generation_id,
+        "manifest_sha256": evidence.manifest_sha256,
+        "changed_paths": list(evidence.changed_paths),
+    }
+
+
+def federation_finish(
+    project_root: Path,
+    workstream_id: str,
+    record_path: Path,
+    *,
+    workspace_option: Path | None = None,
+    json_output: bool = False,
+) -> int:
+    """Assemble a body-free finish packet from independent source journals."""
+
+    try:
+        record = load_shared_finish_record(record_path)
+        if record.workstream_id != workstream_id:
+            raise SharedFinishError("record workstream_id does not match the CLI argument")
+        workspace = resolve_workspace(
+            workspace_option=workspace_option,
+            project_root=project_root,
+        )
+        manifest_sha256 = hashlib.sha256(
+            (workspace.root / WORKSPACE_FILENAME).read_bytes()
+        ).hexdigest()
+        registered = {item.name: item for item in workspace.sources}
+        statuses = {item.name: item for item in source_statuses(workspace)}
+        config_guards: list[tuple[str, Path, str]] = []
+        rows: list[dict[str, object]] = []
+        for participant in record.participants:
+            source = registered.get(participant.source)
+            if source is None:
+                raise SharedFinishError(
+                    f"participant source is not registered: {participant.source}"
+                )
+            if participant.status == "applied":
+                status = statuses[source.name]
+                if not status.available:
+                    raise SharedFinishError(
+                        f"source {source.name!r} is unavailable: {status.reason}"
+                    )
+                if source.write != "managed-maintenance":
+                    raise SharedFinishError(
+                        f"source {source.name!r}: current write policy is not managed-maintenance"
+                    )
+                config = load_config(source.project_root)
+                config_sha256 = hashlib.sha256(
+                    (source.project_root / CONFIG_FILENAME).read_bytes()
+                ).hexdigest()
+                config_guards.append(
+                    (source.name, source.project_root / CONFIG_FILENAME, config_sha256)
+                )
+                assert participant.generation is not None
+                assert participant.manifest_sha256 is not None
+                evidence = inspect_generation(
+                    _maintenance_journal_root(config), participant.generation
+                )
+                rows.append(
+                    _verified_finish_evidence(
+                        evidence,
+                        source=source.name,
+                        workstream_id=workstream_id,
+                        manifest_sha256=participant.manifest_sha256,
+                        workspace_manifest_sha256=manifest_sha256,
+                        project_config_sha256=config_sha256,
+                    )
+                )
+            else:
+                rows.append(
+                    {
+                        "source": source.name,
+                        "status": participant.status,
+                        "reason": participant.reason,
+                    }
+                )
+        if (
+            hashlib.sha256((workspace.root / WORKSPACE_FILENAME).read_bytes()).hexdigest()
+            != manifest_sha256
+        ):
+            raise SharedFinishError("workspace manifest changed during finish inspection")
+        for source_name, config_path, expected_sha256 in config_guards:
+            if hashlib.sha256(config_path.read_bytes()).hexdigest() != expected_sha256:
+                raise SharedFinishError(
+                    f"source {source_name!r}: project configuration changed "
+                    "during finish inspection"
+                )
+        rows.sort(key=lambda item: str(item["source"]))
+        participant_names = {str(item["source"]) for item in rows}
+        non_participants = sorted(set(registered) - participant_names)
+        counts = Counter(str(item["status"]) for item in rows)
+        if counts["applied"] == len(rows):
+            state = "complete"
+        elif counts["applied"]:
+            state = "partial"
+        else:
+            state = "blocked"
+        payload: dict[str, object] = {
+            "kind": "shared-workstream-finish",
+            "workstream_id": workstream_id,
+            "scope_authority": "caller-declared-participants",
+            "state": state,
+            "ready_to_finish": state == "complete",
+            "participants": rows,
+            "non_participants": non_participants,
+            "counts": {
+                "applied": counts["applied"],
+                "blocked": counts["blocked"],
+                "skipped": counts["skipped"],
+                "declared": len(rows),
+            },
+        }
+        payload["packet_sha256"] = _canonical_packet_sha256(payload)
+    except (SharedFinishError, WorkspaceError, JournalError, OSError, ValueError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+
+    if json_output:
+        _print_json(payload)
+    else:
+        print(f"workstream\t{workstream_id}")
+        print(f"state\t{state}")
+        print("scope-authority\tcaller-declared-participants")
+        for row in rows:
+            details = row.get("generation") or row.get("reason") or "-"
+            print(f"participant\t{row['source']}\t{row['status']}\t{details}")
+        for source in non_participants:
+            print(f"non-participant\t{source}")
+        print(f"packet-sha256\t{payload['packet_sha256']}")
+    return 0 if state == "complete" else 2
 
 
 def federation_catalog(
@@ -8587,6 +8768,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_federation_common(federation_changes_parser)
 
+    federation_finish_parser = federation_subparsers.add_parser(
+        "finish", help="Verify independent source outcomes for one workstream."
+    )
+    federation_finish_parser.add_argument("workstream_id", metavar="WORKSTREAM")
+    federation_finish_parser.add_argument(
+        "project", nargs="?", type=Path, default=Path.cwd()
+    )
+    federation_finish_parser.add_argument(
+        "--record", required=True, type=Path, metavar="PATH"
+    )
+    add_federation_common(federation_finish_parser)
+
     for command_parser in (
         read_parser,
         dependencies_parser,
@@ -8689,6 +8882,14 @@ def main() -> int:
         if args.federation_command == "changes":
             return federation_changes(
                 args.project,
+                workspace_option=args.workspace,
+                json_output=args.json_output,
+            )
+        if args.federation_command == "finish":
+            return federation_finish(
+                args.project,
+                args.workstream_id,
+                args.record,
                 workspace_option=args.workspace,
                 json_output=args.json_output,
             )

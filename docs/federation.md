@@ -58,6 +58,8 @@ docsystem federation impact shared-guides::GUIDE-004 . \
 docsystem federation index . --workspace /path/to/workspace --write
 docsystem federation index . --workspace /path/to/workspace
 docsystem federation changes . --workspace /path/to/workspace --json
+docsystem federation finish WS-001 . --workspace /path/to/workspace \
+  --record shared-finish.json --json
 ```
 
 The positional project is used only to discover `.docsystem.local.toml` when
@@ -121,6 +123,51 @@ existing aggregate federation generation stale; federated reads then fall
 back visibly to direct Markdown until `federation index --write` explicitly
 builds a new complete generation. Direct and rebuilt-projection query stdout
 remain identical.
+
+## Shared workstream finish packet
+
+`federation finish` is a read-only evidence aggregator after independent
+selected-source writes. The caller supplies the exact participant set; the
+engine does not infer participation from workspace membership or graph edges:
+
+```json
+{
+  "schema_version": 1,
+  "workstream_id": "WS-001",
+  "participants": [
+    {
+      "source": "project-a",
+      "status": "applied",
+      "generation": "20260715T120000Z-WS-001",
+      "manifest_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    {
+      "source": "project-b",
+      "status": "blocked",
+      "reason": "owner-review"
+    }
+  ]
+}
+```
+
+An `applied` row is accepted only when the immutable source journal verifies,
+its workstream and manifest hash match, its status is still applied, and its
+recorded source/config/workspace/write-policy authority is current. `blocked`
+and `skipped` rows carry only a bounded lowercase reason slug. Duplicate JSON
+keys, duplicate sources, unknown fields and unknown sources fail closed.
+
+The packet contains source names, status, generation/hash evidence and changed
+source-relative paths, but no document bodies or absolute paths. It labels its
+scope `caller-declared-participants` and separately lists registered
+non-participants, so `complete` never claims that workspace membership proves
+participation. All declared participants applied yields exit 0 and
+`ready_to_finish: true`; a partial or wholly blocked result is still useful
+structured output but exits 2. Invalid or stale evidence exits 1 with no
+stdout. The packet SHA binds its canonical body.
+
+This command does not write a shared lifecycle record, authenticate the
+caller, coordinate writes, compensate a failed source or roll back a
+successful source. Each source journal remains independent authority.
 
 ## Trust and write boundaries
 

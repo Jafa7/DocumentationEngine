@@ -58,6 +58,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path, PurePosixPath
+from types import MappingProxyType
 
 SCHEMA_VERSION = 1
 
@@ -171,6 +172,19 @@ class CloudCopyResult:
 
 
 @dataclass(frozen=True)
+class GenerationEvidence:
+    """Body-free evidence extracted from one verified immutable generation."""
+
+    generation_id: str
+    workstream_id: str
+    status: str
+    manifest_sha256: str
+    changed_paths: tuple[str, ...]
+    authority: Mapping[str, str] | None
+    recovered: bool
+
+
+@dataclass(frozen=True)
 class _AdmittedEdit:
     normalized_path: str
     absolute_path: Path
@@ -189,6 +203,7 @@ class _VerifiedGeneration:
     generation_root: Path
     manifest: Mapping[str, object]
     verification: Mapping[str, object]
+    manifest_sha256: str
 
 
 def normalize_source_path(raw: str) -> PurePosixPath:
@@ -1211,7 +1226,81 @@ def _load_and_verify_generation(journal_root: Path, generation_id: str) -> _Veri
             raise JournalError(f"generation guard hash is invalid: {path}")
         seen_guards.add(path)
 
-    return _VerifiedGeneration(generation_root, manifest, verification)
+    return _VerifiedGeneration(
+        generation_root,
+        manifest,
+        verification,
+        hashlib.sha256(manifest_bytes).hexdigest(),
+    )
+
+
+def inspect_generation(journal_root: Path, generation_id: str) -> GenerationEvidence:
+    """Verify one generation and return only bounded, body-free evidence."""
+
+    verified = _load_and_verify_generation(journal_root, generation_id)
+    workstream_id = verified.manifest.get("workstream_id")
+    if not isinstance(workstream_id, str):
+        raise JournalError(f"generation workstream evidence is invalid: {generation_id}")
+    validate_workstream_id(workstream_id)
+    status = verified.manifest.get("status")
+    if not isinstance(status, str):
+        raise JournalError(f"generation status evidence is invalid: {generation_id}")
+    files = verified.manifest["files"]
+    assert isinstance(files, list)
+    changed_paths = tuple(sorted(str(entry["path"]) for entry in files))
+    raw_authority = verified.manifest.get("authority")
+    if raw_authority is not None and not isinstance(raw_authority, dict):
+        raise JournalError(f"generation authority evidence is invalid: {generation_id}")
+    authority_value = _validated_authority(raw_authority)
+    authority = MappingProxyType(authority_value) if authority_value is not None else None
+    recovery_root = verified.generation_root.parent / "recoveries" / generation_id
+    recovered = False
+    if recovery_root.exists():
+        if recovery_root.is_symlink() or not recovery_root.is_dir():
+            raise JournalError(f"generation recovery evidence is invalid: {generation_id}")
+        records = sorted(recovery_root.iterdir(), key=lambda item: item.name)
+        if not records:
+            raise JournalError(f"generation recovery evidence is incomplete: {generation_id}")
+        for record in records:
+            manifest_path = record / "manifest.json"
+            verification_path = record / "verification.json"
+            if record.is_symlink() or not record.is_dir():
+                raise JournalError(
+                    f"generation recovery evidence is invalid: {generation_id}"
+                )
+            try:
+                manifest_bytes = manifest_path.read_bytes()
+                recovery_manifest = json.loads(manifest_bytes)
+                recovery_verification = json.loads(verification_path.read_bytes())
+            except (OSError, json.JSONDecodeError) as error:
+                raise JournalError(
+                    f"generation recovery evidence is incomplete: {generation_id}"
+                ) from error
+            if (
+                not isinstance(recovery_manifest, dict)
+                or not isinstance(recovery_verification, dict)
+                or recovery_manifest.get("schema_version") != SCHEMA_VERSION
+                or recovery_verification.get("schema_version") != SCHEMA_VERSION
+                or recovery_manifest.get("source_generation_id") != generation_id
+                or recovery_verification.get("source_generation_id") != generation_id
+                or recovery_manifest.get("status") != "recovered"
+                or recovery_verification.get("status") != "recovered"
+                or recovery_verification.get("manifest_sha256")
+                != hashlib.sha256(manifest_bytes).hexdigest()
+            ):
+                raise JournalError(
+                    f"generation recovery evidence is invalid: {generation_id}"
+                )
+            recovered = True
+    return GenerationEvidence(
+        generation_id=generation_id,
+        workstream_id=workstream_id,
+        status=status,
+        manifest_sha256=verified.manifest_sha256,
+        changed_paths=changed_paths,
+        authority=authority,
+        recovered=recovered,
+    )
 
 
 def _recovery_target(source_root: Path, path: str) -> Path:

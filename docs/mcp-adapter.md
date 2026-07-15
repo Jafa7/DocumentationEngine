@@ -115,6 +115,7 @@ The adapter is deliberately a wrapper, not a second implementation:
 | `federation_impact` | object | `docsystem federation impact SOURCE::ID PROJECT --json` |
 | `federation_index_status` | object | `docsystem federation index PROJECT --json` |
 | `federation_changes` | object | `docsystem federation changes PROJECT --json` |
+| `federation_finish` | object | `docsystem federation finish WORKSTREAM PROJECT --record PATH --json` |
 
 Every tool takes the project root explicitly; none relies on the server
 process working directory.
