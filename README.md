@@ -496,6 +496,14 @@ refresh failure is a visible warning and direct Markdown remains authoritative.
 bytes only when current files still equal that generation's after state, so
 newer authored work is never overwritten.
 
+For a project selected from a local workspace, `workspace.toml` must explicitly
+set `write = "managed-maintenance"` (the default is `none`). The selected write
+also requires the preview's `preview_sha256`; selected recovery requires the
+journal `manifest_hash`. Each source has its own journal and lock. A source
+write never becomes an implicit cross-source transaction, and the aggregate
+federation projection remains stale until explicitly rebuilt. See
+[workspace source selection](docs/workspace-sources.md).
+
 Existing projects may opt into a migration bridge for relative path relations:
 
 ```toml
@@ -751,10 +759,12 @@ docsystem federation changes . --workspace /path/to/workspace --json
 
 Cross-source relations stay in Markdown as authored `"source::ID"` metadata.
 Federated queries require every registered source to be available and valid,
-preserve task-sized source text with visible omissions, and never grant write
-authority. A workspace-owned incremental projection reuses unchanged source
-objects and skips repeated parsing while keeping direct/projected output
-identical. See [read-only multi-catalog federation](docs/federation.md).
+preserve task-sized source text with visible omissions, and never grant
+cross-source write authority. A workspace-owned incremental projection reuses
+unchanged source objects and skips repeated parsing while keeping
+direct/projected output identical. Narrow selected-source managed maintenance
+is opt-in and separately guarded; see
+[multi-catalog federation](docs/federation.md).
 
 ## Deliberate project-local boundaries
 

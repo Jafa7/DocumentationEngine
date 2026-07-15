@@ -127,6 +127,7 @@ from docsystem.inventory import (
     field_occurrences,
 )
 from docsystem.journal import (
+    AuthorityFileGuard,
     FileEdit,
     FileGuard,
     JournalError,
@@ -164,6 +165,7 @@ from docsystem.program_plan import (
 from docsystem.projection import (
     LoadedProjection,
     build_projection,
+    config_fingerprint,
     evaluate_changes,
     load_verified_projection,
     open_targeted_projection,
@@ -179,8 +181,9 @@ from docsystem.projection import (
 from docsystem.readiness import evaluate_readiness
 from docsystem.sections import MarkdownSection, extract_navigation, extract_section
 from docsystem.workspace import (
+    WORKSPACE_FILENAME,
     WorkspaceError,
-    resolve_source_root,
+    resolve_source,
     resolve_workspace,
     source_statuses,
 )
@@ -263,6 +266,9 @@ class _Selection:
     project_root: Path
     source: str | None = None
     discovery_root: Path | None = None
+    write_policy: str = "none"
+    workspace_manifest_sha256: str | None = None
+    workspace_manifest_path: Path | None = None
 
     @property
     def project_argument(self) -> Path:
@@ -339,15 +345,35 @@ def _resolve_selection(args: argparse.Namespace) -> _Selection | None:
             return None
         return _Selection(args.project)
     try:
-        project_root = resolve_source_root(
+        selected = resolve_source(
             source,
             workspace_option=getattr(args, "workspace", None),
             project_root=args.project,
         )
+        workspace = resolve_workspace(
+            workspace_option=getattr(args, "workspace", None),
+            project_root=args.project,
+        )
+        current = workspace.find(source)
+        if current != selected:
+            raise WorkspaceError("workspace manifest changed during source selection")
+        manifest_sha256 = hashlib.sha256(
+            (workspace.root / WORKSPACE_FILENAME).read_bytes()
+        ).hexdigest()
     except WorkspaceError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return None
-    return _Selection(project_root, source, args.project)
+    except OSError:
+        print("ERROR: workspace manifest is unreadable", file=sys.stderr)
+        return None
+    return _Selection(
+        project_root=selected.project_root,
+        source=source,
+        discovery_root=args.project,
+        write_policy=selected.write,
+        workspace_manifest_sha256=manifest_sha256,
+        workspace_manifest_path=workspace.root / WORKSPACE_FILENAME,
+    )
 
 
 def _print_json(payload: dict[str, object]) -> None:
@@ -467,6 +493,7 @@ def _workspace_status_rows(
         {
             "name": status.name,
             "visibility": status.visibility,
+            "write": status.write,
             "available": status.available,
             "reason": status.reason,
         }
@@ -498,7 +525,10 @@ def workspace_list(
         return 0
     for row in rows:
         state = "available" if row["available"] else "unavailable"
-        print(f"{row['name']}\t{row['visibility']}\t{state}\t{row['reason'] or '-'}")
+        print(
+            f"{row['name']}\t{row['visibility']}\twrite={row['write']}\t"
+            f"{state}\t{row['reason'] or '-'}"
+        )
     return 0
 
 
@@ -6606,6 +6636,120 @@ def _maintenance_write_plan(
     )
 
 
+def _maintenance_preview_sha256(
+    *,
+    config: ProjectConfig,
+    target,
+    selection: _Selection,
+    source_address: Address,
+    source_document_hash: str,
+    source_section_hash: str,
+    source_block_hash: str,
+    occurrence_results: list[_MaintenanceOccurrenceResult],
+    views: _Views,
+    plan: ChangePlan,
+    edits: tuple[FileEdit, ...],
+    project_config_sha256: str,
+) -> str:
+    """Bind workspace authority to the exact body-free maintenance preview."""
+
+    after_by_path = {
+        item.path: hashlib.sha256(item.mechanical_content.encode()).hexdigest()
+        for item in edits
+    }
+    envelope = {
+        "schema_version": 1,
+        "workspace_source": selection.source,
+        "workspace_manifest_sha256": selection.workspace_manifest_sha256,
+        "write_policy": selection.write_policy,
+        "config_fingerprint": config_fingerprint(config),
+        "project_config_sha256": project_config_sha256,
+        "target": {
+            "name": target.name,
+            "source": source_address.text,
+            "occurrences": [
+                {
+                    "address": f"{item.document_id}#{item.anchor}",
+                    "role": item.role,
+                }
+                for item in target.occurrences
+            ],
+        },
+        "source": {
+            "address": source_address.text,
+            "document_hash": source_document_hash,
+            "section_hash": source_section_hash,
+            "block_hash": source_block_hash,
+        },
+        "occurrences": [
+            {
+                "address": f"{result.document_id}#{result.anchor}",
+                "role": result.role,
+                "disposition": result.disposition,
+                "reason": result.reason,
+                "section_range": list(result.section_range),
+                "marker_range": (
+                    list(result.marker_range)
+                    if result.marker_range is not None
+                    else None
+                ),
+                "content_range": (
+                    list(result.content_range)
+                    if result.content_range is not None
+                    else None
+                ),
+                "document_hash": result.document_hash,
+                "section_hash": result.section_hash,
+                "block_hash": result.block_hash,
+                "after_document_hash": after_by_path.get(
+                    views[result.document_id].path.as_posix(),
+                    result.document_hash,
+                ),
+            }
+            for result in occurrence_results
+        ],
+        "change_plan": {
+            "address": plan.address.text,
+            "items": [_change_plan_item_json(item) for item in plan.items],
+            "boundaries": [
+                _references_boundary_json(boundary) for boundary in plan.boundaries
+            ],
+            "completeness": {
+                "authored": plan.completeness.authored,
+                "observed": plan.completeness.observed,
+                "generated": plan.completeness.generated,
+            },
+        },
+    }
+    encoded = json.dumps(
+        envelope, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _maintenance_authority_guards(
+    config: ProjectConfig,
+    selection: _Selection,
+    project_config_sha256: str,
+) -> tuple[AuthorityFileGuard, ...]:
+    if selection.source is None:
+        return ()
+    assert selection.workspace_manifest_path is not None
+    assert selection.workspace_manifest_sha256 is not None
+    return (
+        AuthorityFileGuard(
+            label="project-config",
+            path=config.project_root / CONFIG_FILENAME,
+            sha256=project_config_sha256,
+        ),
+        AuthorityFileGuard(
+            label="workspace-manifest",
+            path=selection.workspace_manifest_path,
+            sha256=selection.workspace_manifest_sha256,
+        ),
+    )
+
+
 def _maintenance_validation(
     config: ProjectConfig, diagnostics: list[str] | None = None
 ) -> bool:
@@ -6642,8 +6786,10 @@ def maintenance(
     write: bool = False,
     json_output: bool = False,
     expected_source_hash: str | None = None,
+    expected_preview_hash: str | None = None,
     workstream_id: str | None = None,
     created_at: str | None = None,
+    selection: _Selection | None = None,
 ) -> int:
     """Check, preview or journal one declared managed-block target.
 
@@ -6662,6 +6808,8 @@ def maintenance(
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
 
+    effective_selection = selection or _Selection(project_root)
+
     if sum((check, preview, write)) != 1:
         print("ERROR: choose exactly one of --check, --preview or --write", file=sys.stderr)
         return 1
@@ -6671,6 +6819,21 @@ def maintenance(
     if write and workstream_id is None:
         print("ERROR: --write requires --workstream-id", file=sys.stderr)
         return 1
+    if write and effective_selection.source is not None:
+        if effective_selection.write_policy != "managed-maintenance":
+            print(
+                "ERROR: workspace source write policy does not allow "
+                "managed maintenance",
+                file=sys.stderr,
+            )
+            return 1
+        if expected_preview_hash is None:
+            print(
+                "ERROR: workspace-selected --write requires "
+                "--expect-preview-hash",
+                file=sys.stderr,
+            )
+            return 1
     if write and workstream_id is not None:
         try:
             validate_workstream_id(workstream_id)
@@ -6679,6 +6842,9 @@ def maintenance(
             return 1
     if not write and workstream_id is not None:
         print("ERROR: --workstream-id is only valid with --write", file=sys.stderr)
+        return 1
+    if not write and expected_preview_hash is not None:
+        print("ERROR: --expect-preview-hash is only valid with --write", file=sys.stderr)
         return 1
 
     target = _maintenance_find_target(config, target_name)
@@ -6964,24 +7130,88 @@ def maintenance(
     if plan_diagnostic is not None:
         print(f"NOTE: {plan_diagnostic}", file=sys.stderr)
 
+    planned_edits: tuple[FileEdit, ...] = ()
+    planned_guards: tuple[FileGuard, ...] = ()
+    if any_drift:
+        try:
+            planned_edits, planned_guards = _maintenance_write_plan(
+                config, target, views, source_block, occurrence_results
+            )
+        except (JournalError, OSError) as error:
+            print(f"ERROR: maintenance preview failed: {error}", file=sys.stderr)
+            return 1
+    try:
+        project_config_sha256 = hashlib.sha256(
+            (config.project_root / CONFIG_FILENAME).read_bytes()
+        ).hexdigest()
+        preview_sha256 = _maintenance_preview_sha256(
+            config=config,
+            target=target,
+            selection=effective_selection,
+            source_address=source_address,
+            source_document_hash=source_document_hash,
+            source_section_hash=source_section_hash,
+            source_block_hash=source_block_hash,
+            occurrence_results=occurrence_results,
+            views=views,
+            plan=plan,
+            edits=planned_edits,
+            project_config_sha256=project_config_sha256,
+        )
+    except OSError:
+        print(
+            "ERROR: project configuration changed during maintenance preview",
+            file=sys.stderr,
+        )
+        return 1
+    if expected_preview_hash is not None:
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_preview_hash):
+            print(
+                "ERROR: --expect-preview-hash must be a lowercase SHA-256 value",
+                file=sys.stderr,
+            )
+            return 1
+        if expected_preview_hash != preview_sha256:
+            print(
+                "ERROR: maintenance preview hash changed: expected "
+                f"{expected_preview_hash}, current {preview_sha256}",
+                file=sys.stderr,
+            )
+            return 1
+
     apply_result = None
     projection_updated = False
     write_validation_issues: list[str] = []
     if write and any_drift:
         try:
-            edits, guards = _maintenance_write_plan(
-                config, target, views, source_block, occurrence_results
-            )
             apply_result = run_bounded_transaction(
                 source_root=config.documentation_root,
                 journal_root=_maintenance_journal_root(config),
                 workstream_id=workstream_id or "",
                 created_at=created_at or _utc_second(),
-                edits=edits,
+                edits=planned_edits,
                 validate=lambda _root: _maintenance_validation(
                     config, write_validation_issues
                 ),
-                guards=guards,
+                guards=planned_guards,
+                authority=(
+                    {
+                        "source": effective_selection.source,
+                        "workspace_manifest_sha256": (
+                            effective_selection.workspace_manifest_sha256
+                        ),
+                        "project_config_sha256": project_config_sha256,
+                        "write_policy": effective_selection.write_policy,
+                        "preview_sha256": preview_sha256,
+                    }
+                    if effective_selection.source is not None
+                    else None
+                ),
+                authority_guards=_maintenance_authority_guards(
+                    config,
+                    effective_selection,
+                    project_config_sha256,
+                ),
             )
         except (JournalError, OSError) as error:
             print(f"ERROR: maintenance write failed: {error}", file=sys.stderr)
@@ -7009,8 +7239,14 @@ def maintenance(
     if json_output:
         payload: dict[str, object] = {
             "target": target.name,
+            "workspace_source": effective_selection.source,
+            "workspace_manifest_sha256": (
+                effective_selection.workspace_manifest_sha256
+            ),
+            "project_config_sha256": project_config_sha256,
             "mode": mode,
             "status": status,
+            "preview_sha256": preview_sha256,
             "source": {
                 "address": source_address.text,
                 "document_hash": source_document_hash,
@@ -7053,6 +7289,7 @@ def maintenance(
                     "status": apply_result.status,
                     "changed_paths": list(apply_result.changed_paths),
                     "manifest_hash": apply_result.manifest_sha256,
+                    "preview_sha256": preview_sha256,
                     "projection_updated": projection_updated,
                 }
                 if apply_result is not None
@@ -7061,6 +7298,7 @@ def maintenance(
                     "status": "not-needed",
                     "changed_paths": [],
                     "manifest_hash": None,
+                    "preview_sha256": preview_sha256,
                     "projection_updated": False,
                 }
             )
@@ -7069,6 +7307,7 @@ def maintenance(
         )
     else:
         print(f"target\t{target.name}\tstatus\t{status}")
+        print(f"preview_hash\t{preview_sha256}")
         print(
             "source\t"
             f"{source_address.text}\t"
@@ -7116,16 +7355,63 @@ def maintenance_recover(
     *,
     json_output: bool = False,
     recovered_at: str | None = None,
+    expected_manifest_hash: str | None = None,
+    selection: _Selection | None = None,
 ) -> int:
     """Restore one verified maintenance generation without overwriting newer work."""
 
+    effective_selection = selection or _Selection(project_root)
+    if effective_selection.source is not None:
+        if effective_selection.write_policy != "managed-maintenance":
+            print(
+                "ERROR: workspace source write policy does not allow "
+                "managed maintenance recovery",
+                file=sys.stderr,
+            )
+            return 1
+        if expected_manifest_hash is None:
+            print(
+                "ERROR: workspace-selected recovery requires "
+                "--expect-manifest-hash",
+                file=sys.stderr,
+            )
+            return 1
+    if expected_manifest_hash is not None and not re.fullmatch(
+        r"[0-9a-f]{64}", expected_manifest_hash
+    ):
+        print(
+            "ERROR: --expect-manifest-hash must be a lowercase SHA-256 value",
+            file=sys.stderr,
+        )
+        return 1
     try:
         config = load_config(project_root)
+        project_config_sha256 = hashlib.sha256(
+            (config.project_root / CONFIG_FILENAME).read_bytes()
+        ).hexdigest()
         result = recover_generation(
             source_root=config.documentation_root,
             journal_root=_maintenance_journal_root(config),
             generation_id=generation_id,
             recovered_at=recovered_at or _utc_second(),
+            expected_manifest_sha256=expected_manifest_hash,
+            expected_authority=(
+                {
+                    "source": effective_selection.source,
+                    "workspace_manifest_sha256": (
+                        effective_selection.workspace_manifest_sha256
+                    ),
+                    "project_config_sha256": project_config_sha256,
+                    "write_policy": effective_selection.write_policy,
+                }
+                if effective_selection.source is not None
+                else None
+            ),
+            authority_guards=_maintenance_authority_guards(
+                config,
+                effective_selection,
+                project_config_sha256,
+            ),
         )
     except (ValueError, JournalError, OSError) as error:
         print(f"ERROR: maintenance recovery failed: {error}", file=sys.stderr)
@@ -7156,6 +7442,7 @@ def maintenance_recover(
         _print_json(
             {
                 "generation": result.generation_id,
+                "workspace_source": effective_selection.source,
                 "status": result.status,
                 "restored_paths": list(result.restored_paths),
                 "recovery_record": result.recovery_record,
@@ -7633,6 +7920,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fail closed unless the canonical source block still has this hash.",
     )
     maintenance_parser.add_argument(
+        "--expect-preview-hash",
+        metavar="SHA256",
+        help=(
+            "Bind --write to the exact prior preview; required for a "
+            "workspace-selected source."
+        ),
+    )
+    maintenance_parser.add_argument(
         "--workstream-id",
         metavar="ID",
         help="Required audit identity for --write (for example WS-001).",
@@ -7645,6 +7940,14 @@ def build_parser() -> argparse.ArgumentParser:
     maintenance_recover_parser.add_argument("generation")
     maintenance_recover_parser.add_argument(
         "project", nargs="?", type=Path, default=Path.cwd()
+    )
+    maintenance_recover_parser.add_argument(
+        "--expect-manifest-hash",
+        metavar="SHA256",
+        help=(
+            "Bind recovery to the exact completed journal manifest; required "
+            "for a workspace-selected source."
+        ),
     )
     maintenance_recover_parser.add_argument(
         "--json",
@@ -8410,13 +8713,17 @@ def main() -> int:
             write=args.write,
             json_output=args.json_output,
             expected_source_hash=args.expect_source_hash,
+            expected_preview_hash=args.expect_preview_hash,
             workstream_id=args.workstream_id,
+            selection=selection,
         )
     if args.command == "maintenance-recover":
         return maintenance_recover(
             project,
             args.generation,
             json_output=args.json_output,
+            expected_manifest_hash=args.expect_manifest_hash,
+            selection=selection,
         )
     if args.command == "catalog":
         return catalog(project, explain=args.explain, json_output=args.json_output)

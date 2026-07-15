@@ -6,6 +6,13 @@ All notable changes to Documentation Engine are documented in this file.
 
 ### Added
 
+- Source-qualified bounded maintenance for local workspaces: sources default
+  to `write = "none"` and may opt into `managed-maintenance`; selected writes
+  require a deterministic reviewed preview hash, selected recovery requires
+  the immutable journal manifest hash, authority evidence is source-local,
+  and a non-blocking journal lock prevents concurrent transactions without
+  claiming cross-source atomicity.
+
 - Authored `program_plan` sequencing with fail-closed `roadmap status`,
   `roadmap next` and `roadmap explain` CLI/MCP inspection. Recommendations
   derive lifecycle state from bounded roadmap documents, prerequisites and
@@ -57,6 +64,9 @@ All notable changes to Documentation Engine are documented in this file.
   completed workstream record into one fail-closed, body-free evidence lineage.
 
 ### Changed
+
+- `workspace list` rows and JSON now expose each source's body-free write
+  policy so operators can inspect the default-deny boundary.
 
 - Replaced the named adopter integration guide and CI profile with a synthetic
   client-integration contract and generic adopter fixture.

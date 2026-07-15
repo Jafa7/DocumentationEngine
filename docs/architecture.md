@@ -399,6 +399,24 @@ generation evidence and refuses recovery over newer source. Successful write
 and recovery rebuild the disposable projection; a refresh failure is visible
 and falls back to direct Markdown without weakening Markdown authority.
 
+When a local workspace selects the project by source name, write authority is
+more restrictive. The registry defaults each source to `write = "none"`; only
+`write = "managed-maintenance"` enables selected-source maintenance write and
+recovery. A deterministic, body-free preview hash binds the source identity,
+raw workspace manifest hash, policy, project configuration, declaration,
+source/occurrence hashes and ranges, planned after hashes and graph
+completeness. Selected write must present that exact hash, and selected
+recovery must present the immutable journal manifest hash. Authority evidence
+including the project-config hash is stored in the source-local journal.
+External config/manifest inputs are hash-guarded at admission, immediately
+before apply, after validation and before final evidence; selected recovery
+must match the recorded source/config/policy authority. The journal's
+non-blocking advisory lock prevents concurrent transactions through path
+aliases. Sources remain
+independent: there is no cross-source atomicity. A successful source write
+stales the aggregate federation projection until an explicit federation
+rebuild; complete reads fall back visibly to direct Markdown meanwhile.
+
 Versioned `workstreams.criteria` are authored completion policy, not projection
 data or hidden prompt instructions. A bounded JSON workstream record may be
 produced by any agent or orchestration runtime; the core validates lifecycle

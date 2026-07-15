@@ -34,6 +34,7 @@ version = 1
 name = "example-project"
 root = "projects/example-project"
 visibility = "private"
+write = "managed-maintenance"
 
 [[sources]]
 name = "shared-guides"
@@ -49,6 +50,13 @@ lowercase ASCII letters, digits and hyphens, starting with a letter. Names and
 resolved roots must be unique and non-overlapping. `visibility` is required
 and is either `private` or `public`.
 
+`write` is optional and defaults to `none`. The only opt-in value is
+`managed-maintenance`; it authorizes the selected-source form of the existing
+bounded `maintenance --write` and `maintenance-recover` commands. It does not
+authorize arbitrary edits, migration, projection writes, cross-source
+transactions or deletion. Keep `none` unless the owning project deliberately
+enables this narrow maintenance contract.
+
 Visibility is inspectable metadata in this milestone. It does not implement
 authorization or redaction: selecting a private source explicitly means the
 local caller is allowed to read it. Do not expose a workspace through an
@@ -63,9 +71,10 @@ docsystem workspace list . --workspace /path/to/documentation-workspace --json
 docsystem workspace doctor . --workspace /path/to/documentation-workspace
 ```
 
-The listing contains only source name, visibility, availability and a fixed
-reason slug. Missing roots, missing or invalid configurations and unsafe local
-paths remain visible; selecting any unavailable source fails closed.
+The listing contains only source name, visibility, write policy, availability
+and a fixed reason slug. Missing roots, missing or invalid configurations and
+unsafe local paths remain visible; selecting any unavailable source fails
+closed.
 
 ## Local project pointer
 
@@ -100,6 +109,7 @@ docsystem catalog . --source example-project
 docsystem context DOC-001 . --source example-project --depth 1
 docsystem impact DOC-001 . --source example-project
 docsystem index . --source example-project --write
+docsystem maintenance install-version . --source example-project --preview --json
 ```
 
 `--workspace` is normally omitted after installing the local pointer. On a
@@ -127,10 +137,46 @@ root. Generated next commands therefore remain directly executable while the
 same local pointer or environment wiring is active.
 
 Mutating commands retain their existing authorization boundary. Source
-selection does not make `init`, `migrate --apply`, `index --write`,
-`maintenance --write` or `maintenance-recover` read-only;
-it only changes the one project root they target. Agents must still obtain the
-required approval and backup local-only authored state first.
+selection only changes the one project root they target. `init`,
+`migrate --apply` and `index --write` retain their command-specific guards.
+Selected-source managed maintenance has an additional fail-closed boundary:
+the source must opt into `write = "managed-maintenance"`.
+
+Review a selected-source preview, then bind the exact reviewed state into the
+write:
+
+```bash
+docsystem maintenance install-version . \
+  --source example-project --preview --json
+docsystem maintenance install-version . \
+  --source example-project --write \
+  --expect-source-hash SOURCE_BLOCK_SHA256 \
+  --expect-preview-hash PREVIEW_SHA256 \
+  --workstream-id WS-001
+```
+
+The preview hash binds the selected source name, workspace manifest, write
+policy, project configuration, maintenance declaration, source and occurrence
+bytes/ranges, expected after hashes and graph completeness. A change detected
+before transaction admission is refused before journal creation; a race
+detected after the immutable generation begins causes automatic rollback and
+retains bounded failure evidence. The transaction uses a source-local journal
+and a non-blocking per-journal lock. Recovery is also
+source-qualified and requires the exact journal manifest hash:
+
+```bash
+docsystem maintenance-recover GENERATION . \
+  --source example-project \
+  --expect-manifest-hash JOURNAL_MANIFEST_SHA256
+```
+
+The journal records body-free authority evidence: source name, workspace
+manifest hash, project-config hash, write policy and preview hash. Selected
+recovery requires the current workspace manifest and project configuration to
+match that authority; restore the reviewed policy wiring first or use an
+explicit direct-project recovery under separate operator authority. The same
+workstream ID may occur independently in different sources; there is no
+cross-source atomic commit or rollback.
 
 ## MCP
 
@@ -146,11 +192,11 @@ source mutation.
 This milestone does not provide:
 
 - remote/network sources, authentication or authorization;
-- concurrent-write locking;
+- cross-source transactions or locking across distinct source journals;
 - Git synchronization, import, copy or deletion;
 - a documentation web server or UI.
 
-Write federation and remote-service capabilities require separate bounded
-designs. Read-only federation may use a verified workspace-owned projection
-and falls back visibly to direct Markdown; both paths fail closed unless every
-registered source is available and valid.
+Remote-service writes require a separate bounded design. Federated queries may
+use a verified workspace-owned projection and fall back visibly to direct
+Markdown; both paths fail closed unless every registered source is available
+and valid.

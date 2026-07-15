@@ -355,7 +355,7 @@ stdout for the same query.
 ## Managed maintenance requires bounded write authority
 
 `docsystem maintenance TARGET PROJECT --check|--preview|--write [--json]
-[--expect-source-hash SHA256]` reports
+[--expect-source-hash SHA256] [--expect-preview-hash SHA256]` reports
 drift between one project-declared canonical source block and its declared
 occurrences. Check and preview are read-only. Write is an explicit mutating
 mode and must not be inferred from drift alone.
@@ -403,7 +403,15 @@ report as `--expect-source-hash`. A malformed hash or a source block that has
 changed since that report fails closed with exit `1`, stderr diagnostics and
 empty stdout. This guard does not grant write authority by itself.
 
-`--write` requires both that hash and `--workstream-id`. It re-reads raw files,
+`--write` requires both that hash and `--workstream-id`. When `--source NAME`
+selects a workspace source, the source must additionally declare
+`write = "managed-maintenance"`, and the write requires the exact
+`preview_sha256` returned by a reviewed selected-source preview. That hash
+binds the source, workspace manifest, policy, project configuration,
+declaration, source/occurrence evidence, expected after hashes and graph
+completeness. Any drift fails with empty stdout before journal creation.
+
+The write re-reads raw files,
 admits only marker interiors owned by drifted `current` occurrences, and
 applies all admitted files in one immutable journal generation. The canonical
 source file is a read guard: if it changes during the transaction, every
@@ -423,6 +431,11 @@ instead so journal evidence never overlaps authored source. Recovery is
 explicit: `maintenance-recover GENERATION PROJECT` verifies the immutable
 generation and restores only when every current file still equals recorded
 after bytes. A newer or unknown state is a refusal, not a forced rollback.
+Selected-source recovery also requires `--expect-manifest-hash` with the exact
+journal manifest hash and exact source, workspace-manifest, project-config and
+opt-in policy authority recorded by that generation. Journal generations carry
+this body-free authority plus the preview hash and use a non-blocking
+source-local lock. Separate sources never form one atomic transaction.
 
 ## Context is explicit, never silently truncated
 

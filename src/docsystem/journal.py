@@ -48,11 +48,13 @@ from __future__ import annotations
 import difflib
 import hashlib
 import json
+import os
 import re
 import shutil
 import tempfile
 import uuid
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path, PurePosixPath
@@ -64,6 +66,16 @@ _WORKSTREAM_PATTERN = re.compile(r"^[A-Z][A-Z0-9]*(-[A-Z0-9]+)+$")
 _CREATED_AT_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _GENERATION_PATTERN = re.compile(r"^\d{8}T\d{6}Z-[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+$")
+_SOURCE_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
+_AUTHORITY_KEYS = frozenset(
+    {
+        "source",
+        "workspace_manifest_sha256",
+        "project_config_sha256",
+        "write_policy",
+        "preview_sha256",
+    }
+)
 
 
 class JournalError(ValueError):
@@ -111,6 +123,15 @@ class FileGuard:
     """A read-only file hash that must remain stable for the transaction."""
 
     path: str
+    sha256: str
+
+
+@dataclass(frozen=True)
+class AuthorityFileGuard:
+    """A body-free external authority input that must stay byte-identical."""
+
+    label: str
+    path: Path
     sha256: str
 
 
@@ -444,6 +465,121 @@ def _write_json(path: Path, data: Mapping[str, object]) -> bytes:
     return raw
 
 
+def _validated_authority(authority: Mapping[str, str] | None) -> dict[str, str] | None:
+    if authority is None:
+        return None
+    if set(authority) != _AUTHORITY_KEYS:
+        raise JournalError(
+            "authority must contain source, workspace_manifest_sha256, "
+            "project_config_sha256, write_policy and preview_sha256"
+        )
+    source = authority.get("source")
+    if not isinstance(source, str) or not _SOURCE_NAME_PATTERN.fullmatch(source):
+        raise JournalError("authority source must be a valid non-path source name")
+    write_policy = authority.get("write_policy")
+    if write_policy != "managed-maintenance":
+        raise JournalError("authority write_policy must be 'managed-maintenance'")
+    for field in (
+        "workspace_manifest_sha256",
+        "project_config_sha256",
+        "preview_sha256",
+    ):
+        value = authority.get(field)
+        if not isinstance(value, str) or not _SHA256_PATTERN.fullmatch(value):
+            raise JournalError(f"authority {field} must be 64 lowercase hex characters")
+    return {key: authority[key] for key in sorted(_AUTHORITY_KEYS)}
+
+
+def _validated_authority_guards(
+    guards: Sequence[AuthorityFileGuard],
+) -> tuple[AuthorityFileGuard, ...]:
+    admitted: list[AuthorityFileGuard] = []
+    labels: set[str] = set()
+    for guard in guards:
+        if not re.fullmatch(r"[a-z][a-z0-9-]{0,31}", guard.label):
+            raise JournalError("authority guard label is invalid")
+        if guard.label in labels:
+            raise JournalError(f"authority guard label is duplicated: {guard.label}")
+        if not _SHA256_PATTERN.fullmatch(guard.sha256):
+            raise JournalError(
+                f"authority guard hash must be 64 lowercase hex characters: {guard.label}"
+            )
+        labels.add(guard.label)
+        admitted.append(guard)
+    return tuple(sorted(admitted, key=lambda item: item.label))
+
+
+def _verify_authority_guards(guards: Sequence[AuthorityFileGuard]) -> None:
+    for guard in guards:
+        try:
+            current = hashlib.sha256(guard.path.read_bytes()).hexdigest()
+        except OSError as error:
+            raise JournalError(f"authority input is unavailable: {guard.label}") from error
+        if current != guard.sha256:
+            raise JournalError(f"authority input changed: {guard.label}")
+
+
+def _validate_authority_guard_binding(
+    authority: Mapping[str, str] | None,
+    guards: Sequence[AuthorityFileGuard],
+) -> None:
+    if authority is None:
+        return
+    by_label = {guard.label: guard.sha256 for guard in guards}
+    expected = {
+        "project-config": authority.get("project_config_sha256"),
+        "workspace-manifest": authority.get("workspace_manifest_sha256"),
+    }
+    if by_label != expected:
+        raise JournalError(
+            "source-qualified authority requires matching project-config and "
+            "workspace-manifest guards"
+        )
+
+
+@contextmanager
+def _exclusive_journal_lock(journal_root: Path):
+    """Hold a non-blocking process lock scoped to one journal path."""
+
+    identity = os.path.normcase(str(journal_root.expanduser().resolve(strict=False)))
+    lock_name = hashlib.sha256(identity.encode("utf-8")).hexdigest() + ".lock"
+    lock_dir = Path(tempfile.gettempdir()) / "docsystem-journal-locks"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_file = open(lock_dir / lock_name, "a+b")  # noqa: SIM115 - spans the context
+    locked = False
+    try:
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                lock_file.seek(0)
+                if lock_file.read(1) == b"":
+                    lock_file.write(b"\0")
+                    lock_file.flush()
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            locked = True
+        except (BlockingIOError, OSError) as error:
+            raise JournalError("journal is locked by another write or recovery") from error
+        yield
+    finally:
+        if locked:
+            if os.name == "nt":
+                import msvcrt
+
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        lock_file.close()
+
+
 def _manifest_dict(
     workstream_id: str,
     generation_id: str,
@@ -453,6 +589,7 @@ def _manifest_dict(
     guards: Sequence[tuple[str, Path, str]],
     semantic_patch_sha256: str,
     mechanical_patch_sha256: str,
+    authority: Mapping[str, str] | None,
 ) -> dict[str, object]:
     files = [
         {
@@ -464,7 +601,7 @@ def _manifest_dict(
         }
         for item in sorted(admitted, key=lambda item: item.normalized_path)
     ]
-    return {
+    manifest: dict[str, object] = {
         "schema_version": SCHEMA_VERSION,
         "workstream_id": workstream_id,
         "generation_id": generation_id,
@@ -486,6 +623,9 @@ def _manifest_dict(
             for path, _target, sha256 in guards
         ],
     }
+    if authority is not None:
+        manifest["authority"] = dict(authority)
+    return manifest
 
 
 _CHECKS = (
@@ -557,6 +697,36 @@ def run_bounded_transaction(
     edits: Sequence[FileEdit],
     validate: Callable[[Path], bool],
     guards: Sequence[FileGuard] = (),
+    authority: Mapping[str, str] | None = None,
+    authority_guards: Sequence[AuthorityFileGuard] = (),
+) -> ApplyResult:
+    """Run one bounded transaction under the journal's exclusive lock."""
+
+    with _exclusive_journal_lock(journal_root):
+        return _run_bounded_transaction_unlocked(
+            source_root=source_root,
+            journal_root=journal_root,
+            workstream_id=workstream_id,
+            created_at=created_at,
+            edits=edits,
+            validate=validate,
+            guards=guards,
+            authority=authority,
+            authority_guards=authority_guards,
+        )
+
+
+def _run_bounded_transaction_unlocked(
+    *,
+    source_root: Path,
+    journal_root: Path,
+    workstream_id: str,
+    created_at: str,
+    edits: Sequence[FileEdit],
+    validate: Callable[[Path], bool],
+    guards: Sequence[FileGuard] = (),
+    authority: Mapping[str, str] | None = None,
+    authority_guards: Sequence[AuthorityFileGuard] = (),
 ) -> ApplyResult:
     """Admit, journal and atomically apply one bounded transaction.
 
@@ -571,6 +741,13 @@ def run_bounded_transaction(
 
     validate_workstream_id(workstream_id)
     _validate_timestamp(created_at)
+    admitted_authority = _validated_authority(authority)
+    admitted_authority_guards = _validated_authority_guards(authority_guards)
+    _validate_authority_guard_binding(
+        admitted_authority,
+        admitted_authority_guards,
+    )
+    _verify_authority_guards(admitted_authority_guards)
     resolved_source, resolved_journal = _resolved_separate_roots(source_root, journal_root)
     admitted = _admit(resolved_source, edits)
     admitted_guards = _admit_guards(resolved_source, guards, admitted)
@@ -618,6 +795,7 @@ def run_bounded_transaction(
         admitted_guards,
         hashlib.sha256(semantic_patch_bytes).hexdigest(),
         hashlib.sha256(mechanical_patch_bytes).hexdigest(),
+        admitted_authority,
     )
     _write_json(generation_root / "manifest.json", manifest)
 
@@ -627,6 +805,7 @@ def run_bounded_transaction(
     try:
         _revalidate_admitted(resolved_source, admitted)
         _revalidate_guards(admitted_guards)
+        _verify_authority_guards(admitted_authority_guards)
         for item in admitted:
             item.absolute_path.parent.mkdir(parents=True, exist_ok=True)
             descriptor, temp_name = tempfile.mkstemp(
@@ -645,6 +824,12 @@ def run_bounded_transaction(
     committed: list[Path] = []
     apply_error: OSError | JournalError | None = None
     admitted_by_path = {item.absolute_path: item for item in admitted}
+    try:
+        _verify_authority_guards(admitted_authority_guards)
+    except JournalError as error:
+        for temp_path, _final_path in temp_files:
+            temp_path.unlink(missing_ok=True)
+        raise JournalError(f"failed to stage bounded write: {error}") from error
     for temp_path, final_path in temp_files:
         try:
             item = admitted_by_path[final_path]
@@ -691,6 +876,7 @@ def run_bounded_transaction(
         validation_passed = bool(validate(resolved_source))
         if validation_passed:
             _revalidate_guards(admitted_guards)
+            _verify_authority_guards(admitted_authority_guards)
     except Exception as error:  # validation is an injected trust boundary
         validation_error = error
         validation_passed = False
@@ -748,6 +934,31 @@ def run_bounded_transaction(
         )
 
     try:
+        _verify_authority_guards(admitted_authority_guards)
+    except JournalError as error:
+        reason = f"authority-guard-failure: {error}"
+        manifest_sha256 = _rollback(
+            admitted,
+            [item.absolute_path for item in admitted],
+            generation_root,
+            generation_id,
+            manifest,
+            created_at,
+            reason=reason,
+        )
+        return ApplyResult(
+            generation_id=generation_id,
+            workstream_id=workstream_id,
+            status="rolled-back",
+            changed_paths=changed_paths,
+            manifest_sha256=manifest_sha256,
+            validation_passed=False,
+            checks=_CHECKS,
+            reason=reason,
+            generation_root=generation_root,
+        )
+
+    try:
         verification_payload: dict[str, object] = {
             "schema_version": SCHEMA_VERSION,
             "generation_id": generation_id,
@@ -766,7 +977,8 @@ def run_bounded_transaction(
             generation_root / "verification.json",
             {**verification_payload, "manifest_sha256": manifest_sha256},
         )
-    except OSError as error:
+        _verify_authority_guards(admitted_authority_guards)
+    except (OSError, JournalError) as error:
         reason = f"evidence-finalization-failure: {error}"
         manifest_sha256 = _rollback(
             admitted,
@@ -1023,12 +1235,72 @@ def recover_generation(
     journal_root: Path,
     generation_id: str,
     recovered_at: str,
+    expected_manifest_sha256: str | None = None,
+    expected_authority: Mapping[str, str] | None = None,
+    authority_guards: Sequence[AuthorityFileGuard] = (),
+) -> RecoveryResult:
+    """Recover one generation under the journal's exclusive lock."""
+
+    with _exclusive_journal_lock(journal_root):
+        return _recover_generation_unlocked(
+            source_root=source_root,
+            journal_root=journal_root,
+            generation_id=generation_id,
+            recovered_at=recovered_at,
+            expected_manifest_sha256=expected_manifest_sha256,
+            expected_authority=expected_authority,
+            authority_guards=authority_guards,
+        )
+
+
+def _recover_generation_unlocked(
+    *,
+    source_root: Path,
+    journal_root: Path,
+    generation_id: str,
+    recovered_at: str,
+    expected_manifest_sha256: str | None = None,
+    expected_authority: Mapping[str, str] | None = None,
+    authority_guards: Sequence[AuthorityFileGuard] = (),
 ) -> RecoveryResult:
     """Restore `before` bytes and append a separate immutable recovery record."""
 
     _validate_timestamp(recovered_at)
+    if expected_manifest_sha256 is not None and not _SHA256_PATTERN.fullmatch(
+        expected_manifest_sha256
+    ):
+        raise JournalError("expected_manifest_sha256 must be 64 lowercase hex characters")
+    admitted_authority_guards = _validated_authority_guards(authority_guards)
+    _validate_authority_guard_binding(expected_authority, admitted_authority_guards)
+    _verify_authority_guards(admitted_authority_guards)
     resolved_source, resolved_journal = _resolved_separate_roots(source_root, journal_root)
     verified = _load_and_verify_generation(resolved_journal, generation_id)
+    actual_manifest_sha256 = hashlib.sha256(
+        (verified.generation_root / "manifest.json").read_bytes()
+    ).hexdigest()
+    if (
+        expected_manifest_sha256 is not None
+        and actual_manifest_sha256 != expected_manifest_sha256
+    ):
+        raise JournalError("completed manifest hash does not match expected_manifest_sha256")
+    if expected_authority is not None:
+        expected_keys = {
+            "source",
+            "workspace_manifest_sha256",
+            "project_config_sha256",
+            "write_policy",
+        }
+        if set(expected_authority) != expected_keys:
+            raise JournalError(
+                "expected_authority must contain source, workspace_manifest_sha256, "
+                "project_config_sha256 and write_policy"
+            )
+        authority = verified.manifest.get("authority")
+        if not isinstance(authority, dict):
+            raise JournalError("selected-source recovery requires journal authority")
+        for key, expected in expected_authority.items():
+            if authority.get(key) != expected:
+                raise JournalError(f"journal authority does not match selected {key}")
     files_value = verified.manifest.get("files")
     assert isinstance(files_value, list)  # established by the integrity gate
     files: list[dict[str, object]] = files_value
@@ -1088,9 +1360,7 @@ def recover_generation(
     record_manifest: dict[str, object] = {
         "schema_version": SCHEMA_VERSION,
         "source_generation_id": generation_id,
-        "source_manifest_sha256": hashlib.sha256(
-            (verified.generation_root / "manifest.json").read_bytes()
-        ).hexdigest(),
+        "source_manifest_sha256": actual_manifest_sha256,
         "recovered_at": recovered_at,
         "status": "pending",
         "files": [
@@ -1107,6 +1377,7 @@ def recover_generation(
     staged: list[tuple[dict[str, object], Path, Path | None]] = []
     try:
         # Close the preflight/write gap before staging any recovery mutation.
+        _verify_authority_guards(admitted_authority_guards)
         for (entry, target), expected in zip(targets, after_hashes, strict=True):
             path = entry["path"]
             assert isinstance(path, str)
@@ -1132,9 +1403,13 @@ def recover_generation(
             if _current_hash(target) != entry["before_sha256"]:
                 raise JournalError(f"recovery verification failed: {entry['path']}")
 
+        _verify_authority_guards(admitted_authority_guards)
+
         for _entry, _target, held in staged:
             if held is not None:
                 held.unlink()
+
+        _verify_authority_guards(admitted_authority_guards)
 
         finished_manifest = dict(record_manifest)
         finished_manifest["status"] = "recovered"

@@ -29,9 +29,10 @@ WORKSPACE_ENV_VAR = "DOCSYSTEM_WORKSPACE"
 
 SOURCE_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 VISIBILITIES = ("private", "public")
+WRITE_POLICIES = ("none", "managed-maintenance")
 
 _MANIFEST_KEYS = frozenset({"version", "sources"})
-_SOURCE_KEYS = frozenset({"name", "root", "visibility"})
+_SOURCE_KEYS = frozenset({"name", "root", "visibility", "write"})
 _POINTER_KEYS = frozenset({"workspace"})
 
 # Availability reasons are fixed slugs, never rendered from a local path or a
@@ -53,6 +54,7 @@ class WorkspaceSource:
     name: str
     root: PurePosixPath
     visibility: str
+    write: str
     project_root: Path
 
 
@@ -73,6 +75,7 @@ class SourceStatus:
 
     name: str
     visibility: str
+    write: str
     available: bool
     reason: str | None
 
@@ -113,6 +116,14 @@ def _source_visibility(value: object, name: str) -> str:
     return str(value)
 
 
+def _source_write(value: object, name: str) -> str:
+    if value not in WRITE_POLICIES:
+        raise WorkspaceError(
+            f"source {name!r}: write must be 'none' or 'managed-maintenance'"
+        )
+    return str(value)
+
+
 def _parse_source(raw: object, index: int, workspace_root: Path) -> WorkspaceSource:
     if not isinstance(raw, dict):
         raise WorkspaceError(f"sources[{index}] must be a table")
@@ -124,6 +135,7 @@ def _parse_source(raw: object, index: int, workspace_root: Path) -> WorkspaceSou
     name = _source_name(raw.get("name"), index)
     root = _source_root(raw.get("root"), name)
     visibility = _source_visibility(raw.get("visibility"), name)
+    write = _source_write(raw.get("write", "none"), name)
 
     # Resolve before containment so a symlinked source root cannot escape the
     # workspace. `resolve()` is non-strict, so a source whose root does not
@@ -142,6 +154,7 @@ def _parse_source(raw: object, index: int, workspace_root: Path) -> WorkspaceSou
         name=name,
         root=root,
         visibility=visibility,
+        write=write,
         project_root=project_root,
     )
 
@@ -244,6 +257,7 @@ def evaluate_source(source: WorkspaceSource) -> SourceStatus:
     return SourceStatus(
         name=source.name,
         visibility=source.visibility,
+        write=source.write,
         available=reason is None,
         reason=reason,
     )
@@ -342,14 +356,14 @@ def resolve_workspace(
     return load_workspace(root)
 
 
-def resolve_source_root(
+def resolve_source(
     name: str,
     *,
     workspace_option: Path | None,
     project_root: Path,
     environ: Mapping[str, str] | None = None,
-) -> Path:
-    """Resolve one selected source to an existing project root.
+) -> WorkspaceSource:
+    """Resolve one selected source and require its project to be available.
 
     An unknown or unavailable source raises instead of falling back to the
     positional project root: an explicit selection that cannot be honored is
@@ -369,4 +383,26 @@ def resolve_source_root(
         raise WorkspaceError(
             f"workspace source is unavailable: {name} ({status.reason})"
         )
-    return source.project_root
+    return source
+
+
+def resolve_source_root(
+    name: str,
+    *,
+    workspace_option: Path | None,
+    project_root: Path,
+    environ: Mapping[str, str] | None = None,
+) -> Path:
+    """Resolve one selected source to its project root.
+
+    This compatibility API delegates selection and availability checks to
+    :func:`resolve_source`, so callers that also need source policy can avoid
+    loading and parsing the workspace a second time.
+    """
+
+    return resolve_source(
+        name,
+        workspace_option=workspace_option,
+        project_root=project_root,
+        environ=environ,
+    ).project_root

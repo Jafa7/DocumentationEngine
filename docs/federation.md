@@ -1,4 +1,4 @@
-# Read-only multi-catalog federation
+# Multi-catalog federation
 
 Documentation Engine can build one direct-Markdown graph over every available
 source in a local [documentation workspace](workspace-sources.md). Federation
@@ -105,6 +105,23 @@ Markdown` text label describe Markdown as the authoritative content source;
 they are not execution-provenance fields. Projection fallback provenance is
 reported separately on stderr so the semantic packet stays byte-identical.
 
+## Source-qualified bounded maintenance
+
+Federation remains a read graph, not a cross-source writer. A caller may use
+the ordinary `maintenance` command with `--source NAME` to update one selected
+source only when that source opts into `write = "managed-maintenance"` in
+`workspace.toml`. The write requires both the canonical source block hash and
+the deterministic preview hash; recovery requires the exact source-local
+journal manifest hash. See [workspace source selection](workspace-sources.md).
+
+Each source owns its journal and lock. There is deliberately no atomic write,
+rollback or shared workstream state across sources. A successful source write
+refreshes only that source's disposable project projection. It makes any
+existing aggregate federation generation stale; federated reads then fall
+back visibly to direct Markdown until `federation index --write` explicitly
+builds a new complete generation. Direct and rebuilt-projection query stdout
+remain identical.
+
 ## Trust and write boundaries
 
 Federated queries are read-only. The explicit `federation index --write`
@@ -113,6 +130,6 @@ not copy or synchronize sources, authorize cross-source writes, acquire
 concurrent-write locks, authenticate remote users or run a server. Existing
 single-source commands and projections are unchanged.
 
-Future bounded write support must retain per-source authorization and separate
-change journals. A federated read never grants permission to modify another
-source.
+A federated read never grants permission to modify another source. The narrow
+selected-source maintenance policy does not authorize arbitrary edits,
+cross-source synchronization or deletion.

@@ -1,6 +1,8 @@
 import hashlib
 import json
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -8,6 +10,7 @@ import pytest
 import docsystem.journal as journal_module
 from docsystem.journal import (
     ApplyResult,
+    AuthorityFileGuard,
     FileEdit,
     FileGuard,
     JournalError,
@@ -159,6 +162,203 @@ def test_valid_bounded_semantic_then_mechanical_edit(tmp_path: Path) -> None:
     manifest = json.loads((generation_root / "manifest.json").read_text())
     assert manifest["status"] == "applied"
     assert manifest["schema_version"] == 1
+
+
+def test_authority_metadata_is_body_free_deterministic_and_optional(tmp_path: Path) -> None:
+    project_config = tmp_path / "project.toml"
+    workspace_manifest = tmp_path / "workspace.toml"
+    project_config.write_text("project\n", encoding="utf-8")
+    workspace_manifest.write_text("workspace\n", encoding="utf-8")
+    authority = {
+        "preview_sha256": "3" * 64,
+        "write_policy": "managed-maintenance",
+        "source": "catalog-a",
+        "workspace_manifest_sha256": _sha("workspace\n"),
+        "project_config_sha256": _sha("project\n"),
+    }
+    authority_guards = [
+        AuthorityFileGuard("project-config", project_config, _sha("project\n")),
+        AuthorityFileGuard(
+            "workspace-manifest", workspace_manifest, _sha("workspace\n")
+        ),
+    ]
+    manifests: list[dict[str, object]] = []
+    for index in (1, 2):
+        source_root = _source(tmp_path, f"source-{index}")
+        result = run_bounded_transaction(
+            source_root=source_root,
+            journal_root=_journal(tmp_path, f"journal-{index}"),
+            workstream_id="WS-AUTHORITY-001",
+            created_at="2026-07-14T11:00:00Z",
+            edits=[
+                FileEdit(
+                    path="docs/example.md",
+                    operation="bounded-edit",
+                    before_sha256=_sha(BASE_CONTENT),
+                    semantic_content=BASE_CONTENT,
+                    mechanical_content=BASE_CONTENT.replace("line3", "changed"),
+                    allowed_ranges=(LineRange(3, 3),),
+                )
+            ],
+            validate=_accept,
+            authority=authority,
+            authority_guards=authority_guards,
+        )
+        raw_manifest = (result.generation_root / "manifest.json").read_text()
+        assert str(source_root) not in raw_manifest
+        assert str(result.generation_root.parent) not in raw_manifest
+        manifests.append(json.loads(raw_manifest))
+
+    assert manifests[0] == manifests[1]
+    assert manifests[0]["authority"] == authority
+
+    source_root = _source(tmp_path, "source-old-call")
+    result = run_bounded_transaction(
+        source_root=source_root,
+        journal_root=_journal(tmp_path, "journal-old-call"),
+        workstream_id="WS-AUTHORITY-OLD",
+        created_at="2026-07-14T11:01:00Z",
+        edits=[
+            FileEdit(
+                path="docs/example.md",
+                operation="bounded-edit",
+                before_sha256=_sha(BASE_CONTENT),
+                semantic_content=BASE_CONTENT,
+                mechanical_content=BASE_CONTENT,
+                allowed_ranges=(LineRange(1, 5),),
+            )
+        ],
+        validate=_accept,
+    )
+    assert "authority" not in json.loads((result.generation_root / "manifest.json").read_text())
+
+
+def test_invalid_authority_fails_before_source_or_journal_mutation(tmp_path: Path) -> None:
+    source_root = _source(tmp_path)
+    journal_root = _journal(tmp_path)
+
+    with pytest.raises(JournalError, match="non-path source name"):
+        run_bounded_transaction(
+            source_root=source_root,
+            journal_root=journal_root,
+            workstream_id="WS-AUTHORITY-002",
+            created_at="2026-07-14T11:02:00Z",
+            edits=[
+                FileEdit(
+                    path="docs/example.md",
+                    operation="bounded-edit",
+                    before_sha256=_sha(BASE_CONTENT),
+                    semantic_content=BASE_CONTENT,
+                    mechanical_content=BASE_CONTENT.replace("line3", "changed"),
+                    allowed_ranges=(LineRange(3, 3),),
+                )
+            ],
+            validate=_accept,
+            authority={
+                "source": "/private/catalog",
+                "workspace_manifest_sha256": "2" * 64,
+                "project_config_sha256": "4" * 64,
+                "write_policy": "managed-maintenance",
+                "preview_sha256": "3" * 64,
+            },
+        )
+
+    assert (source_root / "docs" / "example.md").read_text() == BASE_CONTENT
+    assert not journal_root.exists()
+
+
+@pytest.mark.parametrize("mode", ["missing", "mismatched"])
+def test_authority_requires_exactly_matching_external_guards(
+    tmp_path: Path, mode: str
+) -> None:
+    source_root = _source(tmp_path)
+    journal_root = _journal(tmp_path)
+    project_config = tmp_path / "project.toml"
+    workspace_manifest = tmp_path / "workspace.toml"
+    project_config.write_text("project\n", encoding="utf-8")
+    workspace_manifest.write_text("workspace\n", encoding="utf-8")
+    authority = {
+        "preview_sha256": "3" * 64,
+        "write_policy": "managed-maintenance",
+        "source": "catalog-a",
+        "workspace_manifest_sha256": _sha("workspace\n"),
+        "project_config_sha256": _sha("project\n"),
+    }
+    guards = []
+    if mode == "mismatched":
+        guards = [
+            AuthorityFileGuard("project-config", project_config, _sha("project\n")),
+            AuthorityFileGuard(
+                "workspace-manifest", workspace_manifest, "0" * 64
+            ),
+        ]
+
+    with pytest.raises(JournalError, match="requires matching"):
+        run_bounded_transaction(
+            source_root=source_root,
+            journal_root=journal_root,
+            workstream_id="WS-AUTHORITY-GUARDS",
+            created_at="2026-07-14T11:02:30Z",
+            edits=[
+                FileEdit(
+                    path="docs/example.md",
+                    operation="bounded-edit",
+                    before_sha256=_sha(BASE_CONTENT),
+                    semantic_content=BASE_CONTENT,
+                    mechanical_content=BASE_CONTENT.replace("line3", "changed"),
+                    allowed_ranges=(LineRange(3, 3),),
+                )
+            ],
+            validate=_accept,
+            authority=authority,
+            authority_guards=guards,
+        )
+    assert (source_root / "docs" / "example.md").read_text() == BASE_CONTENT
+    assert not journal_root.exists()
+
+
+@pytest.mark.parametrize("changed_label", ["project-config", "workspace-manifest"])
+def test_external_authority_change_during_validation_rolls_back(
+    tmp_path: Path, changed_label: str
+) -> None:
+    source_root = _source(tmp_path)
+    journal_root = _journal(tmp_path)
+    inputs = {
+        "project-config": tmp_path / "project.toml",
+        "workspace-manifest": tmp_path / "workspace.toml",
+    }
+    for path in inputs.values():
+        path.write_text("version = 1\n", encoding="utf-8")
+
+    def mutate_authority(_root: Path) -> bool:
+        inputs[changed_label].write_text("version = 2\n", encoding="utf-8")
+        return True
+
+    result = run_bounded_transaction(
+        source_root=source_root,
+        journal_root=journal_root,
+        workstream_id="WS-AUTHORITY-RACE",
+        created_at="2026-07-14T11:03:00Z",
+        edits=[
+            FileEdit(
+                path="docs/example.md",
+                operation="bounded-edit",
+                before_sha256=_sha(BASE_CONTENT),
+                semantic_content=BASE_CONTENT,
+                mechanical_content=BASE_CONTENT.replace("line3", "changed"),
+                allowed_ranges=(LineRange(3, 3),),
+            )
+        ],
+        validate=mutate_authority,
+        authority_guards=[
+            AuthorityFileGuard(label, path, _sha("version = 1\n"))
+            for label, path in inputs.items()
+        ],
+    )
+
+    assert result.status == "rolled-back"
+    assert result.reason == "validation-error: JournalError"
+    assert (source_root / "docs" / "example.md").read_text() == BASE_CONTENT
 
 
 def test_deterministic_sorted_manifest_and_separate_patches(tmp_path: Path) -> None:
@@ -730,6 +930,232 @@ def test_recovery_refuses_newer_unknown_content(tmp_path: Path) -> None:
     assert recovery.status == "refused"
     assert (source_root / "docs" / "example.md").read_text() == newer_content
     assert not (journal_root / "recoveries").exists()
+
+
+def test_recovery_expected_manifest_hash_guards_before_mutation(tmp_path: Path) -> None:
+    source_root = _source(tmp_path)
+    journal_root = _journal(tmp_path)
+    mechanical = BASE_CONTENT.replace("line3", "line3-changed")
+    result = run_bounded_transaction(
+        source_root=source_root,
+        journal_root=journal_root,
+        workstream_id="WS-RECOVERY-HASH",
+        created_at="2026-07-14T12:00:00Z",
+        edits=[
+            FileEdit(
+                path="docs/example.md",
+                operation="bounded-edit",
+                before_sha256=_sha(BASE_CONTENT),
+                semantic_content=mechanical,
+                mechanical_content=mechanical,
+                allowed_ranges=(LineRange(3, 3),),
+            )
+        ],
+        validate=_accept,
+    )
+
+    with pytest.raises(JournalError, match="does not match"):
+        recover_generation(
+            source_root=source_root,
+            journal_root=journal_root,
+            generation_id=result.generation_id,
+            recovered_at="2026-07-14T12:01:00Z",
+            expected_manifest_sha256="0" * 64,
+        )
+
+    assert (source_root / "docs" / "example.md").read_text() == mechanical
+    assert not (journal_root / "recoveries").exists()
+
+    recovery = recover_generation(
+        source_root=source_root,
+        journal_root=journal_root,
+        generation_id=result.generation_id,
+        recovered_at="2026-07-14T12:02:00Z",
+        expected_manifest_sha256=result.manifest_sha256,
+    )
+    assert recovery.status == "recovered"
+    assert (source_root / "docs" / "example.md").read_text() == BASE_CONTENT
+
+
+def test_selected_recovery_authority_requires_matching_external_guards(
+    tmp_path: Path,
+) -> None:
+    source_root = _source(tmp_path)
+    journal_root = _journal(tmp_path)
+    project_config = tmp_path / "project.toml"
+    workspace_manifest = tmp_path / "workspace.toml"
+    project_config.write_text("project\n", encoding="utf-8")
+    workspace_manifest.write_text("workspace\n", encoding="utf-8")
+    authority = {
+        "preview_sha256": "3" * 64,
+        "write_policy": "managed-maintenance",
+        "source": "catalog-a",
+        "workspace_manifest_sha256": _sha("workspace\n"),
+        "project_config_sha256": _sha("project\n"),
+    }
+    guards = [
+        AuthorityFileGuard("project-config", project_config, _sha("project\n")),
+        AuthorityFileGuard(
+            "workspace-manifest", workspace_manifest, _sha("workspace\n")
+        ),
+    ]
+    result = run_bounded_transaction(
+        source_root=source_root,
+        journal_root=journal_root,
+        workstream_id="WS-RECOVERY-AUTHORITY",
+        created_at="2026-07-14T12:03:00Z",
+        edits=[
+            FileEdit(
+                path="docs/example.md",
+                operation="bounded-edit",
+                before_sha256=_sha(BASE_CONTENT),
+                semantic_content=BASE_CONTENT,
+                mechanical_content=BASE_CONTENT.replace("line3", "changed"),
+                allowed_ranges=(LineRange(3, 3),),
+            )
+        ],
+        validate=_accept,
+        authority=authority,
+        authority_guards=guards,
+    )
+    expected_authority = {
+        key: authority[key]
+        for key in (
+            "source",
+            "workspace_manifest_sha256",
+            "project_config_sha256",
+            "write_policy",
+        )
+    }
+
+    with pytest.raises(JournalError, match="requires matching"):
+        recover_generation(
+            source_root=source_root,
+            journal_root=journal_root,
+            generation_id=result.generation_id,
+            recovered_at="2026-07-14T12:04:00Z",
+            expected_manifest_sha256=result.manifest_sha256,
+            expected_authority=expected_authority,
+            authority_guards=[
+                guards[0],
+                AuthorityFileGuard(
+                    "workspace-manifest", workspace_manifest, "0" * 64
+                ),
+            ],
+        )
+    assert "changed" in (source_root / "docs" / "example.md").read_text()
+    assert not (journal_root / "recoveries").exists()
+
+
+def test_journal_lock_is_nonblocking_for_write_and_recovery_and_releases(
+    tmp_path: Path,
+) -> None:
+    source_root = _source(tmp_path)
+    journal_root = _journal(tmp_path)
+    edit = FileEdit(
+        path="docs/example.md",
+        operation="bounded-edit",
+        before_sha256=_sha(BASE_CONTENT),
+        semantic_content=BASE_CONTENT,
+        mechanical_content=BASE_CONTENT.replace("line3", "line3-changed"),
+        allowed_ranges=(LineRange(3, 3),),
+    )
+
+    with (
+        journal_module._exclusive_journal_lock(journal_root),
+        pytest.raises(JournalError, match="journal is locked"),
+    ):
+        run_bounded_transaction(
+            source_root=source_root,
+            journal_root=journal_root,
+            workstream_id="WS-LOCK-001",
+            created_at="2026-07-14T13:00:00Z",
+            edits=[edit],
+            validate=_accept,
+        )
+    assert (source_root / "docs" / "example.md").read_text() == BASE_CONTENT
+    assert not journal_root.exists()
+
+    result = run_bounded_transaction(
+        source_root=source_root,
+        journal_root=journal_root,
+        workstream_id="WS-LOCK-001",
+        created_at="2026-07-14T13:00:00Z",
+        edits=[edit],
+        validate=_accept,
+    )
+    with (
+        journal_module._exclusive_journal_lock(journal_root),
+        pytest.raises(JournalError, match="journal is locked"),
+    ):
+        recover_generation(
+            source_root=source_root,
+            journal_root=journal_root,
+            generation_id=result.generation_id,
+            recovered_at="2026-07-14T13:01:00Z",
+        )
+    assert (source_root / "docs" / "example.md").read_text() == edit.mechanical_content
+
+    recovery = recover_generation(
+        source_root=source_root,
+        journal_root=journal_root,
+        generation_id=result.generation_id,
+        recovered_at="2026-07-14T13:01:00Z",
+    )
+    assert recovery.status == "recovered"
+
+
+def test_journal_lock_is_shared_across_process_and_path_alias(tmp_path: Path) -> None:
+    source_root = _source(tmp_path)
+    real_parent = tmp_path / "real-state"
+    real_parent.mkdir()
+    alias_parent = tmp_path / "alias-state"
+    alias_parent.symlink_to(real_parent, target_is_directory=True)
+    real_journal = real_parent / "journal"
+    alias_journal = alias_parent / "journal"
+    script = """
+import sys
+from pathlib import Path
+from docsystem.journal import _exclusive_journal_lock
+
+with _exclusive_journal_lock(Path(sys.argv[1])):
+    print("ready", flush=True)
+    sys.stdin.readline()
+"""
+    process = subprocess.Popen(
+        [sys.executable, "-c", script, str(real_journal)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert process.stdout is not None
+        assert process.stdout.readline().strip() == "ready"
+        with pytest.raises(JournalError, match="journal is locked"):
+            run_bounded_transaction(
+                source_root=source_root,
+                journal_root=alias_journal,
+                workstream_id="WS-LOCK-PROCESS",
+                created_at="2026-07-14T13:02:00Z",
+                edits=[
+                    FileEdit(
+                        path="docs/example.md",
+                        operation="bounded-edit",
+                        before_sha256=_sha(BASE_CONTENT),
+                        semantic_content=BASE_CONTENT,
+                        mechanical_content=BASE_CONTENT.replace("line3", "changed"),
+                        allowed_ranges=(LineRange(3, 3),),
+                    )
+                ],
+                validate=_accept,
+            )
+    finally:
+        if process.stdin is not None:
+            process.stdin.write("\n")
+            process.stdin.flush()
+        process.wait(timeout=5)
+    assert process.returncode == 0
 
 
 def test_rename_simulation_preserves_original_authored_file(tmp_path: Path) -> None:

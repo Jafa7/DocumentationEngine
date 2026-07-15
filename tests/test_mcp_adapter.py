@@ -146,6 +146,7 @@ def test_workspace_selection_is_forwarded_to_the_cli_contract(tmp_path: Path) ->
             "name": "example-project",
             "reason": None,
             "visibility": "private",
+            "write": "none",
         }
     ]
 

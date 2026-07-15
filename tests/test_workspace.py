@@ -21,6 +21,7 @@ from docsystem.workspace import (
     WorkspaceError,
     discover_workspace_root,
     load_workspace,
+    resolve_source,
     resolve_source_root,
     source_statuses,
 )
@@ -82,9 +83,50 @@ def test_manifest_loads_sources_sorted_by_name(tmp_path: Path) -> None:
 
     assert [source.name for source in loaded.sources] == ["alpha", "beta"]
     assert [source.visibility for source in loaded.sources] == ["private", "public"]
+    assert [source.write for source in loaded.sources] == ["none", "none"]
     assert loaded.find("alpha").project_root == (
         workspace / "projects" / "alpha"
     ).resolve()
+
+
+def test_manifest_loads_explicit_managed_maintenance_write_policy(
+    tmp_path: Path,
+) -> None:
+    manifest = MANIFEST.replace(
+        'name = "beta"\nroot = "projects/beta"\nvisibility = "public"',
+        'name = "beta"\nroot = "projects/beta"\nvisibility = "public"\n'
+        'write = "managed-maintenance"',
+    )
+
+    loaded = load_workspace(build_workspace(tmp_path, manifest))
+
+    assert loaded.find("beta").write == "managed-maintenance"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param('"write"', id="unknown-string"),
+        pytest.param("true", id="boolean"),
+        pytest.param("1", id="integer"),
+    ],
+)
+def test_invalid_source_write_policy_has_deterministic_diagnostic(
+    tmp_path: Path, value: str
+) -> None:
+    manifest = (
+        'version = 1\n\n[[sources]]\nname = "alpha"\nroot = "projects/alpha"\n'
+        f'visibility = "private"\nwrite = {value}\n'
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / WORKSPACE_FILENAME).write_text(manifest, encoding="utf-8")
+
+    with pytest.raises(
+        WorkspaceError,
+        match=r"^source 'alpha': write must be 'none' or 'managed-maintenance'$",
+    ):
+        load_workspace(workspace)
 
 
 def test_manifest_listing_is_sorted_regardless_of_declaration_order(
@@ -285,6 +327,7 @@ visibility = "public"
         ("unconfigured", False, "missing-configuration"),
     ]
     assert not any(str(tmp_path) in (item.reason or "") for item in statuses)
+    assert [item.write for item in statuses] == ["none"] * 4
 
 
 @pytest.mark.parametrize("escape_kind", ["documentation-root", "projection-cache"])
@@ -416,6 +459,23 @@ def test_selection_resolves_the_registered_project_root(tmp_path: Path) -> None:
     assert resolved == (workspace / "projects" / "beta").resolve()
 
 
+def test_selection_can_return_source_with_write_policy(tmp_path: Path) -> None:
+    manifest = MANIFEST.replace(
+        'name = "beta"\nroot = "projects/beta"\nvisibility = "public"',
+        'name = "beta"\nroot = "projects/beta"\nvisibility = "public"\n'
+        'write = "managed-maintenance"',
+    )
+    workspace = build_workspace(tmp_path, manifest)
+
+    selected = resolve_source(
+        "beta", workspace_option=workspace, project_root=tmp_path, environ={}
+    )
+
+    assert selected.name == "beta"
+    assert selected.project_root == (workspace / "projects" / "beta").resolve()
+    assert selected.write == "managed-maintenance"
+
+
 def test_unknown_source_fails_closed(tmp_path: Path) -> None:
     workspace = build_workspace(tmp_path)
 
@@ -446,8 +506,8 @@ def test_workspace_list_reports_sorted_availability(tmp_path: Path, capsys) -> N
 
     captured = capsys.readouterr()
     assert captured.out == (
-        "alpha\tprivate\tavailable\t-\n"
-        "beta\tpublic\tunavailable\tmissing-configuration\n"
+        "alpha\tprivate\twrite=none\tavailable\t-\n"
+        "beta\tpublic\twrite=none\tunavailable\tmissing-configuration\n"
     )
     assert captured.err == ""
 
@@ -460,8 +520,20 @@ def test_workspace_list_json_carries_no_local_path(tmp_path: Path, capsys) -> No
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
     assert payload["sources"] == [
-        {"name": "alpha", "visibility": "private", "available": True, "reason": None},
-        {"name": "beta", "visibility": "public", "available": True, "reason": None},
+        {
+            "name": "alpha",
+            "visibility": "private",
+            "write": "none",
+            "available": True,
+            "reason": None,
+        },
+        {
+            "name": "beta",
+            "visibility": "public",
+            "write": "none",
+            "available": True,
+            "reason": None,
+        },
     ]
     assert str(tmp_path) not in captured.out
 
