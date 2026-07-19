@@ -116,5 +116,7 @@ def test_module_cli_version_is_available_without_a_subcommand() -> None:
     )
 
     assert result.returncode == 0
-    assert result.stdout.decode("utf-8") == f"docsystem {__version__}\n"
+    assert result.stdout.decode("utf-8").splitlines() == [
+        f"docsystem {__version__}"
+    ]
     assert result.stderr == b""

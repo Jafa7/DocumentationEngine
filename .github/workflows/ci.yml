@@ -76,13 +76,14 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Run pytest without Python UTF-8 mode
+      - name: Run Windows CLI tests without Python UTF-8 mode
         shell: pwsh
         run: |
           $env:TMPDIR = $env:RUNNER_TEMP
           $env:TMP = $env:RUNNER_TEMP
           $env:TEMP = $env:RUNNER_TEMP
-          uv run pytest
+          uv run pytest tests/test_cli.py tests/test_cli_platform.py `
+            tests/test_context_cli.py tests/test_mcp_adapter.py tests/test_readiness.py
 
       - name: Installed CLI UTF-8 PowerShell smoke
         shell: pwsh

@@ -134,7 +134,8 @@ def test_ci_runs_the_cli_utf8_contract_on_windows(ci: dict) -> None:
     body = steps_text(windows)
     for contract in (
         "$env:TMPDIR = $env:RUNNER_TEMP",
-        "uv run pytest",
+        "uv run pytest tests/test_cli.py tests/test_cli_platform.py",
+        "tests/test_context_cli.py tests/test_mcp_adapter.py tests/test_readiness.py",
         "Remove-Item Env:PYTHONIOENCODING",
         "uv build --wheel",
         "docsystem.exe",

@@ -11,9 +11,9 @@ All notable changes to Documentation Engine are documented in this file.
 - CLI stdout and stderr now use UTF-8 independently of the host locale, so
   redirected or piped Cyrillic and other Unicode Markdown works on Windows
   without requiring `PYTHONUTF8=1`.
-- Windows CI now runs the test suite with Python UTF-8 mode disabled and
-  verifies an installed wheel through a PowerShell JSON pipe and a Unicode
-  stderr diagnostic.
+- Windows CI now runs focused CLI/context/MCP regressions with Python UTF-8
+  mode disabled and verifies an installed wheel through a PowerShell JSON pipe
+  and a Unicode stderr diagnostic.
 
 ### Added
 
