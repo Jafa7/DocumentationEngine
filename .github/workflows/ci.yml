@@ -135,6 +135,7 @@ jobs:
 
           & $docsystem read DOC-001 $project --anchor "отсутствует" 2> $errors
           if ($LASTEXITCODE -ne 1) { throw "unknown anchor returned $LASTEXITCODE" }
+          $global:LASTEXITCODE = 0
           $diagnostic = Get-Content -Raw -Encoding utf8 $errors
           if ($diagnostic -notmatch "отсутствует") {
             throw "stderr diagnostic was not UTF-8"

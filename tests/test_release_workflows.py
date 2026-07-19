@@ -143,6 +143,7 @@ def test_ci_runs_the_cli_utf8_contract_on_windows(ci: dict) -> None:
         "context DOC-001",
         "ConvertFrom-Json",
         'read DOC-001 $project --anchor "отсутствует"',
+        "$global:LASTEXITCODE = 0",
     ):
         assert contract in body, f"Windows CI lost the {contract!r} contract"
 
