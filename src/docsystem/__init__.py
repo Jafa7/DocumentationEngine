@@ -9,7 +9,7 @@ from docsystem.catalog import (
 from docsystem.metadata import DocumentMetadata, MetadataReference
 from docsystem.sections import MarkdownSection
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 __all__ = [
     "CatalogMembership",

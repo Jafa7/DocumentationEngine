@@ -4,6 +4,22 @@ All notable changes to Documentation Engine are documented in this file.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-19
+
+### Fixed
+
+- CLI stdout and stderr now use UTF-8 independently of the host locale, so
+  redirected or piped Cyrillic and other Unicode Markdown works on Windows
+  without requiring `PYTHONUTF8=1`.
+- Windows CI now runs the test suite with Python UTF-8 mode disabled and
+  verifies an installed wheel through a PowerShell JSON pipe and a Unicode
+  stderr diagnostic.
+
+### Added
+
+- `docsystem --version` reports the installed Documentation Engine version
+  without requiring a project or subcommand.
+
 ## [0.3.0] - 2026-07-15
 
 ### Highlights
@@ -181,7 +197,8 @@ documentation-engine` starts working only after the first successful release.
 - Measured context-reduction methodology and a reproducible consumer-install
   smoke test.
 
-[Unreleased]: https://github.com/Jafa7/DocumentationEngine/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Jafa7/DocumentationEngine/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/Jafa7/DocumentationEngine/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Jafa7/DocumentationEngine/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Jafa7/DocumentationEngine/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/Jafa7/DocumentationEngine/compare/v0.1.1...v0.1.2

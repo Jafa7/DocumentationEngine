@@ -205,6 +205,21 @@ from docsystem.workstream import (
     load_record,
 )
 
+
+def _configure_utf8_stream(stream: object) -> None:
+    """Make one standard text stream deterministic across host locales."""
+
+    reconfigure = getattr(stream, "reconfigure", None)
+    if callable(reconfigure):
+        reconfigure(encoding="utf-8", errors="strict")
+
+
+def _configure_standard_streams() -> None:
+    """Use UTF-8 for CLI output, including redirected Windows streams."""
+
+    _configure_utf8_stream(sys.stdout)
+    _configure_utf8_stream(sys.stderr)
+
 # Version of every `--json` root object. Bump only on a breaking change to
 # an existing field; adding new fields is compatible and does not bump it.
 JSON_SCHEMA_VERSION = 1
@@ -8086,6 +8101,11 @@ def _add_source_options(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"docsystem {__version__}",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
     for command, help_text in (
         ("init", "Create configuration and the documentation root."),
@@ -8908,6 +8928,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    _configure_standard_streams()
     args = build_parser().parse_args()
     if args.command == "workspace":
         if args.workspace_command == "list":

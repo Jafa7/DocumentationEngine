@@ -200,6 +200,12 @@ wiring and must never be committed or printed in a report.
 
 ## Prefer `--json` over parsing text
 
+The CLI writes stdout and stderr as strict UTF-8 regardless of the host locale,
+including redirected Windows streams. Callers should decode both streams as
+UTF-8 and must not require `PYTHONUTF8` or locale-specific code pages. JSON
+keeps original Unicode characters rather than ASCII-escaping authored text;
+plain-text reads return the same UTF-8 Markdown content.
+
 `readiness`, `migration-report`, `catalog --explain`, `changes` and
 `context` accept `--json` and print one deterministic JSON value instead of
 tab-separated or prose text. An agent should use `--json` wherever it needs

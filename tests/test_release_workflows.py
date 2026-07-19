@@ -127,6 +127,24 @@ def test_ci_checks_the_sdist_that_the_smoke_test_never_builds(ci: dict) -> None:
     assert "twine check --strict" in body
 
 
+def test_ci_runs_the_cli_utf8_contract_on_windows(ci: dict) -> None:
+    windows = ci["jobs"]["windows"]
+    assert windows["runs-on"] == "windows-latest"
+    assert windows["env"]["PYTHONUTF8"] == "0"
+    body = steps_text(windows)
+    for contract in (
+        "uv run pytest",
+        "Remove-Item Env:PYTHONIOENCODING",
+        "uv build --wheel",
+        "docsystem.exe",
+        "--version",
+        "context DOC-001",
+        "ConvertFrom-Json",
+        'read DOC-001 $project --anchor "отсутствует"',
+    ):
+        assert contract in body, f"Windows CI lost the {contract!r} contract"
+
+
 # --- Release: trigger and permissions -------------------------------------
 
 

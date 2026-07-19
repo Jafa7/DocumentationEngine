@@ -63,3 +63,73 @@ jobs:
           uv run python -m docsystem context DOC-002 "$profile" --depth 1
           uv run python -m docsystem context DOC-002 "$profile" --depth 1 --json
           uv run python -m docsystem changes "$profile" --json
+
+  windows:
+    runs-on: windows-latest
+    env:
+      PYTHONUTF8: "0"
+      TMPDIR: ${{ runner.temp }}
+      TMP: ${{ runner.temp }}
+      TEMP: ${{ runner.temp }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+
+      - name: Run pytest without Python UTF-8 mode
+        run: uv run pytest
+
+      - name: Installed CLI UTF-8 PowerShell smoke
+        shell: pwsh
+        run: |
+          Remove-Item Env:PYTHONIOENCODING -ErrorAction SilentlyContinue
+          $dist = Join-Path $env:RUNNER_TEMP "docsystem-dist"
+          $venv = Join-Path $env:RUNNER_TEMP "docsystem-venv"
+          $project = Join-Path $env:RUNNER_TEMP "docsystem-unicode-project"
+          $output = Join-Path $env:RUNNER_TEMP "context.json"
+          $errors = Join-Path $env:RUNNER_TEMP "diagnostics.txt"
+
+          uv build --wheel --out-dir $dist
+          $wheel = Get-ChildItem $dist -Filter "documentation_engine-*.whl" -File
+          if ($wheel.Count -ne 1) { throw "expected exactly one wheel" }
+          uv venv $venv --python 3.12
+          $python = Join-Path $venv "Scripts/python.exe"
+          $docsystem = Join-Path $venv "Scripts/docsystem.exe"
+          uv pip install --python $python $wheel.FullName
+
+          $expectedVersion = (& $python -c "import docsystem; print(docsystem.__version__)").Trim()
+          $reportedVersion = (& $docsystem --version).Trim()
+          if ($reportedVersion -ne "docsystem $expectedVersion") {
+            throw "unexpected version output: $reportedVersion"
+          }
+
+          & $docsystem init $project
+          $architecture = Join-Path $project "plan/architecture"
+          New-Item -ItemType Directory -Path $architecture -Force | Out-Null
+          @"
+          ---
+          id: DOC-001
+          revision: 1
+          ---
+          # Привет
+          ## Резюме
+          Исходный текст остаётся доступен полностью.
+          "@ | Set-Content -Encoding utf8 (Join-Path $architecture "README.md")
+
+          & $docsystem context DOC-001 $project --json |
+            Set-Content -Encoding utf8 $output
+          if ($LASTEXITCODE -ne 0) { throw "context failed with $LASTEXITCODE" }
+          $payload = Get-Content -Raw -Encoding utf8 $output | ConvertFrom-Json
+          if ($payload.documents[0].navigation -notmatch "Привет") {
+            throw "context JSON lost Cyrillic source text"
+          }
+
+          & $docsystem read DOC-001 $project --anchor "отсутствует" 2> $errors
+          if ($LASTEXITCODE -ne 1) { throw "unknown anchor returned $LASTEXITCODE" }
+          $diagnostic = Get-Content -Raw -Encoding utf8 $errors
+          if ($diagnostic -notmatch "отсутствует") {
+            throw "stderr diagnostic was not UTF-8"
+          }

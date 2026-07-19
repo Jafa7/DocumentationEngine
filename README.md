@@ -113,12 +113,14 @@ unrelated globally installed `docsystem` executable.
 For a published-package installation:
 
 ```bash
+docsystem --version
 docsystem --help
 ```
 
 For a contributor checkout:
 
 ```bash
+uv run python -m docsystem --version
 uv run python -m docsystem --help
 ```
 
