@@ -68,9 +68,6 @@ jobs:
     runs-on: windows-latest
     env:
       PYTHONUTF8: "0"
-      TMPDIR: ${{ runner.temp }}
-      TMP: ${{ runner.temp }}
-      TEMP: ${{ runner.temp }}
     steps:
       - uses: actions/checkout@v7
 
@@ -80,11 +77,19 @@ jobs:
           python-version: "3.12"
 
       - name: Run pytest without Python UTF-8 mode
-        run: uv run pytest
+        shell: pwsh
+        run: |
+          $env:TMPDIR = $env:RUNNER_TEMP
+          $env:TMP = $env:RUNNER_TEMP
+          $env:TEMP = $env:RUNNER_TEMP
+          uv run pytest
 
       - name: Installed CLI UTF-8 PowerShell smoke
         shell: pwsh
         run: |
+          $env:TMPDIR = $env:RUNNER_TEMP
+          $env:TMP = $env:RUNNER_TEMP
+          $env:TEMP = $env:RUNNER_TEMP
           Remove-Item Env:PYTHONIOENCODING -ErrorAction SilentlyContinue
           $dist = Join-Path $env:RUNNER_TEMP "docsystem-dist"
           $venv = Join-Path $env:RUNNER_TEMP "docsystem-venv"

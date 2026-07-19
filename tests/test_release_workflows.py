@@ -133,6 +133,7 @@ def test_ci_runs_the_cli_utf8_contract_on_windows(ci: dict) -> None:
     assert windows["env"]["PYTHONUTF8"] == "0"
     body = steps_text(windows)
     for contract in (
+        "$env:TMPDIR = $env:RUNNER_TEMP",
         "uv run pytest",
         "Remove-Item Env:PYTHONIOENCODING",
         "uv build --wheel",
