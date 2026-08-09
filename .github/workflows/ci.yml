@@ -83,7 +83,8 @@ jobs:
           $env:TMP = $env:RUNNER_TEMP
           $env:TEMP = $env:RUNNER_TEMP
           uv run pytest tests/test_cli.py tests/test_cli_platform.py `
-            tests/test_context_cli.py tests/test_mcp_adapter.py tests/test_readiness.py
+            tests/test_context_cli.py tests/test_mcp_adapter.py tests/test_readiness.py `
+            tests/test_provider_artifact.py
 
       - name: Installed CLI UTF-8 PowerShell smoke
         shell: pwsh

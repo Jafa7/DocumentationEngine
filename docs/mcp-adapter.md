@@ -63,6 +63,9 @@ The adapter is deliberately a wrapper, not a second implementation:
 - pinned `provider snapshot` and `provider compare` are currently CLI-only.
   An MCP wrapper may be added later only as a thin transport over the same
   bounded, body-free contract; clients must not inspect projection files;
+- complete `provider export` and standalone `provider artifact verify` are also
+  CLI-only. They form the transport-neutral file boundary for consumers that
+  should not own provider pagination mechanics;
 - a non-zero CLI exit becomes a tool error carrying the CLI's stderr
   diagnostics, so a client never mistakes a failure for data. The one
   exception is `readiness`, whose "not ready" state is a legitimate answer:

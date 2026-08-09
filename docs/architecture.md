@@ -59,7 +59,7 @@ The capability groups are progressive, not an execution checklist:
 | --- | --- | --- |
 | Core discovery and retrieval | `readiness`, `catalog`, `validate`, `read`, `context`, `dependencies`, `references`, `impact`, `change-plan` | Default path for understanding and changing documentation-backed work |
 | Adoption and derived state | `migration-report`, `migrate`, `profile-check`, `index`, `changes`, `report` | Connecting an existing corpus, checking policy or refreshing disposable projections |
-| Provider reconciliation | `provider snapshot`, `provider compare` | An external consumer needs exact body-free observations from one or two pinned generations |
+| Provider reconciliation | `provider snapshot`, `provider compare`, `provider export`, `provider artifact verify` | An external consumer needs exact body-free observations or one complete transport artifact from pinned generations |
 | Governed delivery | `roadmap`, `intake`, `admission`, `execution-handoff`, `execution-result`, `workstream`, `lifecycle`, `finish`, `promotion` | Genuinely multi-stage, delegated or risk-bearing work that requires bounded evidence |
 | Bounded mutation | `maintenance`, `maintenance-recover` | Explicitly approved mechanical synchronization with journal and recovery guarantees |
 | Multi-source operation | `workspace`, `federation` | A task that deliberately spans independently owned documentation sources |
@@ -195,6 +195,15 @@ internal projection schema. See [pinned provider snapshots](provider-snapshots.m
 Portable comparison of complete exported snapshot artifacts is deliberately
 deferred. Losing a retained operand requires an explicit full rebaseline; it
 does not authorize heuristic reconstruction or an entity-absence conclusion.
+
+The `traceability-provider-v1` boundary adds complete snapshot and comparison
+artifacts without exposing pagination mechanics to adopters. Export walks and
+validates bounded pages internally, seals the complete ordered result with a
+deterministic digest and writes it atomically. Standalone artifact verification
+needs no project configuration or cache. It validates transport evidence only;
+consumer-owned semantic relations, reconciliation and impact remain outside
+Documentation Engine. See
+[complete provider artifacts](provider-artifacts.md).
 
 Retained generation manifests also drive two token-economy `context` modes
 that omit content only when omission is provably safe, never as a silent

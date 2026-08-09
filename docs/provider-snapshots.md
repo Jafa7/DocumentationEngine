@@ -169,6 +169,11 @@ The first contract is CLI-only. A service or MCP adapter may wrap these exact
 read-only commands later, but it must preserve their integrity, privacy,
 pagination and failure semantics rather than inspect projection files itself.
 
+Adopters that need one durable process-boundary file instead of paged wire
+responses should use [complete provider artifacts](provider-artifacts.md).
+Documentation Engine assembles and verifies all pages internally while keeping
+these paged commands backward compatible.
+
 [`examples/provider-snapshots/`](../examples/provider-snapshots/) is a public
 synthetic corpus with explicit anchors and an opt-in provider profile. Copy it
 to a temporary directory, run `index --write`, make one source change and write

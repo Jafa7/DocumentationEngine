@@ -603,6 +603,14 @@ bodies; fetch authored content through `read` or `context` only when the task
 requires it. The canonical contract is
 [pinned provider snapshots](provider-snapshots.md).
 
+When another process needs durable provider evidence, prefer
+`provider export snapshot` or `provider export compare` over implementing a
+cursor loop in the adopter. Run `provider artifact verify FILE --json` before
+import and bind the consumer record to the returned provider, generations and
+digest. Verification does not require project state and does not authorize
+comparison of exported files. See
+[complete provider artifacts](provider-artifacts.md).
+
 ## Report product issues without leaking adopter context
 
 When an agent finds a DocumentationEngine problem while working inside another

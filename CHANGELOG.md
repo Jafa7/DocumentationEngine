@@ -4,6 +4,24 @@ All notable changes to Documentation Engine are documented in this file.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-09
+
+### Highlights
+
+- Adopters can consume one complete, immutable and body-free provider artifact
+  without implementing Documentation Engine pagination or importing package
+  internals.
+- Standalone verification binds provider identity, exact retained generations,
+  scope, completeness, ordered entity evidence and a deterministic digest while
+  rejecting corrupt, partial or incompatible artifacts fail closed.
+
+### Added
+
+- Complete `traceability-provider-v1` snapshot and comparison artifacts hide
+  provider pagination from adopters, bind deterministic digests and can be
+  verified without project state while preserving the retained-generation
+  boundary of the paged provider contract.
+
 ## [0.4.0] - 2026-08-09
 
 ### Highlights
@@ -219,7 +237,8 @@ documentation-engine` starts working only after the first successful release.
 - Measured context-reduction methodology and a reproducible consumer-install
   smoke test.
 
-[Unreleased]: https://github.com/Jafa7/DocumentationEngine/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/Jafa7/DocumentationEngine/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Jafa7/DocumentationEngine/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Jafa7/DocumentationEngine/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/Jafa7/DocumentationEngine/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Jafa7/DocumentationEngine/compare/v0.2.0...v0.3.0

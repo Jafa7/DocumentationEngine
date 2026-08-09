@@ -163,18 +163,42 @@ MARKDOWN
     env -u PYTHONPATH -u PYTHONHOME "${docsystem_bin}" provider compare \
       "${first_generation}" "${second_generation}" . --json \
       > provider-compare.json
+    env -u PYTHONPATH -u PYTHONHOME "${docsystem_bin}" provider export snapshot \
+      "${first_generation}" . --output provider-snapshot-artifact.json
+    env -u PYTHONPATH -u PYTHONHOME "${docsystem_bin}" provider export compare \
+      "${first_generation}" "${second_generation}" . \
+      --output provider-compare-artifact.json
+    (
+      cd "${work_dir}"
+      env -u PYTHONPATH -u PYTHONHOME "${docsystem_bin}" provider artifact verify \
+        "${project_dir}/provider-snapshot-artifact.json" --json \
+        > "${project_dir}/provider-snapshot-verification.json"
+      env -u PYTHONPATH -u PYTHONHOME "${docsystem_bin}" provider artifact verify \
+        "${project_dir}/provider-compare-artifact.json" --json \
+        > "${project_dir}/provider-compare-verification.json"
+    )
     env -u PYTHONPATH -u PYTHONHOME "${venv_python}" - <<'PY'
 import json
 from pathlib import Path
 
 snapshot_text = Path("provider-snapshot.json").read_text(encoding="utf-8")
 comparison = json.loads(Path("provider-compare.json").read_text(encoding="utf-8"))
+snapshot_artifact_text = Path("provider-snapshot-artifact.json").read_text(encoding="utf-8")
+compare_artifact_text = Path("provider-compare-artifact.json").read_text(encoding="utf-8")
 snapshot = json.loads(snapshot_text)
 assert snapshot["kind"] == "provider-snapshot"
 assert snapshot["snapshot"]["provider_id"] == "installed-smoke"
 assert "Original private-like fixture text" not in snapshot_text
 assert comparison["kind"] == "provider-compare"
 assert comparison["summary"]["changed"] >= 1
+assert "Original private-like fixture text" not in snapshot_artifact_text
+assert "Original private-like fixture text" not in compare_artifact_text
+for name in ("snapshot", "compare"):
+    verification = json.loads(
+        Path(f"provider-{name}-verification.json").read_text(encoding="utf-8")
+    )
+    assert verification["kind"] == "provider-artifact-verification"
+    assert verification["valid"] is True
 PY
   )
 }

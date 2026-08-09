@@ -37,6 +37,7 @@ adoption-oriented, read-only commands:
 - `docsystem context DOCUMENT_ID PROJECT --json`
 - `docsystem provider snapshot GENERATION PROJECT --json`
 - `docsystem provider compare BEFORE AFTER PROJECT --json`
+- `docsystem provider artifact verify FILE --json`
 
 Each successful command prints one deterministic JSON object to stdout (sorted
 keys and stable field names). For the adoption/context commands, structured
@@ -112,6 +113,14 @@ never infer either operand from current Markdown or `current.json`. These two
 commands are currently CLI-only. A wrapper must distinguish
 provider/generation failures on stderr from `missing` inside a successful
 comparison; see [pinned provider snapshots](provider-snapshots.md).
+
+Do not reproduce provider pagination in an adopter when the integration needs
+one durable import unit. Use `provider export snapshot` or
+`provider export compare`; Documentation Engine assembles all pages and writes
+a complete digest-bound artifact. The standalone verifier is the compatibility
+gate, so a consumer checks protocol/schema/capability rather than tracking
+package minor versions. See
+[complete provider artifacts](provider-artifacts.md).
 
 `docsystem readiness PROJECT --json` is the entry point for an adoption
 sequence: its `next_command` field names the single safe next command for

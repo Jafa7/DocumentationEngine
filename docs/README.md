@@ -33,6 +33,8 @@ link to that owner rather than repeat commands or policy.
   deduplication, inclusion reasons and diagnostics drill-down.
 - [Pinned provider snapshots](provider-snapshots.md) — privacy-safe,
   body-free export and comparison of explicit immutable generations.
+- [Complete provider artifacts](provider-artifacts.md) — transport-neutral,
+  self-verifying snapshot and comparison files for external consumers.
 - [Bounded workstream evidence](workstream-evidence.md) — versioned completion
   criteria, corrective lineage and fail-closed finish evidence.
 - [Deterministic idea intake](idea-intake.md) — place an agent-interpreted idea

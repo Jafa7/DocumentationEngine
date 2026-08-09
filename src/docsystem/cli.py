@@ -196,6 +196,14 @@ from docsystem.provider import (
     encode_response,
     snapshot_response,
 )
+from docsystem.provider_artifact import (
+    ProviderArtifactError,
+    compare_artifact,
+    encode_artifact,
+    load_and_verify_artifact,
+    snapshot_artifact,
+    write_artifact,
+)
 from docsystem.readiness import evaluate_readiness
 from docsystem.sections import MarkdownSection, extract_navigation, extract_section
 from docsystem.shared_finish import SharedFinishError, load_shared_finish_record
@@ -4376,7 +4384,9 @@ def changes(project_root: Path, *, json_output: bool = False) -> int:
         return 1
 
 
-def _provider_error(error: PinnedGenerationError | ProviderContractError) -> int:
+def _provider_error(
+    error: PinnedGenerationError | ProviderContractError | ProviderArtifactError,
+) -> int:
     print(f"ERROR [{error.code}]: {error}", file=sys.stderr)
     return 1
 
@@ -4448,6 +4458,73 @@ def provider_compare(
             return _provider_error(error)
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
+
+
+def provider_export_snapshot(
+    project_root: Path, generation: str, *, output: Path
+) -> int:
+    """Write one complete immutable snapshot artifact from a pinned generation."""
+
+    try:
+        config = load_config(project_root)
+        if config.provider_id is None:
+            raise ProviderContractError(
+                "provider-not-configured",
+                "provider.id is required for provider artifact export",
+            )
+        snapshot = load_pinned_projection(config, generation)
+        write_artifact(output, snapshot_artifact(snapshot))
+        print(f"Provider snapshot artifact written: {output}")
+        return 0
+    except (OSError, ValueError) as error:
+        if isinstance(
+            error,
+            (PinnedGenerationError, ProviderContractError, ProviderArtifactError),
+        ):
+            return _provider_error(error)
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+
+
+def provider_export_compare(
+    project_root: Path,
+    before_generation: str,
+    after_generation: str,
+    *,
+    output: Path,
+) -> int:
+    """Write one complete immutable comparison artifact from pinned generations."""
+
+    try:
+        config = load_config(project_root)
+        if config.provider_id is None:
+            raise ProviderContractError(
+                "provider-not-configured",
+                "provider.id is required for provider artifact export",
+            )
+        before = load_pinned_projection(config, before_generation)
+        after = load_pinned_projection(config, after_generation)
+        write_artifact(output, compare_artifact(before, after))
+        print(f"Provider compare artifact written: {output}")
+        return 0
+    except (OSError, ValueError) as error:
+        if isinstance(
+            error,
+            (PinnedGenerationError, ProviderContractError, ProviderArtifactError),
+        ):
+            return _provider_error(error)
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+
+
+def provider_artifact_verify(path: Path) -> int:
+    """Verify one complete artifact without loading project or provider state."""
+
+    try:
+        sys.stdout.write(encode_artifact(load_and_verify_artifact(path)))
+        return 0
+    except ProviderArtifactError as error:
+        return _provider_error(error)
 
 
 def _validation_summary(issues: tuple[ValidationIssue, ...]) -> dict[str, int]:
@@ -8773,6 +8850,52 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_provider_page(provider_compare_parser)
 
+    provider_export_parser = provider_subparsers.add_parser(
+        "export", help="Assemble one complete immutable provider artifact."
+    )
+    provider_export_subparsers = provider_export_parser.add_subparsers(
+        dest="provider_export_command", required=True
+    )
+    provider_export_snapshot_parser = provider_export_subparsers.add_parser(
+        "snapshot", help="Export one complete pinned snapshot artifact."
+    )
+    provider_export_snapshot_parser.add_argument("generation")
+    provider_export_snapshot_parser.add_argument(
+        "project", nargs="?", type=Path, default=Path.cwd()
+    )
+    provider_export_snapshot_parser.add_argument(
+        "--output", required=True, type=Path, metavar="FILE"
+    )
+    provider_export_compare_parser = provider_export_subparsers.add_parser(
+        "compare", help="Export one complete pinned comparison artifact."
+    )
+    provider_export_compare_parser.add_argument("before_generation")
+    provider_export_compare_parser.add_argument("after_generation")
+    provider_export_compare_parser.add_argument(
+        "project", nargs="?", type=Path, default=Path.cwd()
+    )
+    provider_export_compare_parser.add_argument(
+        "--output", required=True, type=Path, metavar="FILE"
+    )
+
+    provider_artifact_parser = provider_subparsers.add_parser(
+        "artifact", help="Inspect a transport-neutral provider artifact."
+    )
+    provider_artifact_subparsers = provider_artifact_parser.add_subparsers(
+        dest="provider_artifact_command", required=True
+    )
+    provider_artifact_verify_parser = provider_artifact_subparsers.add_parser(
+        "verify", help="Verify artifact integrity and compatibility."
+    )
+    provider_artifact_verify_parser.add_argument("file", type=Path)
+    provider_artifact_verify_parser.add_argument(
+        "--json",
+        action="store_true",
+        required=True,
+        dest="json_output",
+        help="Print a deterministic verification result.",
+    )
+
     finish_parser = subparsers.add_parser(
         "finish",
         help="Build a compact handoff packet for returning work to a parent context.",
@@ -9054,6 +9177,8 @@ def build_parser() -> argparse.ArgumentParser:
         changes_parser,
         provider_snapshot_parser,
         provider_compare_parser,
+        provider_export_snapshot_parser,
+        provider_export_compare_parser,
         finish_parser,
         agent_instructions_parser,
     ):
@@ -9145,6 +9270,13 @@ def main() -> int:
             )
         raise AssertionError(
             f"unknown federation command: {args.federation_command}"
+        )
+
+    if args.command == "provider" and args.provider_command == "artifact":
+        if args.provider_artifact_command == "verify":
+            return provider_artifact_verify(args.file)
+        raise AssertionError(
+            f"unknown provider artifact command: {args.provider_artifact_command}"
         )
 
     selection = _resolve_selection(args)
@@ -9336,6 +9468,21 @@ def main() -> int:
                 args.after_generation,
                 cursor=args.cursor,
                 page_size=args.page_size,
+            )
+        if args.provider_command == "export":
+            if args.provider_export_command == "snapshot":
+                return provider_export_snapshot(
+                    project, args.generation, output=args.output
+                )
+            if args.provider_export_command == "compare":
+                return provider_export_compare(
+                    project,
+                    args.before_generation,
+                    args.after_generation,
+                    output=args.output,
+                )
+            raise AssertionError(
+                f"unknown provider export command: {args.provider_export_command}"
             )
         raise AssertionError(f"unknown provider command: {args.provider_command}")
     if args.command == "finish":

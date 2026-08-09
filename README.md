@@ -328,6 +328,9 @@ docsystem changes .
 docsystem changes . --json
 docsystem provider snapshot GENERATION . --json
 docsystem provider compare BEFORE AFTER . --json
+docsystem provider export snapshot GENERATION . --output snapshot.json
+docsystem provider export compare BEFORE AFTER . --output comparison.json
+docsystem provider artifact verify snapshot.json --json
 docsystem agent-instructions .
 docsystem agent-instructions . --json
 docsystem workspace list . --workspace /path/to/workspace
@@ -785,6 +788,11 @@ current pointer implicitly, never return Markdown bodies or absolute paths, and
 distinguish unavailable/corrupt provider state from a genuinely missing
 entity. See [pinned provider snapshots](docs/provider-snapshots.md) for the
 versioned JSON, relocation and bounded-pagination contract.
+For a durable process boundary, `provider export` assembles those pages into
+one complete immutable artifact and `provider artifact verify` checks it
+without project state. See
+[complete provider artifacts](docs/provider-artifacts.md). Artifact verification
+does not compare exported files or extend the configured retention window.
 `read`, `context` and `impact` serve from the verified projection when it is
 current: verification re-hashes every included source byte-for-byte, checks the
 configuration fingerprint, and reconstructs the generation hash from the shards,
