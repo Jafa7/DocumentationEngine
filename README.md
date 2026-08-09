@@ -208,6 +208,7 @@ task rather than one mandatory process:
 | --- | --- | --- |
 | Core retrieval | Discover, read and inspect context/impact | Default for routine work |
 | Adoption | Connect or migrate an existing Markdown corpus | Setup and compatibility work |
+| Provider reconciliation | Export or compare explicitly pinned, body-free generations | External consumers that retain stable documentation evidence |
 | Governed delivery | Roadmaps, admission, handoff and lifecycle evidence | Multi-stage, delegated or risk-bearing work |
 | Bounded mutation | Journaled managed-block synchronization and recovery | Explicitly approved mechanical writes |
 | Multi-source | Workspace selection and federation | Deliberate cross-project documentation queries |
@@ -325,6 +326,8 @@ docsystem migrate . --apply
 docsystem index . --write
 docsystem changes .
 docsystem changes . --json
+docsystem provider snapshot GENERATION . --json
+docsystem provider compare BEFORE AFTER . --json
 docsystem agent-instructions .
 docsystem agent-instructions . --json
 docsystem workspace list . --workspace /path/to/workspace
@@ -775,6 +778,13 @@ relations.
 hashed over both the derived content and a fingerprint of the projection-
 relevant configuration, then atomically selects the current generation.
 `index` checks freshness and `changes` reports changed documents and sections.
+Projects that expose immutable documentation evidence to another consumer may
+opt into `[provider]` identity and use `provider snapshot` or `provider compare`
+with explicit retained generation hashes. These commands never select the
+current pointer implicitly, never return Markdown bodies or absolute paths, and
+distinguish unavailable/corrupt provider state from a genuinely missing
+entity. See [pinned provider snapshots](docs/provider-snapshots.md) for the
+versioned JSON, relocation and bounded-pagination contract.
 `read`, `context` and `impact` serve from the verified projection when it is
 current: verification re-hashes every included source byte-for-byte, checks the
 configuration fingerprint, and reconstructs the generation hash from the shards,

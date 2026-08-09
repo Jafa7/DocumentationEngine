@@ -594,6 +594,15 @@ context the delta deliberately left out. `--since` and
 every rejected combination fails closed with no packet, so an agent never acts
 on a partially applied request.
 
+When a separate consumer needs durable cross-process reconciliation rather
+than a task packet, use `provider snapshot` or `provider compare` with explicit
+retained generation hashes. Do not read `.docsystem/cache` directly and do not
+interpret provider unavailability, corruption or incomplete coverage as a
+missing document/section. Provider responses intentionally contain no Markdown
+bodies; fetch authored content through `read` or `context` only when the task
+requires it. The canonical contract is
+[pinned provider snapshots](provider-snapshots.md).
+
 ## Report product issues without leaking adopter context
 
 When an agent finds a DocumentationEngine problem while working inside another

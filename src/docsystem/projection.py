@@ -14,6 +14,7 @@ from docsystem.catalog import (
     MarkdownCatalog,
     build_dependency_graph,
     included_source_paths,
+    validate_catalog,
 )
 from docsystem.config import ProjectConfig
 from docsystem.graph import (
@@ -24,15 +25,27 @@ from docsystem.graph import (
     build_reference_graph,
 )
 
-# Version 4 preserves qualified-relation boundaries in single-source shards.
-# Older generations fail closed as incompatible and are rebuilt by
-# `index --write`; version 3 already bound every shard hash into the immutable
-# generation identity.
-SCHEMA_VERSION = 4
+# Version 5 binds the provider-facing snapshot capability, catalog-completeness
+# evidence and document line counts into each immutable generation. Older
+# generations remain usable only through the contracts of the version that
+# created them; provider export fails closed as unsupported.
+SCHEMA_VERSION = 5
 
 # The observed-reference graph shard payload has its own version, while its
 # hashes and presence remain part of the generation identity.
 REFERENCE_SCHEMA_VERSION = 1
+
+PROVIDER_SCHEMA_VERSION = 1
+PROVIDER_CAPABILITIES = (
+    "bounded-entity-observations-v1",
+    "pinned-generation-compare-v1",
+)
+PROVIDER_BOUNDARIES = (
+    "excluded-and-unmapped-paths-omitted",
+    "generated-anchor-stability-depends-on-heading",
+    "markdown-bodies-omitted",
+    "metadata-and-relations-omitted",
+)
 
 
 @dataclass(frozen=True)
@@ -101,6 +114,8 @@ def config_fingerprint(config: ProjectConfig) -> str:
         "identifiers": dict(config.identifiers),
         "catalog_exclusions": list(config.catalog_exclusions),
         "navigation_extend_through": list(config.navigation_extend_through),
+        "provider_id": config.provider_id,
+        "provider_visibility": config.provider_visibility,
         "legacy_relation_mode": config.legacy_relation_mode,
         "snapshot_document_types": list(config.snapshot_document_types),
         "snapshot_rules": [
@@ -167,6 +182,7 @@ def build_projection(
         )
         documents[document.metadata.document_id] = {
             "path": document.path.as_posix(),
+            "line_count": len(document.content.splitlines()),
             "revision": document.metadata.revision,
             "type": document.metadata.document_type,
             "status": document.metadata.status,
@@ -177,6 +193,7 @@ def build_projection(
                     "level": section.level,
                     "start_line": section.start_line,
                     "end_line": section.end_line,
+                    "anchor_kind": section.anchor_kind,
                     "sha256": _sha(
                         "\n".join(lines[section.start_line - 1 : section.end_line])
                     ),
@@ -227,6 +244,7 @@ def build_projection(
     payload: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "config_fingerprint": config_fingerprint(config),
+        "provider": _provider_descriptor(catalog, config, documents),
         "documents": dict(sorted(documents.items())),
         "reverse": {key: value for key, value in sorted(reverse.items()) if value},
     }
@@ -235,6 +253,44 @@ def build_projection(
     )
     payload["generation"] = _manifest_generation(_projection_manifest(payload))
     return payload
+
+
+def _provider_descriptor(
+    catalog: MarkdownCatalog,
+    config: ProjectConfig,
+    documents: dict[str, Any],
+) -> dict[str, Any] | None:
+    if config.provider_id is None:
+        return None
+    blocking = tuple(
+        issue
+        for issue in validate_catalog(catalog, config)
+        if issue.severity != "warning"
+    )
+    states = {"included": 0, "excluded": 0, "unmapped": 0}
+    for membership in catalog.memberships:
+        states[membership.state] += 1
+    return {
+        "schema_version": PROVIDER_SCHEMA_VERSION,
+        "id": config.provider_id,
+        "visibility": config.provider_visibility,
+        "capabilities": list(PROVIDER_CAPABILITIES),
+        "catalog_complete": not blocking,
+        "coverage": {
+            "documents": len(documents),
+            "sections": sum(
+                len(record["sections"]) for record in documents.values()
+            ),
+            "excluded_markdown": states["excluded"],
+            "unmapped_markdown": states["unmapped"],
+        },
+        "scope": {
+            "catalog": "included-markdown",
+            "path_base": "documentation-root",
+            "sections": "all-addressable",
+        },
+        "boundaries": list(PROVIDER_BOUNDARIES),
+    }
 
 
 def _build_reference_shards(
@@ -409,6 +465,205 @@ class LoadedProjection:
     references: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
+class PinnedGenerationError(ValueError):
+    """A stable provider-facing failure while opening one retained generation."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+@dataclass(frozen=True)
+class PinnedProjection:
+    """One integrity-verified immutable generation, independent of live Markdown."""
+
+    generation: str
+    provider: dict[str, Any]
+    documents: dict[str, dict[str, Any]]
+
+
+def _provider_descriptor_is_supported(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    capabilities = value.get("capabilities")
+    return (
+        value.get("schema_version") == PROVIDER_SCHEMA_VERSION
+        and isinstance(capabilities, list)
+        and all(isinstance(item, str) for item in capabilities)
+        and set(PROVIDER_CAPABILITIES).issubset(capabilities)
+    )
+
+
+def _verify_pinned_shard(
+    generation_dir: Path,
+    manifest: dict[str, Any],
+    kind: str,
+    manifest_key: str,
+    document_id: str,
+    schema_version: int,
+) -> dict[str, Any]:
+    records = manifest.get(manifest_key)
+    if not isinstance(records, dict):
+        raise PinnedGenerationError(
+            "generation-incomplete", f"generation manifest lacks {manifest_key}"
+        )
+    record = records.get(document_id)
+    if not isinstance(record, dict):
+        raise PinnedGenerationError(
+            "generation-incomplete",
+            f"generation manifest lacks {kind} record for {document_id}",
+        )
+    try:
+        shard = _read(generation_dir / _shard(kind, document_id))
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        raise PinnedGenerationError(
+            "generation-corrupt", f"cannot read {kind} shard for {document_id}"
+        ) from error
+    if (
+        shard.get("schema_version") != schema_version
+        or shard.get("id") != document_id
+        or not _verify_shard_hash(shard, record.get("shard_sha256"))
+    ):
+        raise PinnedGenerationError(
+            "generation-corrupt", f"invalid {kind} shard for {document_id}"
+        )
+    return shard
+
+
+def load_pinned_projection(config: ProjectConfig, selector: str) -> PinnedProjection:
+    """Open and fully verify an explicitly selected retained generation.
+
+    Unlike normal projection reads, this deliberately does not compare the
+    generation with live Markdown or current projection-shaping configuration.
+    All provider-facing facts are instead bound into the immutable generation.
+    """
+
+    if not isinstance(selector, str) or len(selector) < 12:
+        raise PinnedGenerationError(
+            "generation-selector-invalid",
+            "generation selector must contain at least 12 characters",
+        )
+    generations_dir = cache_root(config) / "generations"
+    try:
+        names = sorted(
+            path.name
+            for path in generations_dir.iterdir()
+            if path.is_dir() and not path.name.startswith(".staging-")
+        )
+    except OSError as error:
+        raise PinnedGenerationError(
+            "provider-unavailable", "provider generation storage is unavailable"
+        ) from error
+    matches = [name for name in names if name.startswith(selector)]
+    if not matches:
+        raise PinnedGenerationError(
+            "generation-unknown", f"generation is not retained: {selector}"
+        )
+    if len(matches) != 1:
+        raise PinnedGenerationError(
+            "generation-selector-ambiguous",
+            f"generation selector is ambiguous: {selector}",
+        )
+
+    generation = matches[0]
+    generation_dir = generations_dir / generation
+    try:
+        manifest = _read(generation_dir / "manifest.json")
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        raise PinnedGenerationError(
+            "generation-corrupt", f"generation manifest is unreadable: {generation}"
+        ) from error
+    if manifest.get("schema_version") != SCHEMA_VERSION:
+        raise PinnedGenerationError(
+            "generation-unsupported",
+            f"generation schema does not support provider export: {generation}",
+        )
+    if not _manifest_is_bound(manifest, generation):
+        raise PinnedGenerationError(
+            "generation-corrupt", f"generation content hash is invalid: {generation}"
+        )
+
+    provider = manifest.get("provider")
+    if not _provider_descriptor_is_supported(provider):
+        raise PinnedGenerationError(
+            "generation-unsupported",
+            f"generation lacks the provider snapshot capability: {generation}",
+        )
+    assert isinstance(provider, dict)
+    if provider.get("id") != config.provider_id:
+        raise PinnedGenerationError(
+            "provider-mismatch",
+            "generation provider ID does not match the configured provider",
+        )
+    if provider.get("catalog_complete") is not True:
+        raise PinnedGenerationError(
+            "generation-incomplete", "generation catalog was not complete"
+        )
+
+    manifest_documents = manifest.get("documents")
+    if not isinstance(manifest_documents, dict):
+        raise PinnedGenerationError(
+            "generation-incomplete", "generation manifest lacks documents"
+        )
+    documents: dict[str, dict[str, Any]] = {}
+    for document_id, record in sorted(manifest_documents.items()):
+        if not isinstance(document_id, str) or not isinstance(record, dict):
+            raise PinnedGenerationError(
+                "generation-corrupt", "generation document manifest is invalid"
+            )
+        shard = _verify_pinned_shard(
+            generation_dir,
+            manifest,
+            "documents",
+            "documents",
+            document_id,
+            SCHEMA_VERSION,
+        )
+        if (
+            shard.get("path") != record.get("path")
+            or shard.get("source_sha256") != record.get("source_sha256")
+            or shard.get("sections") != record.get("sections")
+        ):
+            raise PinnedGenerationError(
+                "generation-corrupt", f"document manifest mismatch: {document_id}"
+            )
+        documents[document_id] = shard
+
+    for kind, manifest_key, schema_version in (
+        ("reverse", "reverse", SCHEMA_VERSION),
+        ("references", "references", REFERENCE_SCHEMA_VERSION),
+        ("reverse-references", "reverse_references", REFERENCE_SCHEMA_VERSION),
+    ):
+        records = manifest.get(manifest_key)
+        if not isinstance(records, dict):
+            raise PinnedGenerationError(
+                "generation-incomplete", f"generation manifest lacks {manifest_key}"
+            )
+        for document_id in sorted(records):
+            _verify_pinned_shard(
+                generation_dir,
+                manifest,
+                kind,
+                manifest_key,
+                document_id,
+                schema_version,
+            )
+
+    coverage = provider.get("coverage")
+    if not isinstance(coverage, dict) or coverage.get("documents") != len(documents):
+        raise PinnedGenerationError(
+            "generation-incomplete", "generation document coverage is inconsistent"
+        )
+    section_count = sum(
+        len(document.get("sections", {})) for document in documents.values()
+    )
+    if coverage.get("sections") != section_count:
+        raise PinnedGenerationError(
+            "generation-incomplete", "generation section coverage is inconsistent"
+        )
+    return PinnedProjection(generation, provider, documents)
+
+
 def load_verified_projection(
     config: ProjectConfig,
     *,
@@ -580,6 +835,7 @@ def _projection_manifest(projection: dict[str, Any]) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
         "config_fingerprint": projection["config_fingerprint"],
+        "provider": projection.get("provider"),
         "documents": documents,
         "reverse": reverse,
         "references": references,

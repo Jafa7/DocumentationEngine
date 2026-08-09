@@ -18,6 +18,7 @@ MAINTENANCE_ROLES = frozenset(
 MAINTENANCE_TARGET_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 CONTEXT_VIEW_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 PROFILE_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+PROVIDER_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 PROFILE_HISTORY_MODES = frozenset({"living", "append-only", "immutable-after-state"})
 WORKSTREAM_CRITERION_ID_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 WORKSTREAM_EVIDENCE_FIELDS = frozenset(
@@ -65,6 +66,8 @@ exclude = []
 
 [navigation]
 extend_through = []
+
+[provider]
 
 [relations]
 legacy_paths = "strict"
@@ -263,6 +266,8 @@ class ProjectConfig:
     identifiers: dict[str, str]
     projection_format: str
     keep_generations: int
+    provider_id: str | None = None
+    provider_visibility: str = "private"
     catalog_exclusions: tuple[str, ...] = ()
     navigation_extend_through: tuple[str, ...] = ()
     legacy_relation_mode: str = "strict"
@@ -344,6 +349,29 @@ def _navigation_anchors(raw: object) -> tuple[str, ...]:
         seen.add(value)
         anchors.append(value)
     return tuple(anchors)
+
+
+def _provider_identity(raw: object) -> tuple[str | None, str]:
+    if raw is None or raw == {}:
+        return None, "private"
+    if not isinstance(raw, dict):
+        raise ValueError("provider must be a table")
+    unknown = set(raw) - {"id", "visibility"}
+    if unknown:
+        raise ValueError(
+            "provider has unknown key(s): " + ", ".join(sorted(unknown))
+        )
+    provider_id = raw.get("id")
+    if not isinstance(provider_id, str) or not PROVIDER_ID_PATTERN.fullmatch(
+        provider_id
+    ):
+        raise ValueError(
+            "provider.id must be 1-128 lowercase letters, digits, '.', '_' or '-'"
+        )
+    visibility = raw.get("visibility", "private")
+    if visibility not in {"private", "public"}:
+        raise ValueError("provider.visibility must be 'private' or 'public'")
+    return provider_id, visibility
 
 
 def _snapshot_rules(raw: object) -> tuple[SnapshotRule, ...]:
@@ -1322,6 +1350,7 @@ def load_config(project_root: Path) -> ProjectConfig:
 
     catalog_exclusions = _catalog_exclusions(raw.get("catalog"))
     navigation_extend_through = _navigation_anchors(raw.get("navigation"))
+    provider_id, provider_visibility = _provider_identity(raw.get("provider"))
     (
         legacy_relation_mode,
         snapshot_document_types,
@@ -1355,6 +1384,8 @@ def load_config(project_root: Path) -> ProjectConfig:
         identifiers=normalized_identifiers,
         projection_format=projection_format,
         keep_generations=keep_generations,
+        provider_id=provider_id,
+        provider_visibility=provider_visibility,
         catalog_exclusions=catalog_exclusions,
         navigation_extend_through=navigation_extend_through,
         legacy_relation_mode=legacy_relation_mode,

@@ -4,6 +4,28 @@ All notable changes to Documentation Engine are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-09
+
+### Highlights
+
+- External consumers can reconcile exact retained documentation generations
+  through a provider-neutral, privacy-safe contract without importing package
+  internals or reading generated projection files directly.
+- Pinned comparison distinguishes content changes, relocation and genuine
+  entity absence while failing closed for unavailable, corrupt, unsupported or
+  incomplete provider evidence.
+
+### Added
+
+- Opt-in, provider-neutral `provider snapshot` and `provider compare` commands
+  export bounded body-free observations from explicitly pinned immutable
+  generations and classify exact stable entities as relocated, changed,
+  missing or added.
+- Projection schema 5 binds provider identity, visibility, advertised
+  capabilities, catalog completeness, coverage, document line counts and
+  explicit/generated anchor kind into the generation hash. Older generations
+  fail provider export as unsupported instead of receiving retroactive claims.
+
 ## [0.3.1] - 2026-07-19
 
 ### Fixed
@@ -197,7 +219,8 @@ documentation-engine` starts working only after the first successful release.
 - Measured context-reduction methodology and a reproducible consumer-install
   smoke test.
 
-[Unreleased]: https://github.com/Jafa7/DocumentationEngine/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/Jafa7/DocumentationEngine/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Jafa7/DocumentationEngine/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/Jafa7/DocumentationEngine/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Jafa7/DocumentationEngine/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Jafa7/DocumentationEngine/compare/v0.1.2...v0.2.0

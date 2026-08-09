@@ -11,6 +11,7 @@ The core owns deterministic documentation retrieval mechanics:
 - inspectable context packets with explicit coverage and omissions;
 - impact and changed-section analysis;
 - versioned, sharded machine projections and diagnostics.
+- body-free export and comparison of explicitly pinned provider generations.
 
 The package also ships optional extensions over that same core:
 
@@ -58,6 +59,7 @@ The capability groups are progressive, not an execution checklist:
 | --- | --- | --- |
 | Core discovery and retrieval | `readiness`, `catalog`, `validate`, `read`, `context`, `dependencies`, `references`, `impact`, `change-plan` | Default path for understanding and changing documentation-backed work |
 | Adoption and derived state | `migration-report`, `migrate`, `profile-check`, `index`, `changes`, `report` | Connecting an existing corpus, checking policy or refreshing disposable projections |
+| Provider reconciliation | `provider snapshot`, `provider compare` | An external consumer needs exact body-free observations from one or two pinned generations |
 | Governed delivery | `roadmap`, `intake`, `admission`, `execution-handoff`, `execution-result`, `workstream`, `lifecycle`, `finish`, `promotion` | Genuinely multi-stage, delegated or risk-bearing work that requires bounded evidence |
 | Bounded mutation | `maintenance`, `maintenance-recover` | Explicitly approved mechanical synchronization with journal and recovery guarantees |
 | Multi-source operation | `workspace`, `federation` | A task that deliberately spans independently owned documentation sources |
@@ -94,6 +96,7 @@ Project policy may configure:
 - review policy;
 - graph-health advisory thresholds and required metadata fields;
 - projection retention;
+- stable provider identity and exported visibility classification;
 - legacy path-relation migration and historical snapshot document types;
 - provider adapters.
 
@@ -178,6 +181,20 @@ concurrent reader has already selected; that reader then falls back to
 direct Markdown with a visible diagnostic rather than serving mixed state.
 Coordinating multiple writers is a caller/orchestrator responsibility, not
 core engine behavior.
+
+Provider reconciliation uses the same immutable generations but a different
+verification mode from live reads. A provider generation binds stable provider
+identity, visibility, supported capabilities, catalog completeness, coverage,
+scope and body-free export boundaries into the manifest root. `provider
+snapshot` and `provider compare` fully verify explicitly selected retained
+generations without comparing them with live Markdown or using `current.json`;
+historical drift is the evidence being requested. The provider model exposes
+only IDs, canonical anchors, hashes, root-relative paths and line hints. Its
+schema, deterministic cursor and byte/page bounds are independent from the
+internal projection schema. See [pinned provider snapshots](provider-snapshots.md).
+Portable comparison of complete exported snapshot artifacts is deliberately
+deferred. Losing a retained operand requires an explicit full rebaseline; it
+does not authorize heuristic reconstruction or an entity-absence conclusion.
 
 Retained generation manifests also drive two token-economy `context` modes
 that omit content only when omission is provably safe, never as a silent

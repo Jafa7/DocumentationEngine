@@ -251,6 +251,7 @@ def _markdown_document(value: MarkdownDocument) -> dict[str, object]:
                 "level": item.level,
                 "start_line": item.start_line,
                 "end_line": item.end_line,
+                "anchor_kind": item.anchor_kind,
             }
             for item in value.sections
         ],
@@ -277,6 +278,7 @@ def _load_markdown_document(value: object) -> MarkdownDocument:
                 int(item["level"]),
                 int(item["start_line"]),
                 int(item["end_line"]),
+                str(item.get("anchor_kind", "generated")),
             )
             for item in value.get("sections", [])
         ),

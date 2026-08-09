@@ -166,9 +166,11 @@ from docsystem.program_plan import (
 )
 from docsystem.projection import (
     LoadedProjection,
+    PinnedGenerationError,
     build_projection,
     config_fingerprint,
     evaluate_changes,
+    load_pinned_projection,
     load_verified_projection,
     open_targeted_projection,
     projection_status,
@@ -185,6 +187,14 @@ from docsystem.promotion import (
     PromotionPlan,
     build_promotion_plan,
     load_promotion_request,
+)
+from docsystem.provider import (
+    DEFAULT_PAGE_SIZE,
+    MAX_PAGE_SIZE,
+    ProviderContractError,
+    compare_response,
+    encode_response,
+    snapshot_response,
 )
 from docsystem.readiness import evaluate_readiness
 from docsystem.sections import MarkdownSection, extract_navigation, extract_section
@@ -2568,6 +2578,7 @@ def _views_from_projection(loaded: LoadedProjection) -> tuple[_Views, _Incoming]
                 level=int(record["level"]),
                 start_line=int(record["start_line"]),
                 end_line=int(record["end_line"]),
+                anchor_kind=str(record.get("anchor_kind", "generated")),
             )
             for anchor, record in sorted(
                 shard["sections"].items(),
@@ -4361,6 +4372,80 @@ def changes(project_root: Path, *, json_output: bool = False) -> int:
             print(line)
         return 0
     except (OSError, ValueError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+
+
+def _provider_error(error: PinnedGenerationError | ProviderContractError) -> int:
+    print(f"ERROR [{error.code}]: {error}", file=sys.stderr)
+    return 1
+
+
+def provider_snapshot(
+    project_root: Path,
+    generation: str,
+    *,
+    cursor: str | None = None,
+    page_size: int = DEFAULT_PAGE_SIZE,
+) -> int:
+    """Export one bounded body-free page from an explicit generation."""
+
+    try:
+        config = load_config(project_root)
+        if config.provider_id is None:
+            raise ProviderContractError(
+                "provider-not-configured",
+                "provider.id is required for provider snapshot export",
+            )
+        snapshot = load_pinned_projection(config, generation)
+        sys.stdout.write(
+            encode_response(
+                snapshot_response(
+                    snapshot, cursor=cursor, page_size=page_size
+                )
+            )
+        )
+        return 0
+    except (OSError, ValueError) as error:
+        if isinstance(error, (PinnedGenerationError, ProviderContractError)):
+            return _provider_error(error)
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+
+
+def provider_compare(
+    project_root: Path,
+    before_generation: str,
+    after_generation: str,
+    *,
+    cursor: str | None = None,
+    page_size: int = DEFAULT_PAGE_SIZE,
+) -> int:
+    """Compare two explicit immutable generations without consulting current."""
+
+    try:
+        config = load_config(project_root)
+        if config.provider_id is None:
+            raise ProviderContractError(
+                "provider-not-configured",
+                "provider.id is required for provider generation comparison",
+            )
+        before = load_pinned_projection(config, before_generation)
+        after = load_pinned_projection(config, after_generation)
+        sys.stdout.write(
+            encode_response(
+                compare_response(
+                    before,
+                    after,
+                    cursor=cursor,
+                    page_size=page_size,
+                )
+            )
+        )
+        return 0
+    except (OSError, ValueError) as error:
+        if isinstance(error, (PinnedGenerationError, ProviderContractError)):
+            return _provider_error(error)
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
 
@@ -7760,6 +7845,9 @@ def show_config(project_root: Path) -> int:
         print(f"catalog.exclude={pattern}")
     for anchor in config.navigation_extend_through:
         print(f"navigation.extend_through={anchor}")
+    if config.provider_id is not None:
+        print(f"provider.id={config.provider_id}")
+        print(f"provider.visibility={config.provider_visibility}")
     print(f"relations.legacy_paths={config.legacy_relation_mode}")
     for document_type in config.snapshot_document_types:
         print(f"relations.snapshot_type={document_type}")
@@ -8639,6 +8727,52 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print a deterministic JSON object instead of tab-separated text.",
     )
 
+    provider_parser = subparsers.add_parser(
+        "provider",
+        help="Export or compare explicitly pinned provider generations.",
+    )
+    provider_subparsers = provider_parser.add_subparsers(
+        dest="provider_command", required=True
+    )
+
+    def add_provider_page(command_parser: argparse.ArgumentParser) -> None:
+        command_parser.add_argument(
+            "--json",
+            action="store_true",
+            required=True,
+            dest="json_output",
+            help="Print the versioned deterministic provider response.",
+        )
+        command_parser.add_argument(
+            "--cursor",
+            help="Continue the same pinned query from a returned cursor.",
+        )
+        command_parser.add_argument(
+            "--page-size",
+            type=int,
+            default=DEFAULT_PAGE_SIZE,
+            help=f"Request 1-{MAX_PAGE_SIZE} observations (default: {DEFAULT_PAGE_SIZE}).",
+        )
+
+    provider_snapshot_parser = provider_subparsers.add_parser(
+        "snapshot", help="Export body-free observations from one generation."
+    )
+    provider_snapshot_parser.add_argument("generation")
+    provider_snapshot_parser.add_argument(
+        "project", nargs="?", type=Path, default=Path.cwd()
+    )
+    add_provider_page(provider_snapshot_parser)
+
+    provider_compare_parser = provider_subparsers.add_parser(
+        "compare", help="Compare two explicitly pinned generations."
+    )
+    provider_compare_parser.add_argument("before_generation")
+    provider_compare_parser.add_argument("after_generation")
+    provider_compare_parser.add_argument(
+        "project", nargs="?", type=Path, default=Path.cwd()
+    )
+    add_provider_page(provider_compare_parser)
+
     finish_parser = subparsers.add_parser(
         "finish",
         help="Build a compact handoff packet for returning work to a parent context.",
@@ -8918,6 +9052,8 @@ def build_parser() -> argparse.ArgumentParser:
         readiness_parser,
         index_parser,
         changes_parser,
+        provider_snapshot_parser,
+        provider_compare_parser,
         finish_parser,
         agent_instructions_parser,
     ):
@@ -9185,6 +9321,23 @@ def main() -> int:
         return index_projection(project, write=args.write)
     if args.command == "changes":
         return changes(project, json_output=args.json_output)
+    if args.command == "provider":
+        if args.provider_command == "snapshot":
+            return provider_snapshot(
+                project,
+                args.generation,
+                cursor=args.cursor,
+                page_size=args.page_size,
+            )
+        if args.provider_command == "compare":
+            return provider_compare(
+                project,
+                args.before_generation,
+                args.after_generation,
+                cursor=args.cursor,
+                page_size=args.page_size,
+            )
+        raise AssertionError(f"unknown provider command: {args.provider_command}")
     if args.command == "finish":
         return finish(
             project,

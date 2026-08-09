@@ -35,14 +35,16 @@ adoption-oriented, read-only commands:
 - `docsystem catalog PROJECT --explain --json`
 - `docsystem changes PROJECT --json`
 - `docsystem context DOCUMENT_ID PROJECT --json`
+- `docsystem provider snapshot GENERATION PROJECT --json`
+- `docsystem provider compare BEFORE AFTER PROJECT --json`
 
-Each prints one deterministic JSON object to stdout (sorted keys, stable
-field names) carrying the same diagnostics that the text form prints as
-human `ERROR`/`WARNING` lines on stderr. In `--json` mode those human
-stderr diagnostics may be suppressed since the JSON payload already carries
-the same information in structured form, so a wrapper does not need to read
-stderr to make a decision. Exit codes are unchanged by `--json`: `0` on
-success or a ready project, `1` otherwise.
+Each successful command prints one deterministic JSON object to stdout (sorted
+keys and stable field names). For the adoption/context commands, structured
+diagnostics may replace duplicate human `ERROR`/`WARNING` lines. Provider
+snapshot/compare instead fail closed with a stable error code on stderr and no
+stdout, because an unavailable generation must never resemble an entity result.
+Exit codes are unchanged by `--json`: `0` on success or a ready project, `1`
+otherwise.
 
 Every `--json` root is an object with a `"schema_version": 1` field; it is
 bumped only on a breaking change to an existing field, while new fields may
@@ -101,9 +103,15 @@ hash before comparison. `--since` and
 `--assume-known` are mutually exclusive, and neither combines with
 `--outline`; a rejected combination exits `1` with no stdout.
 
-A wrapper that speaks MCP can skip the CLI entirely and use
-[the MCP adapter](mcp-adapter.md), which exposes these same read-only
-commands as typed tools over the identical JSON contract.
+A wrapper that speaks MCP can use [the MCP adapter](mcp-adapter.md) for its
+document, context, graph and governance tools over the same core contracts.
+
+Provider snapshot/compare responses use their own versioned, body-free schema
+and bounded cursor contract. They require explicit retained generations and
+never infer either operand from current Markdown or `current.json`. These two
+commands are currently CLI-only. A wrapper must distinguish
+provider/generation failures on stderr from `missing` inside a successful
+comparison; see [pinned provider snapshots](provider-snapshots.md).
 
 `docsystem readiness PROJECT --json` is the entry point for an adoption
 sequence: its `next_command` field names the single safe next command for

@@ -130,6 +130,52 @@ run_cli_checks() {
     env -u PYTHONPATH -u PYTHONHOME "${docsystem_bin}" init .
     env -u PYTHONPATH -u PYTHONHOME "${docsystem_bin}" doctor .
     env -u PYTHONPATH -u PYTHONHOME "${docsystem_bin}" show-config .
+
+    sed -i '/^\[provider\]$/a id = "installed-smoke"' .docsystem.toml
+    mkdir -p plan/foundation
+    cat > plan/foundation/README.md <<'MARKDOWN'
+---
+id: DOC-001
+revision: 1
+---
+# Installed consumer fixture
+
+<a id="contract"></a>
+## Contract
+
+Original private-like fixture text that must not appear in provider output.
+MARKDOWN
+    first_generation="$(
+      env -u PYTHONPATH -u PYTHONHOME "${docsystem_bin}" index . --write \
+        | sed -n 's/^Projection generation written: //p'
+    )"
+    if [[ -z "${first_generation}" ]]; then
+      echo "error: installed provider smoke did not create the first generation" >&2
+      exit 1
+    fi
+    printf '\nA changed line.\n' >> plan/foundation/README.md
+    second_generation="$(
+      env -u PYTHONPATH -u PYTHONHOME "${docsystem_bin}" index . --write \
+        | sed -n 's/^Projection generation written: //p'
+    )"
+    env -u PYTHONPATH -u PYTHONHOME "${docsystem_bin}" provider snapshot \
+      "${first_generation}" . --json > provider-snapshot.json
+    env -u PYTHONPATH -u PYTHONHOME "${docsystem_bin}" provider compare \
+      "${first_generation}" "${second_generation}" . --json \
+      > provider-compare.json
+    env -u PYTHONPATH -u PYTHONHOME "${venv_python}" - <<'PY'
+import json
+from pathlib import Path
+
+snapshot_text = Path("provider-snapshot.json").read_text(encoding="utf-8")
+comparison = json.loads(Path("provider-compare.json").read_text(encoding="utf-8"))
+snapshot = json.loads(snapshot_text)
+assert snapshot["kind"] == "provider-snapshot"
+assert snapshot["snapshot"]["provider_id"] == "installed-smoke"
+assert "Original private-like fixture text" not in snapshot_text
+assert comparison["kind"] == "provider-compare"
+assert comparison["summary"]["changed"] >= 1
+PY
   )
 }
 

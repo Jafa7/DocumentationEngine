@@ -177,6 +177,11 @@ format = "sharded-json"
 keep_generations = 2
 ```
 
+Projects that expose immutable body-free observations to another consumer may
+also configure an explicit `[provider]` identity. This is optional for ordinary
+local use; see [pinned provider snapshots](provider-snapshots.md). Do not infer
+the identity from a private filesystem path.
+
 Whole-graph smell policy is optional and should reflect the adopting project,
 not copied thresholds. With no thresholds, `graph-health` still reports the
 complete deterministic inventory and emits only intrinsic dead-link evidence:

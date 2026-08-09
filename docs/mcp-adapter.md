@@ -60,6 +60,9 @@ The adapter is deliberately a wrapper, not a second implementation:
   `maintenance-recover`) intentionally have no tools and stay
   with the human or calling system, matching
   [the agent contract](agent-contract.md);
+- pinned `provider snapshot` and `provider compare` are currently CLI-only.
+  An MCP wrapper may be added later only as a thin transport over the same
+  bounded, body-free contract; clients must not inspect projection files;
 - a non-zero CLI exit becomes a tool error carrying the CLI's stderr
   diagnostics, so a client never mistakes a failure for data. The one
   exception is `readiness`, whose "not ready" state is a legitimate answer:

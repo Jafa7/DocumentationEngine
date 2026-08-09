@@ -26,6 +26,7 @@ class MarkdownSection:
     level: int
     start_line: int
     end_line: int
+    anchor_kind: str = "generated"
 
 
 @dataclass(frozen=True)
@@ -86,7 +87,7 @@ def parse_sections_result(text: str) -> SectionParseResult:
     """Parse ATX headings and explicit anchors without repairing ambiguity."""
 
     lines = text.splitlines()
-    headings: list[tuple[str, str, int, int]] = []
+    headings: list[tuple[str, str, int, int, str]] = []
     issues: list[str] = []
     anchor_counts: dict[str, int] = {}
     anchor_owners: dict[str, tuple[str, int]] = {}
@@ -185,18 +186,28 @@ def parse_sections_result(text: str) -> SectionParseResult:
         anchor_owners.setdefault(
             anchor, ("explicit" if explicit else "generated", anchor_line)
         )
-        headings.append((title, anchor, len(match.group(1)), line_number))
+        headings.append(
+            (
+                title,
+                anchor,
+                len(match.group(1)),
+                line_number,
+                "explicit" if explicit else "generated",
+            )
+        )
     orphan_pending()
 
     sections: list[MarkdownSection] = []
-    for index, (title, anchor, level, start_line) in enumerate(headings):
+    for index, (title, anchor, level, start_line, anchor_kind) in enumerate(headings):
         end_line = len(lines)
-        for _, _, next_level, next_line in headings[index + 1 :]:
+        for _, _, next_level, next_line, _ in headings[index + 1 :]:
             if next_level <= level:
                 end_line = next_line - 1
                 break
         sections.append(
-            MarkdownSection(title, anchor, level, start_line, end_line)
+            MarkdownSection(
+                title, anchor, level, start_line, end_line, anchor_kind
+            )
         )
     return SectionParseResult(tuple(sections), tuple(issues))
 

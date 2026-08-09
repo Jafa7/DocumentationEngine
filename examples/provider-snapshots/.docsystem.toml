@@ -1,0 +1,30 @@
+version = 1
+
+[documentation]
+root = "docs"
+language = "en"
+
+[areas]
+workspace = "."
+
+[identifiers]
+document = "DOC"
+
+[catalog]
+exclude = []
+
+[navigation]
+extend_through = []
+
+[provider]
+id = "example-docs"
+visibility = "public"
+
+[relations]
+legacy_paths = "strict"
+snapshot_types = []
+snapshot_rules = []
+
+[projection]
+format = "sharded-json"
+keep_generations = 4
