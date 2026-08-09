@@ -147,16 +147,17 @@ and record that the earlier delta chain ended. Retention loss is never evidence
 that an entity was removed, and the engine does not reconstruct the missing
 operand heuristically.
 
-## Deferred follow-up: portable snapshot artifacts
+## Deferred follow-up: portable artifact comparison
 
-Portable comparison after provider retention expiry is a named follow-up, not
-part of the first contract. A future command may accept complete exported
-snapshot artifacts as operands, but must bind and verify their schema, provider
-and generation identity, query/scope, coverage/completeness, complete ordered
-observations and canonical artifact digest before applying the same comparison
-semantics. It must reject partial page sets, mixed-query pages, tampering,
-unsupported schemas and incompatible providers. Persisted pages from this
-version are evidence for a consumer; they are not yet accepted back as
+Complete snapshot and comparison artifacts are available through
+`traceability-provider-v1`. What remains deferred is portable comparison after
+provider retention expiry: Documentation Engine does not yet accept previously
+exported snapshot artifacts as comparison operands. A future command must bind
+and verify their schema, provider and generation identity, query/scope,
+coverage/completeness, complete ordered observations and canonical artifact
+digest before applying the same comparison semantics. It must reject partial,
+mixed-query, tampered, unsupported or incompatible artifacts. Exported
+artifacts are durable consumer evidence; they are not yet accepted back as
 Documentation Engine comparison operands.
 
 For v1, entity identity is exactly `(kind, document_id, canonical_anchor)`.
