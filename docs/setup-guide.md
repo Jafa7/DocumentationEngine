@@ -301,6 +301,18 @@ docsystem migrate /path/to/project --apply
 
 Run it only after backup and user approval.
 
+Applied migrations print an immutable journal generation. If the process stops
+before publishing terminal evidence, restore the verified pre-migration bytes
+before retrying:
+
+```bash
+docsystem migrate-recover-interrupted GENERATION /path/to/project
+```
+
+This command refuses corrupt evidence and source bytes that match neither the
+recorded before nor after state. See
+[interrupted journal recovery](interrupted-recovery.md).
+
 **Check:** `readiness --json` eventually reports `"ready": true` or reports a
 specific blocker you can explain.
 

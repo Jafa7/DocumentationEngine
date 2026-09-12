@@ -56,8 +56,10 @@ The adapter is deliberately a wrapper, not a second implementation:
   when successful commands emitted non-fatal stderr, such as projection
   fallback warnings;
 - only read-only commands are exposed. Mutating operations (`init`,
-  `migrate --apply`, `index --write`, `maintenance --write` and
-  `maintenance-recover`) intentionally have no tools and stay
+  `migrate --apply`, `migrate-recover-interrupted`, `index --write`,
+  `maintenance --write` and
+  `maintenance-recover`, `maintenance-recover-interrupted`) intentionally have
+  no tools and stay
   with the human or calling system, matching
   [the agent contract](agent-contract.md);
 - pinned `provider snapshot` and `provider compare` are currently CLI-only.
@@ -70,6 +72,10 @@ The adapter is deliberately a wrapper, not a second implementation:
   diagnostics, so a client never mistakes a failure for data. The one
   exception is `readiness`, whose "not ready" state is a legitimate answer:
   it returns the payload with `"ready": false` instead of raising.
+- every CLI child has a deadline and separate stdout/stderr byte bounds.
+  Exceeding one terminates the child and fails with `mcp-timeout` or
+  `mcp-output-limit`; the adapter never presents captured partial output as a
+  successful document or JSON object.
 - `criteria`, `roadmap_status`, `roadmap_next`, `roadmap_explain`, `workstream`,
   `intake`, `admission`, `execution_handoff`,
   `execution_result`, `lifecycle` and `finish_handoff` expose the same read-only
@@ -185,6 +191,44 @@ The server speaks stdio. A typical host configuration:
   }
 }
 ```
+
+The process that launches `docsystem-mcp` owns its execution limits:
+
+| Environment variable | Default | Valid range |
+|---|---:|---:|
+| `DOCSYSTEM_MCP_TIMEOUT_SECONDS` | `120` | greater than `0`, at most `3600` |
+| `DOCSYSTEM_MCP_MAX_STDOUT_BYTES` | `16777216` | `1` to `1073741824` |
+| `DOCSYSTEM_MCP_MAX_STDERR_BYTES` | `1048576` | `1` to `1073741824` |
+
+For example:
+
+```json
+{
+  "mcpServers": {
+    "docsystem": {
+      "command": "docsystem-mcp",
+      "env": {
+        "DOCSYSTEM_MCP_TIMEOUT_SECONDS": "180",
+        "DOCSYSTEM_MCP_MAX_STDOUT_BYTES": "33554432"
+      }
+    }
+  }
+}
+```
+
+Invalid policy values fail the tool call with `mcp-policy-invalid`; they do
+not silently restore an unbounded mode. Timeout/output-limit handling reaps the
+CLI child. On POSIX, the adapter also terminates its new process group. On
+Windows it terminates the direct CLI child; the current CLI does not launch
+descendants, and the adapter does not claim a general Windows process-tree
+kill contract.
+
+The registered tools are synchronous wrappers in the currently supported MCP
+SDK. Some hosts may stop waiting when a tool call is cancelled, but that does
+not provide a portable cancellation callback into the synchronous function.
+Therefore immediate host-cancellation cleanup is not promised; the configured
+deadline is the portable upper bound. A Python interruption delivered to the
+executing wrapper does terminate and reap the child.
 
 Without the `mcp` package installed, the tool functions in
 `docsystem.mcp_server` still work as plain Python (they only need the

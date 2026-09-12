@@ -82,8 +82,9 @@ resolved roots must be unique and non-overlapping. `visibility` is required
 and is either `private` or `public`.
 
 `write` is optional and defaults to `none`. The only opt-in value is
-`managed-maintenance`; it authorizes the selected-source form of the existing
-bounded `maintenance --write` and `maintenance-recover` commands. It does not
+`managed-maintenance`; it authorizes the selected-source form of bounded
+`maintenance --write`, `maintenance-recover` and
+`maintenance-recover-interrupted`. It does not
 authorize arbitrary edits, migration, projection writes, cross-source
 transactions or deletion. Keep `none` unless the owning project deliberately
 enables this narrow maintenance contract.
@@ -170,7 +171,8 @@ same local pointer or environment wiring is active.
 
 Mutating commands retain their existing authorization boundary. Source
 selection only changes the one project root they target. `init`,
-`migrate --apply` and `index --write` retain their command-specific guards.
+`migrate --apply`, `migrate-recover-interrupted` and `index --write` retain
+their command-specific guards.
 Selected-source managed maintenance has an additional fail-closed boundary:
 the source must opt into `write = "managed-maintenance"`.
 
@@ -198,6 +200,9 @@ source-qualified and requires the exact journal manifest hash:
 
 ```bash
 docsystem maintenance-recover GENERATION . \
+  --source example-project \
+  --expect-manifest-hash JOURNAL_MANIFEST_SHA256
+docsystem maintenance-recover-interrupted GENERATION . \
   --source example-project \
   --expect-manifest-hash JOURNAL_MANIFEST_SHA256
 ```

@@ -10,6 +10,7 @@ values and the document body — is changed.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import shutil
 import tempfile
@@ -26,8 +27,16 @@ from docsystem.catalog import (
     validate_catalog,
 )
 from docsystem.config import ProjectConfig
+from docsystem.journal import (
+    ApplyResult,
+    FileEdit,
+    LineRange,
+    default_journal_root,
+    run_bounded_transaction,
+)
 
 _ANCHOR_PREFIX = re.compile(r"&\S+[ \t]+")
+MIGRATION_WORKSTREAM_ID = "MIGRATION-RELATIONS"
 
 
 @dataclass(frozen=True)
@@ -252,58 +261,83 @@ def validate_plan(config: ProjectConfig, plan: MigrationPlan) -> tuple[str, ...]
         return tuple(problems)
 
 
-def apply_migration_plan(config: ProjectConfig, plan: MigrationPlan) -> None:
-    """Write every planned change atomically, or leave the tree untouched.
+def _migration_edits(plan: MigrationPlan) -> tuple[FileEdit, ...]:
+    originals = dict(plan.original_contents)
+    edits: list[FileEdit] = []
+    for path, new_content in plan.updated_contents:
+        original = originals[path]
+        line_count = max(
+            len(original.splitlines()), len(new_content.splitlines()), 1
+        )
+        edits.append(
+            FileEdit(
+                path=path.as_posix(),
+                operation="bounded-edit",
+                before_sha256=hashlib.sha256(original.encode("utf-8")).hexdigest(),
+                semantic_content=new_content,
+                mechanical_content=new_content,
+                allowed_ranges=(LineRange(1, line_count),),
+            )
+        )
+    return tuple(edits)
 
-    Every source file is first re-read and compared against the content the
-    plan was computed from; a mismatch (for example, a concurrent edit
-    between planning and applying) aborts before touching any file. Every new
-    file is then first written to a sibling temporary file; only once every
-    temporary file has been written successfully are the files renamed into
-    place. If a rename fails partway through, already-renamed files are
-    restored from their cached original bytes so a mid-migration OS failure
-    cannot leave a partially migrated multi-file change.
+
+def _validate_applied_plan(
+    config: ProjectConfig,
+    plan: MigrationPlan,
+    problems: list[str],
+) -> bool:
+    """Validate the real post-write tree without requiring strict pre-state."""
+
+    try:
+        catalog = build_catalog(config)
+        problems.extend(
+            f"{issue.path.as_posix()}: {issue.message}"
+            for issue in validate_catalog(catalog, config)
+            if issue.severity != "warning"
+        )
+        touched_ids = {change.source_id for change in plan.changes}
+        remaining = [
+            item
+            for item in catalog.relation_migrations
+            if item.source_id in touched_ids
+        ]
+        if remaining:
+            unresolved = ", ".join(
+                f"{item.source_id}.{item.relation}={item.value!r}"
+                for item in remaining
+            )
+            problems.append(
+                "migration is not idempotent; still resolvable after apply: "
+                f"{unresolved}"
+            )
+    except (OSError, UnicodeError, ValueError) as error:
+        problems.append(f"post-write migration validation failed: {error}")
+    return not problems
+
+
+def apply_migration_plan(
+    config: ProjectConfig,
+    plan: MigrationPlan,
+    *,
+    created_at: str,
+    validation_problems: list[str] | None = None,
+) -> ApplyResult:
+    """Apply one validated migration through the durable bounded journal.
+
+    Exact raw before hashes reject a stale plan before source mutation. The
+    journal preserves byte-exact before/after evidence and supports explicit
+    recovery when the creating process stops before terminal publication.
     """
 
-    root = config.documentation_root
-    expected_originals = dict(plan.original_contents)
-    originals: dict[Path, bytes] = {}
-    for path, _ in plan.updated_contents:
-        final_path = root / path
-        raw = final_path.read_bytes()
-        if raw.decode("utf-8") != expected_originals[path]:
-            raise ValueError(
-                f"{path.as_posix()} changed since the migration plan was computed; "
-                "re-run migrate to recompute the plan"
-            )
-        originals[final_path] = raw
-
-    temp_files: list[tuple[Path, Path]] = []
-    try:
-        for path, new_content in plan.updated_contents:
-            final_path = root / path
-            descriptor, temp_name = tempfile.mkstemp(
-                prefix=f".{final_path.name}.", suffix=".tmp", dir=str(final_path.parent)
-            )
-            with open(descriptor, "wb") as handle:
-                handle.write(new_content.encode("utf-8"))
-            temp_path = Path(temp_name)
-            shutil.copymode(final_path, temp_path)
-            temp_files.append((temp_path, final_path))
-    except OSError:
-        for temp_path, _ in temp_files:
-            temp_path.unlink(missing_ok=True)
-        raise
-
-    committed: list[Path] = []
-    try:
-        for temp_path, final_path in temp_files:
-            temp_path.replace(final_path)
-            committed.append(final_path)
-    except OSError:
-        for final_path in committed:
-            final_path.write_bytes(originals[final_path])
-        for temp_path, final_path in temp_files:
-            if final_path not in committed:
-                temp_path.unlink(missing_ok=True)
-        raise
+    problems = validation_problems if validation_problems is not None else []
+    return run_bounded_transaction(
+        source_root=config.documentation_root,
+        journal_root=default_journal_root(
+            config.project_root, config.documentation_root
+        ),
+        workstream_id=MIGRATION_WORKSTREAM_ID,
+        created_at=created_at,
+        edits=_migration_edits(plan),
+        validate=lambda _root: _validate_applied_plan(config, plan, problems),
+    )

@@ -94,6 +94,9 @@ one-source update does not rewrite every other source shard.
 states without returning document bodies or private absolute paths. Workspace
 membership, source visibility, projection-relevant configuration and every
 Markdown source hash are bound into the generation.
+Source inventory hashes exact file bytes. Federated cache schema 2 also carries
+that identity in serialized document objects; older disposable generations fall
+back to a direct rebuild rather than being reinterpreted.
 
 Existing federation queries prefer a verified workspace projection. They
 still prove freshness across every registered source before serving a complete

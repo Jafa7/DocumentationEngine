@@ -7,7 +7,7 @@ provider's orchestration.
 
 ## Read-only vs. mutating commands
 
-Six operations write anything:
+These operations write source or derived state:
 
 - `docsystem init PROJECT` creates `.docsystem.toml` and the documentation
   root. It refuses to overwrite an existing configuration, but it is a
@@ -16,6 +16,8 @@ Six operations write anything:
   files in the target tree.
 - `docsystem migrate PROJECT --apply` rewrites resolved legacy relation
   values in place.
+- `docsystem migrate-recover-interrupted GENERATION PROJECT` restores exact
+  pre-migration bytes from a verified prepared attempt with no terminal record.
 - `docsystem index PROJECT --write` writes a new projection generation
   below `.docsystem/cache`.
 - `docsystem federation index PROJECT --workspace PATH --write` writes a new
@@ -26,6 +28,8 @@ Six operations write anything:
 - `docsystem maintenance-recover GENERATION PROJECT` restores verified before
   bytes and refuses to overwrite any source that no longer equals the
   generation's recorded after state.
+- `docsystem maintenance-recover-interrupted GENERATION PROJECT` resumes a
+  verified prepared attempt that stopped before terminal evidence.
 
 Every other command — `doctor`, `show-config`, `catalog`, `validate`, `read`,
 `dependencies`, `references`, `change-plan`, `graph-health`, `maintenance` with `--check` or
@@ -46,10 +50,11 @@ verified projection produce byte-identical stdout.
 
 `docsystem migrate` without `--apply` is always a preview: it computes and
 prints the same plan `--apply` would write, but touches nothing. An agent
-should treat `--apply`, `--write`, and the explicit `maintenance-recover`
-command as mutating authority signals, and surface that distinction to the
-human or calling system before using them, exactly like any other
-hard-to-reverse action.
+should treat `--apply`, `--write`, `migrate-recover-interrupted`,
+`maintenance-recover`, and
+`maintenance-recover-interrupted` as mutating authority signals, and surface
+that distinction to the human or calling system before using them, exactly
+like any other hard-to-reverse action.
 
 ## Keep workflow evidence proportional
 
@@ -236,6 +241,15 @@ from stdout text alone.
 For an existing project, `docsystem readiness PROJECT --json` is the
 starting point. Its `next_command` field names the single safe next
 command for the project's current state — never a source-mutating default.
+The additive `validation_scope` object has an `id`, an ordered `evaluated`
+list and an ordered `not_evaluated` list. Scope `adoption-structure-v1`
+evaluates the documentation root, catalog membership, metadata/relations,
+sections/navigation, hierarchical reachability and projection state. It does
+not evaluate semantic graph diagnostics, document profiles, delivery contracts
+or program plans. `ready: true` applies only to the reported scope; run
+`validate` before claiming complete configured-policy compliance. `index`
+shares the structural indexability boundary and deliberately does not add the
+unevaluated governance gates to ordinary reads.
 An agent driving adoption should call `readiness`, follow `next_command`,
 and re-check `readiness` after each step, rather than assuming a fixed
 command order.
@@ -480,6 +494,12 @@ instead so journal evidence never overlaps authored source. Recovery is
 explicit: `maintenance-recover GENERATION PROJECT` verifies the immutable
 generation and restores only when every current file still equals recorded
 after bytes. A newer or unknown state is a refusal, not a forced rollback.
+An abrupt process stop is handled only by the separate
+`maintenance-recover-interrupted` protocol. It requires an immutable schema-2
+preparation with absent terminal evidence, accepts mixed known before/after
+states, refuses unknown bytes and records resumable recovery evidence. See
+[interrupted maintenance recovery](interrupted-recovery.md) for exact
+atomicity, writer-coordination and replay limits.
 Selected-source recovery also requires `--expect-manifest-hash` with the exact
 journal manifest hash and exact source, workspace-manifest, project-config and
 opt-in policy authority recorded by that generation. Journal generations carry
@@ -565,7 +585,12 @@ and a mismatch note instead. An agent must therefore pass the exact revision it
 cached and treat a mismatch note as a signal to refresh, never assume a
 declared document was omitted for being stale. An explicit `--include
 ID#anchor` still wins over a declaration, so an agent can re-request specific
-sections it needs verbatim.
+sections it needs verbatim. This is a lightweight project-discipline contract,
+not a content receipt: the engine does not retain the bytes the agent previously
+saw. The project must assign a new revision whenever living content or semantic
+metadata changes. If a revision is reused, `--assume-known` can omit changed
+content because equality proves only the authored label. Use `--since` when
+omission must be established from a retained content hash.
 
 When an agent consumed a projection generation earlier and wants only what
 changed, it should record that generation hash and later run `--since

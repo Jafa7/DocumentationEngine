@@ -89,6 +89,27 @@ class EntityChange:
         }
 
 
+@dataclass(frozen=True)
+class PreparedSnapshotQuery:
+    """One immutable in-process inventory reused across bounded export pages."""
+
+    header: dict[str, object]
+    observations: tuple[EntityObservation, ...]
+    query_hash: str
+
+
+@dataclass(frozen=True)
+class PreparedCompareQuery:
+    """Two immutable inventories and their comparison reused across pages."""
+
+    provider_id: str
+    before_header: dict[str, object]
+    after_header: dict[str, object]
+    changes: tuple[EntityChange, ...]
+    counts: dict[str, int]
+    query_hash: str
+
+
 def _canonical_json(value: object, *, indent: int | None = None) -> str:
     separators = (",", ":") if indent is None else None
     return json.dumps(
@@ -387,8 +408,30 @@ def snapshot_response(
     cursor: str | None = None,
     page_size: int = DEFAULT_PAGE_SIZE,
 ) -> dict[str, object]:
-    inventory = observations(snapshot)
-    query_hash = _query_hash("provider-snapshot", (snapshot.generation,))
+    return prepared_snapshot_response(
+        prepare_snapshot_query(snapshot),
+        cursor=cursor,
+        page_size=page_size,
+    )
+
+
+def prepare_snapshot_query(snapshot: PinnedProjection) -> PreparedSnapshotQuery:
+    """Prepare one complete snapshot inventory for repeated page rendering."""
+
+    return PreparedSnapshotQuery(
+        header=_snapshot_header(snapshot),
+        observations=observations(snapshot),
+        query_hash=_query_hash("provider-snapshot", (snapshot.generation,)),
+    )
+
+
+def prepared_snapshot_response(
+    query: PreparedSnapshotQuery,
+    *,
+    cursor: str | None = None,
+    page_size: int = DEFAULT_PAGE_SIZE,
+) -> dict[str, object]:
+    """Render one bounded page from a previously prepared snapshot query."""
 
     def build(
         selected: list[EntityObservation], page: dict[str, object]
@@ -396,16 +439,16 @@ def snapshot_response(
         return {
             "schema_version": RESPONSE_SCHEMA_VERSION,
             "kind": "provider-snapshot",
-            "snapshot": _snapshot_header(snapshot),
+            "snapshot": query.header,
             "page": page,
             "observations": [item.as_dict() for item in selected],
         }
 
     return _bounded_page(
-        inventory,
+        query.observations,
         cursor=cursor,
         page_size=page_size,
-        query_hash=query_hash,
+        query_hash=query.query_hash,
         build=build,
     )
 
@@ -417,14 +460,42 @@ def compare_response(
     cursor: str | None = None,
     page_size: int = DEFAULT_PAGE_SIZE,
 ) -> dict[str, object]:
+    return prepared_compare_response(
+        prepare_compare_query(before, after),
+        cursor=cursor,
+        page_size=page_size,
+    )
+
+
+def prepare_compare_query(
+    before: PinnedProjection, after: PinnedProjection
+) -> PreparedCompareQuery:
+    """Prepare both complete inventories and their exact comparison once."""
+
     if before.provider.get("id") != after.provider.get("id"):
         raise ProviderContractError(
             "provider-mismatch", "pinned generations belong to different providers"
         )
     changes, counts = compare_observations(observations(before), observations(after))
-    query_hash = _query_hash(
-        "provider-compare", (before.generation, after.generation)
+    return PreparedCompareQuery(
+        provider_id=str(before.provider["id"]),
+        before_header=_snapshot_header(before),
+        after_header=_snapshot_header(after),
+        changes=changes,
+        counts=counts,
+        query_hash=_query_hash(
+            "provider-compare", (before.generation, after.generation)
+        ),
     )
+
+
+def prepared_compare_response(
+    query: PreparedCompareQuery,
+    *,
+    cursor: str | None = None,
+    page_size: int = DEFAULT_PAGE_SIZE,
+) -> dict[str, object]:
+    """Render one bounded page from a previously prepared comparison."""
 
     def build(
         selected: list[EntityChange], page: dict[str, object]
@@ -432,18 +503,18 @@ def compare_response(
         return {
             "schema_version": RESPONSE_SCHEMA_VERSION,
             "kind": "provider-compare",
-            "provider_id": before.provider["id"],
-            "before": _snapshot_header(before),
-            "after": _snapshot_header(after),
-            "summary": counts,
+            "provider_id": query.provider_id,
+            "before": query.before_header,
+            "after": query.after_header,
+            "summary": query.counts,
             "page": page,
             "changes": [item.as_dict() for item in selected],
         }
 
     return _bounded_page(
-        changes,
+        query.changes,
         cursor=cursor,
         page_size=page_size,
-        query_hash=query_hash,
+        query_hash=query.query_hash,
         build=build,
     )

@@ -435,7 +435,7 @@ def test_pinned_generation_rejects_ambiguous_unsupported_incomplete_and_mismatch
     manifest = generation_root / generation / "manifest.json"
     original_manifest = manifest.read_text(encoding="utf-8")
     value = json.loads(original_manifest)
-    value["schema_version"] = 4
+    value["schema_version"] = 5
     manifest.write_text(json.dumps(value), encoding="utf-8")
     assert provider_snapshot(tmp_path, generation) == 1
     captured = capsys.readouterr()
@@ -536,6 +536,8 @@ def test_provider_snapshot_requires_identity_and_enforces_byte_bound(
                 "catalog": "included-markdown",
                 "path_base": "documentation-root",
                 "sections": "all-addressable",
+                "document_hash": "sha256-raw-source-bytes-v1",
+                "section_hash": "sha256-normalized-section-text-v1",
             },
             "boundaries": [
                 "excluded-and-unmapped-paths-omitted",

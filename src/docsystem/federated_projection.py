@@ -38,7 +38,7 @@ from docsystem.projection import config_fingerprint
 from docsystem.sections import MarkdownSection
 from docsystem.workspace import WORKSPACE_FILENAME, Workspace
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DEFAULT_KEEP_GENERATIONS = 2
 
 
@@ -243,6 +243,7 @@ def _markdown_document(value: MarkdownDocument) -> dict[str, object]:
         "links": [item.as_posix() for item in value.links],
         "is_index": value.is_index,
         "content": value.content,
+        "source_sha256": value.source_sha256,
         "metadata": _metadata(value.metadata),
         "sections": [
             {
@@ -270,6 +271,7 @@ def _load_markdown_document(value: object) -> MarkdownDocument:
         links=tuple(PurePosixPath(str(item)) for item in value.get("links", [])),
         is_index=bool(value["is_index"]),
         content=str(value["content"]),
+        source_sha256=str(value["source_sha256"]),
         metadata=_load_metadata(value.get("metadata")),
         sections=tuple(
             MarkdownSection(

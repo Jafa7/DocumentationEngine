@@ -53,6 +53,16 @@ class DocumentMetadata:
     federated_references: tuple[FederatedMetadataReference, ...] = ()
 
 
+def authored_relation_names(metadata: DocumentMetadata) -> frozenset[str]:
+    """Return semantic relation fields that contain a parsed authored value."""
+
+    return frozenset(
+        [reference.relation for reference in metadata.references]
+        + [relation for relation, _ in metadata.legacy_references]
+        + [reference.relation for reference in metadata.federated_references]
+    )
+
+
 @dataclass(frozen=True)
 class FrontMatterResult:
     """Parsed metadata plus recoverable validation messages."""

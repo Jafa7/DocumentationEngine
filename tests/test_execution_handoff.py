@@ -196,6 +196,10 @@ def test_execution_handoff_is_body_free_deterministic_and_read_only(
     snapshot = packet["targets"][0]["snapshot"]
     assert snapshot["address"] == "DOC-002#contract"
     assert len(snapshot["document_sha256"]) == 64
+    target_path = tmp_path / "plan" / snapshot["path"]
+    assert snapshot["document_sha256"] == hashlib.sha256(
+        target_path.read_bytes()
+    ).hexdigest()
     assert len(snapshot["section"]["sha256"]) == 64
     assert len(packet["packet_sha256"]) == 64
     assert "private outcome body" not in first_text
@@ -214,6 +218,28 @@ def test_execution_handoff_is_body_free_deterministic_and_read_only(
         if item.is_file()
     }
     assert after == before
+
+
+def test_execution_handoff_document_hash_uses_exact_source_bytes(
+    tmp_path: Path, capsys
+) -> None:
+    _project(tmp_path)
+    target = tmp_path / "plan" / "target.md"
+    target.write_bytes(target.read_bytes().replace(b"\n", b"\r\n"))
+    admission = _write_request(tmp_path, _request())
+
+    assert execution_handoff(
+        tmp_path,
+        "WS-001",
+        admission_path=admission,
+        json_output=True,
+    ) == 0
+    packet = json.loads(capsys.readouterr().out)
+    snapshot = packet["targets"][0]["snapshot"]
+
+    assert snapshot["document_sha256"] == hashlib.sha256(
+        target.read_bytes()
+    ).hexdigest()
 
 
 def test_execution_handoff_verifies_current_and_rejects_stale_source(

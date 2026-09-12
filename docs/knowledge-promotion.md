@@ -24,6 +24,15 @@ determines the safe operation:
 | `append-only` | append a new record without rewriting earlier entries |
 | `immutable-after-state` | create a superseding document |
 
+The `living` rule is also an integrity requirement for revision-based client
+caches. `context --assume-known ID@REV` can prove only that the current authored
+revision label still equals `REV`; it does not retain the content previously
+delivered to the client. Reusing a revision after changing content or semantic
+metadata can therefore hide a refresh from that lightweight mode. Increment the
+revision for every accepted living-knowledge change, or use a retained
+generation with `context --since` when the omission decision must be bound to
+content hashes.
+
 If another document declares the same authority slug, promotion blocks with a
 visible conflict. Documentation Engine does not infer semantic equivalence
 between differently named authority keys.

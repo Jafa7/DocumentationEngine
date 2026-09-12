@@ -1,4 +1,6 @@
 import io
+import subprocess
+import sys
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -67,6 +69,8 @@ def test_tools_return_structured_payloads_from_the_cli_contract(
     readiness = mcp_server.readiness(project)
     assert readiness["schema_version"] == 1
     assert readiness["ready"] is True
+    assert readiness["validation_scope"]["id"] == "adoption-structure-v1"
+    assert "document-profiles" in readiness["validation_scope"]["not_evaluated"]
 
     catalog = mcp_server.catalog(project)
     assert [item["path"] for item in catalog["documents"]] == [
@@ -452,6 +456,100 @@ def test_cli_errors_surface_as_exceptions(tmp_path: Path) -> None:
         mcp_server.readiness(str(tmp_path / "missing"))
     with pytest.raises(RuntimeError, match="document ID not found: DOC-999"):
         mcp_server.read_document(str(project), "DOC-999")
+
+
+def test_bounded_executor_terminates_a_timed_out_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    processes: list[subprocess.Popen[bytes]] = []
+    original_popen = subprocess.Popen
+
+    def observed_popen(*args, **kwargs):
+        process = original_popen(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(mcp_server.subprocess, "Popen", observed_popen)
+    with pytest.raises(RuntimeError, match="mcp-timeout"):
+        mcp_server._execute(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            mcp_server.ExecutionPolicy(
+                timeout_seconds=0.05,
+                max_stdout_bytes=1024,
+                max_stderr_bytes=1024,
+            ),
+        )
+
+    assert len(processes) == 1
+    assert processes[0].poll() is not None
+
+
+@pytest.mark.parametrize("stream", ("stdout", "stderr"))
+def test_bounded_executor_rejects_excessive_output_without_partial_success(
+    stream: str,
+) -> None:
+    descriptor = "sys.stdout.buffer" if stream == "stdout" else "sys.stderr.buffer"
+    with pytest.raises(RuntimeError, match=f"mcp-output-limit: {stream}"):
+        mcp_server._execute(
+            [
+                sys.executable,
+                "-c",
+                f"import sys, time; {descriptor}.write(b'x' * 8192); "
+                f"{descriptor}.flush(); time.sleep(30)",
+            ],
+            mcp_server.ExecutionPolicy(
+                timeout_seconds=2,
+                max_stdout_bytes=128,
+                max_stderr_bytes=128,
+            ),
+        )
+
+
+def test_mcp_execution_policy_is_host_configurable_and_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DOCSYSTEM_MCP_TIMEOUT_SECONDS", "3.5")
+    monkeypatch.setenv("DOCSYSTEM_MCP_MAX_STDOUT_BYTES", "4096")
+    monkeypatch.setenv("DOCSYSTEM_MCP_MAX_STDERR_BYTES", "2048")
+    assert mcp_server.execution_policy() == mcp_server.ExecutionPolicy(
+        timeout_seconds=3.5,
+        max_stdout_bytes=4096,
+        max_stderr_bytes=2048,
+    )
+
+    monkeypatch.setenv("DOCSYSTEM_MCP_TIMEOUT_SECONDS", "0")
+    with pytest.raises(RuntimeError, match="mcp-policy-invalid"):
+        mcp_server.execution_policy()
+
+
+def test_mcp_rejects_non_utf8_cli_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        mcp_server,
+        "_execute",
+        lambda command, policy: mcp_server._ExecutionResult(0, b"\xff", b""),
+    )
+
+    with pytest.raises(RuntimeError, match="mcp-output-encoding"):
+        mcp_server._invoke(["readiness", "/project", "--json"])
+
+
+def test_bounded_executor_preserves_utf8_stdout_and_stderr() -> None:
+    result = mcp_server._execute(
+        [
+            sys.executable,
+            "-c",
+            "import sys; print('данные'); print('диагностика', file=sys.stderr)",
+        ],
+        mcp_server.ExecutionPolicy(
+            timeout_seconds=2,
+            max_stdout_bytes=1024,
+            max_stderr_bytes=1024,
+        ),
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.decode("utf-8") == "данные\n"
+    assert result.stderr.decode("utf-8") == "диагностика\n"
 
 
 def test_context_surfaces_projection_fallback_diagnostics(tmp_path: Path) -> None:

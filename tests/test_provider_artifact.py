@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import docsystem.provider as provider_module
 from docsystem.catalog import build_catalog, validate_catalog
 from docsystem.cli import (
     provider_artifact_verify,
@@ -39,9 +40,9 @@ def _config() -> str:
     )
 
 
-def _document(*, changed: int | None = None) -> str:
+def _document(*, changed: int | None = None, section_count: int = 510) -> str:
     sections = []
-    for index in range(510):
+    for index in range(section_count):
         body = "Changed" if changed == index else f"Value {index}"
         sections.append(
             f'<a id="section-{index}"></a>\n## Section {index}\n{body}\n'
@@ -55,7 +56,7 @@ revision: 1
 """ + "".join(sections)
 
 
-def _write_project(root: Path) -> Path:
+def _write_project(root: Path, *, section_count: int = 510) -> Path:
     (root / CONFIG_FILENAME).write_text(_config(), encoding="utf-8")
     docs = root / "plan"
     docs.mkdir()
@@ -70,7 +71,9 @@ revision: 1
 """,
         encoding="utf-8",
     )
-    (docs / "contract.md").write_text(_document(), encoding="utf-8")
+    (docs / "contract.md").write_text(
+        _document(section_count=section_count), encoding="utf-8"
+    )
     return docs
 
 
@@ -133,6 +136,36 @@ def test_complete_artifacts_assemble_pages_deterministically_and_verify(
     compare_result = verify_artifact(comparison)
     assert compare_result["valid"] is True
     assert compare_result["generations"] == [before_generation, after_generation]
+
+
+def test_complete_exports_prepare_large_inventories_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_project(tmp_path, section_count=1100)
+    generation = _generation(tmp_path)
+    snapshot = load_pinned_projection(load_config(tmp_path), generation)
+    calls = {"observations": 0, "compare": 0}
+    original_observations = provider_module.observations
+    original_compare = provider_module.compare_observations
+
+    def counted_observations(value):
+        calls["observations"] += 1
+        return original_observations(value)
+
+    def counted_compare(before, after):
+        calls["compare"] += 1
+        return original_compare(before, after)
+
+    monkeypatch.setattr(provider_module, "observations", counted_observations)
+    monkeypatch.setattr(provider_module, "compare_observations", counted_compare)
+
+    artifact = snapshot_artifact(snapshot)
+    assert len(artifact["observations"]) == 1104
+    assert calls == {"observations": 1, "compare": 0}
+
+    comparison = compare_artifact(snapshot, snapshot)
+    assert comparison["changes"] == []
+    assert calls == {"observations": 3, "compare": 1}
 
 
 def test_artifact_writer_is_atomic_and_refuses_to_replace_evidence(
@@ -218,6 +251,64 @@ def test_artifact_verification_rejects_corruption_partial_and_incompatibility(
     with pytest.raises(ProviderArtifactError) as captured:
         verify_artifact(_reseal(schema))
     assert captured.value.code == "artifact-schema-unsupported"
+
+
+@pytest.mark.parametrize(
+    ("raw", "member"),
+    (
+        ('{"schema_version": 1, "schema_version": 1}', "schema_version"),
+        ('{"schema_version": 1, "schema_version": 2}', "schema_version"),
+        ('{"protocol": {"name": "one", "name": "one"}}', "name"),
+        ('{"protocol": {"name": "one", "name": "two"}}', "name"),
+    ),
+)
+def test_artifact_loader_rejects_duplicate_members_recursively(
+    tmp_path: Path, raw: str, member: str
+) -> None:
+    path = tmp_path / "ambiguous.json"
+    path.write_text(raw, encoding="utf-8")
+
+    with pytest.raises(ProviderArtifactError) as captured:
+        load_and_verify_artifact(path)
+    assert captured.value.code == "artifact-corrupt"
+    assert str(captured.value) == f"artifact contains duplicate JSON member: {member}"
+
+
+def test_artifact_cli_rejects_duplicate_member_without_stdout(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "ambiguous.json"
+    path.write_text('{"schema_version": 1, "schema_version": 1}', encoding="utf-8")
+
+    assert provider_artifact_verify(path) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "[artifact-corrupt]" in captured.err
+    assert "duplicate JSON member: schema_version" in captured.err
+
+
+@pytest.mark.parametrize("raw", (b"{", b"\xff"))
+def test_artifact_loader_reports_malformed_or_invalid_encoding_deterministically(
+    tmp_path: Path, raw: bytes
+) -> None:
+    path = tmp_path / "unreadable.json"
+    path.write_bytes(raw)
+
+    with pytest.raises(ProviderArtifactError) as captured:
+        load_and_verify_artifact(path)
+    assert captured.value.code == "artifact-corrupt"
+    assert str(captured.value) == f"artifact is unreadable: {path}"
+
+
+def test_artifact_verification_allows_unique_optional_fields(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    generation = _generation(tmp_path)
+    artifact = snapshot_artifact(
+        load_pinned_projection(load_config(tmp_path), generation)
+    )
+    artifact["optional_extension"] = {"unique": True}
+
+    assert verify_artifact(_reseal(artifact))["valid"] is True
 
 
 @pytest.mark.parametrize(

@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from docsystem.catalog import build_catalog
-from docsystem.cli import index_projection, readiness
+from docsystem.cli import index_projection, readiness, validate
 from docsystem.config import CONFIG_FILENAME, DEFAULT_CONFIG, load_config
 from docsystem.readiness import evaluate_readiness
 
@@ -42,6 +42,8 @@ def test_readiness_distinguishes_blocking_errors_from_advisory_categories(
     assert readiness(tmp_path) == 1
     captured = capsys.readouterr()
     assert "Blocking structural/configuration errors: 1" in captured.out
+    assert "Validation scope: adoption-structure-v1" in captured.out
+    assert "document-profiles" in captured.out
     assert "Next safe command: docsystem doctor" in captured.out
     assert "Markdown is not mapped to a configured area" not in captured.out
     assert "Markdown is not mapped to a configured area" in captured.err
@@ -110,6 +112,21 @@ def test_readiness_json_reports_missing_documentation_root(
             "state": "absent",
             "reason": "documentation root does not exist",
         },
+        "validation_scope": {
+            "id": "adoption-structure-v1",
+            "evaluated": ["documentation-root"],
+            "not_evaluated": [
+                "catalog-membership",
+                "metadata-and-relations",
+                "sections-and-navigation",
+                "hierarchical-reachability",
+                "projection-state",
+                "semantic-graph-diagnostics",
+                "document-profiles",
+                "delivery-contracts",
+                "program-plans",
+            ],
+        },
         "next_command": f"docsystem init {tmp_path}",
     }
     assert captured.err == ""
@@ -142,6 +159,81 @@ def test_readiness_json_carries_full_detail_without_parsing_stderr(
         "reason": "projection absent",
     }
     assert payload["next_command"] == f"docsystem doctor {tmp_path}"
+
+
+def test_readiness_scope_does_not_claim_profile_policy_compliance(
+    tmp_path: Path, capsys
+) -> None:
+    root = minimal_project(tmp_path)
+    config_path = tmp_path / CONFIG_FILENAME
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8")
+        + "\n[profiles.spec]\n"
+        + 'document_types = ["spec"]\n'
+        + 'history_mode = "living"\n'
+        + "allowed_relations = []\n",
+        encoding="utf-8",
+    )
+    (root / "README.md").write_text(
+        "---\nid: DOC-001\nrevision: 1\n---\n# Index\n\n[Spec](spec.md)\n",
+        encoding="utf-8",
+    )
+    (root / "spec.md").write_text(
+        "---\nid: DOC-002\nrevision: 1\ntype: spec\n"
+        "depends_on: [DOC-001]\n---\n# Spec\n",
+        encoding="utf-8",
+    )
+
+    assert readiness(tmp_path, json_output=True) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ready"] is True
+    assert payload["validation_scope"] == {
+        "id": "adoption-structure-v1",
+        "evaluated": [
+            "documentation-root",
+            "catalog-membership",
+            "metadata-and-relations",
+            "sections-and-navigation",
+            "hierarchical-reachability",
+            "projection-state",
+        ],
+        "not_evaluated": [
+            "semantic-graph-diagnostics",
+            "document-profiles",
+            "delivery-contracts",
+            "program-plans",
+        ],
+    }
+    assert validate(tmp_path) == 1
+    assert "relation-not-allowed" in capsys.readouterr().err
+
+
+def test_readiness_scope_does_not_claim_graph_or_program_plan_checks(
+    tmp_path: Path, capsys
+) -> None:
+    root = minimal_project(tmp_path)
+    (root / "README.md").write_text(
+        "---\nid: DOC-001\nrevision: 1\ndepends_on: [DOC-002]\n---\n"
+        "# Index\n\n[Program](program.md)\n",
+        encoding="utf-8",
+    )
+    (root / "program.md").write_text(
+        "---\nid: DOC-002\nrevision: 1\ntype: roadmap\nstatus: proposed\n"
+        "depends_on: [DOC-001]\nprogram_plan:\n  version: 1\n  milestones:\n"
+        "    - id: first\n      title: First\n      order: 1\n      state: planned\n"
+        "    - id: second\n      title: Second\n      order: 1\n      state: planned\n"
+        "---\n# Program\n",
+        encoding="utf-8",
+    )
+
+    assert readiness(tmp_path, json_output=True) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ready"] is True
+    assert "semantic-graph-diagnostics" in payload["validation_scope"]["not_evaluated"]
+    assert "program-plans" in payload["validation_scope"]["not_evaluated"]
+    assert validate(tmp_path) == 1
+    error = capsys.readouterr().err
+    assert "cycle" in error or "duplicate-order" in error
 
 
 def test_cli_readiness_sends_blocking_diagnostics_to_stderr_not_stdout(

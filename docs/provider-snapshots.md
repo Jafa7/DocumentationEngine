@@ -62,7 +62,7 @@ document and section observations. Each observation contains only:
 
 - `document_id` and canonical `anchor` (`null` for a document);
 - `anchor_kind` (`explicit` or `generated`) for a section;
-- exact content hash;
+- exact content hash under the algorithm named by the response scope;
 - documentation-root-relative POSIX path;
 - one-based inclusive line hints;
 - configured visibility.
@@ -72,6 +72,9 @@ paths and projection locations are not exported. Explicit anchors provide the
 strongest stable section identity. A generated anchor remains canonical for
 that generation, but changing its heading may produce a missing/added pair
 rather than an inferred match; the engine does not use title similarity.
+The scope names `sha256-raw-source-bytes-v1` for document observations and
+`sha256-normalized-section-text-v1` for section observations. See
+[source identity](source-identity.md).
 
 ## Compare two pinned generations
 

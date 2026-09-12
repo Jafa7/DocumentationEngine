@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import docsystem.journal as journal_module
 from docsystem.catalog import build_catalog
 from docsystem.cli import (
     build_parser,
@@ -14,11 +15,13 @@ from docsystem.cli import (
     impact,
     index_projection,
     migrate,
+    migrate_recover_interrupted,
     migration_report,
     readiness,
     validate,
 )
 from docsystem.config import CONFIG_FILENAME, DEFAULT_CONFIG, load_config
+from docsystem.journal import JournalError
 from docsystem.migration import (
     _rewrite_yaml_values,
     apply_migration_plan,
@@ -171,14 +174,71 @@ def test_apply_rolls_back_committed_files_byte_for_byte_when_a_later_replace_fai
 
     monkeypatch.setattr(Path, "replace", flaky_replace)
 
-    with pytest.raises(OSError):
-        apply_migration_plan(config, plan)
+    result = apply_migration_plan(
+        config, plan, created_at="2026-09-12T16:00:00Z"
+    )
 
     # The already-renamed first file is restored to its exact original bytes
     # (including CRLF), and the never-renamed second file is untouched.
+    assert result.status == "rolled-back"
+    assert "simulated rename failure" in (result.reason or "")
     assert a_path.read_bytes() == a_before
     assert b_path.read_bytes() == b_before
     assert not list(root.rglob("*.tmp"))
+
+
+def test_failed_automatic_rollback_remains_explicitly_recoverable(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    _root, a_path, b_path = two_file_crlf_project(tmp_path)
+    a_before = a_path.read_bytes()
+    b_before = b_path.read_bytes()
+    config = load_config(tmp_path)
+    plan = build_migration_plan(config, build_catalog(config))
+
+    original_replace = Path.replace
+    replace_calls = 0
+
+    def fail_second_source_replace(self: Path, target: Path) -> Path:
+        nonlocal replace_calls
+        if self.name.endswith(".journal-tmp"):
+            replace_calls += 1
+            if replace_calls == 2:
+                raise OSError("simulated second apply failure")
+        return original_replace(self, target)
+
+    original_restore = journal_module._atomic_replace_bytes
+    restore_calls = 0
+
+    def fail_first_restore(path: Path, content: bytes) -> None:
+        nonlocal restore_calls
+        restore_calls += 1
+        if restore_calls == 1:
+            raise OSError("simulated rollback failure")
+        original_restore(path, content)
+
+    monkeypatch.setattr(Path, "replace", fail_second_source_replace)
+    monkeypatch.setattr(journal_module, "_atomic_replace_bytes", fail_first_restore)
+    with pytest.raises(JournalError, match="automatic rollback failed"):
+        apply_migration_plan(
+            config, plan, created_at="2026-09-12T16:30:00Z"
+        )
+    assert a_path.read_bytes() != a_before
+    assert b_path.read_bytes() == b_before
+
+    monkeypatch.setattr(Path, "replace", original_replace)
+    monkeypatch.setattr(journal_module, "_atomic_replace_bytes", original_restore)
+    assert (
+        migrate_recover_interrupted(
+            tmp_path,
+            "20260912T163000Z-MIGRATION-RELATIONS",
+            recovered_at="2026-09-12T16:40:00Z",
+        )
+        == 0
+    )
+    assert capsys.readouterr().err == ""
+    assert a_path.read_bytes() == a_before
+    assert b_path.read_bytes() == b_before
 
 
 def test_readiness_reports_resolvable_migrations_without_writing(
@@ -354,6 +414,16 @@ def test_migrate_parser_accepts_apply_flag() -> None:
     assert args.apply is True
     default_args = build_parser().parse_args(["migrate", "/tmp/project"])
     assert default_args.apply is False
+    recovery = build_parser().parse_args(
+        [
+            "migrate-recover-interrupted",
+            "20260912T160000Z-MIGRATION-RELATIONS",
+            "/tmp/project",
+            "--json",
+        ]
+    )
+    assert recovery.generation == "20260912T160000Z-MIGRATION-RELATIONS"
+    assert recovery.json_output is True
 
 
 def test_readiness_parser_and_project_default() -> None:
@@ -379,7 +449,9 @@ def test_apply_rejects_a_plan_that_no_longer_matches_disk_content(tmp_path: Path
     before = target.read_bytes()
 
     with pytest.raises(ValueError):
-        apply_migration_plan(config, plan)
+        apply_migration_plan(
+            config, plan, created_at="2026-09-12T16:00:00Z"
+        )
 
     assert target.read_bytes() == before
 
@@ -518,6 +590,71 @@ def test_cli_migrate_apply_is_reachable_from_unrelated_cwd_and_writes_target_pro
     assert "Applied 1 legacy relation migration(s)" in result.stdout
     assert "[DOC-001]" in target.read_text(encoding="utf-8")
     assert list(unrelated_cwd.iterdir()) == []
+
+
+def test_interrupted_multi_file_migration_is_recoverable_and_replay_fenced(
+    tmp_path: Path, capsys
+) -> None:
+    root, a_path, b_path = two_file_crlf_project(tmp_path)
+    a_before = a_path.read_bytes()
+    b_before = b_path.read_bytes()
+    script = r'''
+import os
+import sys
+from pathlib import Path
+
+from docsystem.catalog import build_catalog
+from docsystem.config import load_config
+from docsystem.migration import apply_migration_plan, build_migration_plan
+
+project = Path(sys.argv[1])
+config = load_config(project)
+plan = build_migration_plan(config, build_catalog(config))
+original_replace = Path.replace
+count = 0
+def replace_then_exit(self, target):
+    global count
+    result = original_replace(self, target)
+    if self.name.endswith(".journal-tmp"):
+        count += 1
+        if count == 1:
+            os._exit(33)
+    return result
+Path.replace = replace_then_exit
+apply_migration_plan(config, plan, created_at="2026-09-12T17:00:00Z")
+'''
+    process = subprocess.run([sys.executable, "-c", script, str(tmp_path)], check=False)
+    assert process.returncode == 33
+    assert a_path.read_bytes() != a_before
+    assert b_path.read_bytes() == b_before
+
+    generation = "20260912T170000Z-MIGRATION-RELATIONS"
+    unrelated_cwd = tmp_path / "recovery-cwd"
+    unrelated_cwd.mkdir()
+    recovery = _run_module_cli(
+        ["migrate-recover-interrupted", generation, str(tmp_path)],
+        unrelated_cwd,
+    )
+    assert recovery.returncode == 0, recovery.stderr
+    assert recovery.stderr == ""
+    assert "migration-interrupted-recovery\trecovered" in recovery.stdout
+    assert list(unrelated_cwd.iterdir()) == []
+    assert a_path.read_bytes() == a_before
+    assert b_path.read_bytes() == b_before
+
+    assert (
+        migrate_recover_interrupted(
+            tmp_path,
+            generation,
+            recovered_at="2026-09-12T19:00:00Z",
+            json_output=True,
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "already-recovered"
+    assert payload["restored_paths"] == []
+    assert root.is_dir()
 
 
 def test_cli_readiness_matches_library_output_from_unrelated_cwd(

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from docsystem.catalog import MarkdownCatalog, MarkdownDocument
 from docsystem.config import DocumentProfile, ProjectConfig
+from docsystem.metadata import authored_relation_names
 
 
 @dataclass(frozen=True)
@@ -64,8 +65,7 @@ def _metadata_fields(document: MarkdownDocument) -> frozenset[str]:
         fields.add("type")
     if metadata.status is not None:
         fields.add("status")
-    fields.update(reference.relation for reference in metadata.references)
-    fields.update(relation for relation, _ in metadata.legacy_references)
+    fields.update(authored_relation_names(metadata))
     fields.update(name for name, _ in metadata.additional_fields)
     return frozenset(fields)
 
@@ -73,10 +73,7 @@ def _metadata_fields(document: MarkdownDocument) -> frozenset[str]:
 def _document_relations(document: MarkdownDocument) -> frozenset[str]:
     metadata = document.metadata
     assert metadata is not None
-    return frozenset(
-        [reference.relation for reference in metadata.references]
-        + [relation for relation, _ in metadata.legacy_references]
-    )
+    return authored_relation_names(metadata)
 
 
 def _violations(

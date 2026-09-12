@@ -17,7 +17,8 @@ workstream ID and a UTC timestamp, and contains:
                              as evidence of the attempt)
     semantic.patch.diff     unified diff, before -> semantic content
     mechanical.patch.diff   unified diff, semantic -> mechanical content
-    verification.json       status, checks performed and the manifest hash
+    verification.json       atomically published terminal status, checks and
+                             immutable prepared-manifest hash
     recovery.json           written only when the creating transaction rolls
                              itself back automatically
 
@@ -35,12 +36,12 @@ transaction that is later rolled back or explicitly recovered is removed:
 that content was never authored (it was this tool's own uncommitted write),
 so undoing it is not a delete of pre-existing authored material.
 
-A completed generation's `manifest.json` and `verification.json` are only
-ever rewritten by the same `run_bounded_transaction` call that created them,
-to record their own final status. No later call reuses or mutates an
-    existing generation: generation directories are created with exclusive
-    `mkdir`. `recover_generation` reads it and creates a separate record;
-    `copy_generation_to_cloud` only reads it.
+Schema-2 `manifest.json` is immutable after preparation. Terminal evidence is
+published separately. No later transaction reuses or mutates an existing
+generation: generation directories are created with exclusive `mkdir`.
+`recover_generation` reads a completed generation;
+`recover_interrupted_generation` reads a prepared generation with absent
+terminal evidence; `copy_generation_to_cloud` accepts only completed evidence.
 """
 
 from __future__ import annotations
@@ -60,7 +61,8 @@ from itertools import pairwise
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 
-SCHEMA_VERSION = 1
+LEGACY_SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _OPERATIONS = frozenset({"bounded-edit", "create"})
 _WORKSTREAM_PATTERN = re.compile(r"^[A-Z][A-Z0-9]*(-[A-Z0-9]+)+$")
@@ -68,6 +70,7 @@ _CREATED_AT_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _GENERATION_PATTERN = re.compile(r"^\d{8}T\d{6}Z-[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+$")
 _SOURCE_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
+_RECOVERY_STAGING_PREFIX = ".staging-"
 _AUTHORITY_KEYS = frozenset(
     {
         "source",
@@ -81,6 +84,20 @@ _AUTHORITY_KEYS = frozenset(
 
 class JournalError(ValueError):
     """A journal request violates a bounded-write safety invariant."""
+
+
+def default_journal_root(project_root: Path, source_root: Path) -> Path:
+    """Return a non-overlapping local journal path for one documentation source."""
+
+    local = project_root / ".docsystem" / "journal"
+    resolved_source = source_root.resolve(strict=False)
+    if not local.resolve(strict=False).is_relative_to(resolved_source):
+        return local
+    state_home = Path(
+        os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")
+    )
+    identity = hashlib.sha256(str(project_root.resolve()).encode()).hexdigest()[:16]
+    return state_home / "documentation-engine" / "journals" / identity
 
 
 @dataclass(frozen=True)
@@ -204,6 +221,13 @@ class _VerifiedGeneration:
     manifest: Mapping[str, object]
     verification: Mapping[str, object]
     manifest_sha256: str
+
+
+@dataclass(frozen=True)
+class _InterruptedRecoveryRecord:
+    root: Path
+    manifest: Mapping[str, object]
+    completed: bool
 
 
 def normalize_source_path(raw: str) -> PurePosixPath:
@@ -480,6 +504,26 @@ def _write_json(path: Path, data: Mapping[str, object]) -> bytes:
     return raw
 
 
+def _write_json_atomic(path: Path, data: Mapping[str, object]) -> bytes:
+    """Publish a terminal JSON record as either absent or fully written."""
+
+    raw = _json_bytes(data)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".journal-terminal", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with open(descriptor, "wb") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+    except OSError:
+        temporary.unlink(missing_ok=True)
+        raise
+    return raw
+
+
 def _validated_authority(authority: Mapping[str, str] | None) -> dict[str, str] | None:
     if authority is None:
         return None
@@ -678,6 +722,8 @@ def _atomic_replace_bytes(path: Path, content: bytes) -> None:
     try:
         with open(descriptor, "wb") as handle:
             handle.write(content)
+        if path.exists():
+            shutil.copymode(path, temp_path)
         temp_path.replace(path)
     except OSError:
         temp_path.unlink(missing_ok=True)
@@ -805,7 +851,7 @@ def _run_bounded_transaction_unlocked(
         workstream_id,
         generation_id,
         created_at,
-        "pending",
+        "prepared",
         admitted,
         admitted_guards,
         hashlib.sha256(semantic_patch_bytes).hexdigest(),
@@ -830,6 +876,8 @@ def _run_bounded_transaction_unlocked(
             )
             with open(descriptor, "wb") as handle:
                 handle.write(item.mechanical_content.encode("utf-8"))
+            if item.operation == "bounded-edit":
+                shutil.copymode(item.absolute_path, temp_name)
             temp_files.append((Path(temp_name), item.absolute_path))
     except (OSError, JournalError) as error:
         for temp_path, _ in temp_files:
@@ -974,25 +1022,22 @@ def _run_bounded_transaction_unlocked(
         )
 
     try:
+        _verify_authority_guards(admitted_authority_guards)
+        manifest_sha256 = hashlib.sha256(
+            (generation_root / "manifest.json").read_bytes()
+        ).hexdigest()
         verification_payload: dict[str, object] = {
             "schema_version": SCHEMA_VERSION,
             "generation_id": generation_id,
             "status": "applied",
             "checks": list(_CHECKS),
             "changed_paths": sorted(changed_paths),
+            "manifest_sha256": manifest_sha256,
         }
-        finished_manifest = dict(manifest)
-        finished_manifest["status"] = "applied"
-        finished_manifest["verification_sha256"] = hashlib.sha256(
-            _json_bytes(verification_payload)
-        ).hexdigest()
-        manifest_bytes = _write_json(generation_root / "manifest.json", finished_manifest)
-        manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
-        _write_json(
+        _write_json_atomic(
             generation_root / "verification.json",
-            {**verification_payload, "manifest_sha256": manifest_sha256},
+            verification_payload,
         )
-        _verify_authority_guards(admitted_authority_guards)
     except (OSError, JournalError) as error:
         reason = f"evidence-finalization-failure: {error}"
         manifest_sha256 = _rollback(
@@ -1054,6 +1099,9 @@ def _rollback(
             "restored_paths": list(restored),
         },
     )
+    manifest_sha256 = hashlib.sha256(
+        (generation_root / "manifest.json").read_bytes()
+    ).hexdigest()
     verification_payload: dict[str, object] = {
         "schema_version": SCHEMA_VERSION,
         "generation_id": generation_id,
@@ -1061,95 +1109,21 @@ def _rollback(
         "status": "rolled-back",
         "reason": reason,
         "changed_paths": sorted(item.normalized_path for item in admitted),
+        "manifest_sha256": manifest_sha256,
     }
-    finished_manifest = dict(manifest)
-    finished_manifest["status"] = "rolled-back"
-    finished_manifest["verification_sha256"] = hashlib.sha256(
-        _json_bytes(verification_payload)
-    ).hexdigest()
-    manifest_bytes = _write_json(generation_root / "manifest.json", finished_manifest)
-    manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
-    _write_json(
+    _write_json_atomic(
         generation_root / "verification.json",
-        {**verification_payload, "manifest_sha256": manifest_sha256},
+        verification_payload,
     )
     return manifest_sha256
 
 
-def _load_and_verify_generation(journal_root: Path, generation_id: str) -> _VerifiedGeneration:
-    """Load one generation and verify its evidence is internally consistent.
-
-    Raises `JournalError` for anything that means the generation cannot be
-    trusted: missing evidence files, a manifest hash that no longer matches
-    `verification.json`, or a `before`/`after` copy whose bytes no longer
-    match its recorded hash. This is the single integrity gate shared by
-    `recover_generation` and `copy_generation_to_cloud`.
-    """
-
-    _validate_generation_id(generation_id)
-    resolved_journal = journal_root.resolve(strict=True)
-    if not resolved_journal.is_dir():
-        raise JournalError("journal root must be a directory")
-    generation_root = resolved_journal / generation_id
-    if generation_root.is_symlink():
-        raise JournalError(f"generation must not be a symlink: {generation_id}")
-    try:
-        resolved_generation = generation_root.resolve(strict=True)
-    except FileNotFoundError as error:
-        raise JournalError(f"generation is incomplete or missing: {generation_id}") from error
-    if not resolved_generation.is_relative_to(resolved_journal):
-        raise JournalError(f"generation escapes journal root: {generation_id}")
-    if any(path.is_symlink() for path in resolved_generation.rglob("*")):
-        raise JournalError(f"generation contains a symlink: {generation_id}")
-    generation_root = resolved_generation
-    manifest_path = generation_root / "manifest.json"
-    verification_path = generation_root / "verification.json"
-    if not manifest_path.is_file() or not verification_path.is_file():
-        raise JournalError(f"generation is incomplete or missing: {generation_id}")
-
-    manifest_bytes = manifest_path.read_bytes()
-    try:
-        manifest_value = json.loads(manifest_bytes)
-        verification_value = json.loads(verification_path.read_bytes())
-    except (OSError, json.JSONDecodeError) as error:
-        raise JournalError(f"generation evidence is corrupted: {generation_id}") from error
-
-    if not isinstance(manifest_value, dict) or not isinstance(verification_value, dict):
-        raise JournalError(f"generation evidence has invalid shape: {generation_id}")
-    manifest: dict[str, object] = manifest_value
-    verification: dict[str, object] = verification_value
-
-    if (
-        manifest.get("schema_version") != SCHEMA_VERSION
-        or verification.get("schema_version") != SCHEMA_VERSION
-        or manifest.get("generation_id") != generation_id
-        or verification.get("generation_id") != generation_id
-    ):
-        raise JournalError(f"generation identity mismatch: {generation_id}")
-
-    status = manifest.get("status")
-    if status not in {"applied", "rolled-back"} or verification.get("status") != status:
-        raise JournalError(f"generation is not consistently completed: {generation_id}")
-    if status == "rolled-back":
-        recovery_file = generation_root / "recovery.json"
-        recovery_sha = verification.get("recovery_sha256")
-        if (
-            not isinstance(recovery_sha, str)
-            or not recovery_file.is_file()
-            or hashlib.sha256(recovery_file.read_bytes()).hexdigest() != recovery_sha
-        ):
-            raise JournalError(f"recovery evidence is corrupted: {generation_id}")
-
-    recorded_hash = verification.get("manifest_sha256")
-    if recorded_hash != hashlib.sha256(manifest_bytes).hexdigest():
-        raise JournalError(f"manifest integrity check failed: {generation_id}")
-    verification_payload = dict(verification)
-    verification_payload.pop("manifest_sha256", None)
-    if (
-        manifest.get("verification_sha256")
-        != hashlib.sha256(_json_bytes(verification_payload)).hexdigest()
-    ):
-        raise JournalError(f"verification integrity check failed: {generation_id}")
+def _validate_manifest_evidence(
+    generation_root: Path,
+    generation_id: str,
+    manifest: Mapping[str, object],
+) -> None:
+    """Verify immutable patch, file-copy and read-guard preparation evidence."""
 
     patches = manifest.get("patches")
     if not isinstance(patches, dict):
@@ -1167,7 +1141,9 @@ def _load_and_verify_generation(journal_root: Path, generation_id: str) -> _Veri
             not patch_file.is_file()
             or hashlib.sha256(patch_file.read_bytes()).hexdigest() != patch_sha
         ):
-            raise JournalError(f"{patch_name} patch evidence is corrupted: {generation_id}")
+            raise JournalError(
+                f"{patch_name} patch evidence is corrupted: {generation_id}"
+            )
 
     files = manifest.get("files")
     if not isinstance(files, list) or not files:
@@ -1188,7 +1164,8 @@ def _load_and_verify_generation(journal_root: Path, generation_id: str) -> _Veri
         before_sha = entry.get("before_sha256")
         after_sha = entry.get("after_sha256")
         if before_sha is not None and (
-            not isinstance(before_sha, str) or not _SHA256_PATTERN.fullmatch(before_sha)
+            not isinstance(before_sha, str)
+            or not _SHA256_PATTERN.fullmatch(before_sha)
         ):
             raise JournalError(f"generation before hash is invalid: {path}")
         if not isinstance(after_sha, str) or not _SHA256_PATTERN.fullmatch(after_sha):
@@ -1199,14 +1176,15 @@ def _load_and_verify_generation(journal_root: Path, generation_id: str) -> _Veri
                 not before_file.is_file()
                 or hashlib.sha256(before_file.read_bytes()).hexdigest() != before_sha
             ):
-                raise JournalError(f"before evidence is corrupted: {generation_id}/{path}")
-        if after_sha is not None:
-            after_file = generation_root / "after" / path
-            if (
-                not after_file.is_file()
-                or hashlib.sha256(after_file.read_bytes()).hexdigest() != after_sha
-            ):
-                raise JournalError(f"after evidence is corrupted: {generation_id}/{path}")
+                raise JournalError(
+                    f"before evidence is corrupted: {generation_id}/{path}"
+                )
+        after_file = generation_root / "after" / path
+        if (
+            not after_file.is_file()
+            or hashlib.sha256(after_file.read_bytes()).hexdigest() != after_sha
+        ):
+            raise JournalError(f"after evidence is corrupted: {generation_id}/{path}")
 
     guards = manifest.get("guards", [])
     if not isinstance(guards, list):
@@ -1226,10 +1204,163 @@ def _load_and_verify_generation(journal_root: Path, generation_id: str) -> _Veri
             raise JournalError(f"generation guard hash is invalid: {path}")
         seen_guards.add(path)
 
+
+def _resolve_generation_root(journal_root: Path, generation_id: str) -> Path:
+    _validate_generation_id(generation_id)
+    resolved_journal = journal_root.resolve(strict=True)
+    if not resolved_journal.is_dir():
+        raise JournalError("journal root must be a directory")
+    generation_root = resolved_journal / generation_id
+    if generation_root.is_symlink():
+        raise JournalError(f"generation must not be a symlink: {generation_id}")
+    try:
+        resolved_generation = generation_root.resolve(strict=True)
+    except FileNotFoundError as error:
+        raise JournalError(
+            f"generation is incomplete or missing: {generation_id}"
+        ) from error
+    if not resolved_generation.is_relative_to(resolved_journal):
+        raise JournalError(f"generation escapes journal root: {generation_id}")
+    if any(path.is_symlink() for path in resolved_generation.rglob("*")):
+        raise JournalError(f"generation contains a symlink: {generation_id}")
+    return resolved_generation
+
+
+def _load_and_verify_generation(journal_root: Path, generation_id: str) -> _VerifiedGeneration:
+    """Load one generation and verify its evidence is internally consistent.
+
+    Raises `JournalError` for anything that means the generation cannot be
+    trusted: missing evidence files, a manifest hash that no longer matches
+    `verification.json`, or a `before`/`after` copy whose bytes no longer
+    match its recorded hash. This is the single integrity gate shared by
+    `recover_generation` and `copy_generation_to_cloud`.
+    """
+
+    generation_root = _resolve_generation_root(journal_root, generation_id)
+    manifest_path = generation_root / "manifest.json"
+    verification_path = generation_root / "verification.json"
+    if not manifest_path.is_file() or not verification_path.is_file():
+        raise JournalError(f"generation is incomplete or missing: {generation_id}")
+
+    manifest_bytes = manifest_path.read_bytes()
+    try:
+        manifest_value = json.loads(manifest_bytes)
+        verification_value = json.loads(verification_path.read_bytes())
+    except (OSError, json.JSONDecodeError) as error:
+        raise JournalError(f"generation evidence is corrupted: {generation_id}") from error
+
+    if not isinstance(manifest_value, dict) or not isinstance(verification_value, dict):
+        raise JournalError(f"generation evidence has invalid shape: {generation_id}")
+    manifest: dict[str, object] = manifest_value
+    verification: dict[str, object] = verification_value
+
+    schema_version = manifest.get("schema_version")
+    if (
+        schema_version not in {LEGACY_SCHEMA_VERSION, SCHEMA_VERSION}
+        or verification.get("schema_version") != schema_version
+        or manifest.get("generation_id") != generation_id
+        or verification.get("generation_id") != generation_id
+    ):
+        raise JournalError(f"generation identity mismatch: {generation_id}")
+
+    status = verification.get("status")
+    if status not in {"applied", "rolled-back"}:
+        raise JournalError(f"generation is not consistently completed: {generation_id}")
+    if schema_version == LEGACY_SCHEMA_VERSION:
+        if manifest.get("status") != status:
+            raise JournalError(
+                f"generation is not consistently completed: {generation_id}"
+            )
+    elif manifest.get("status") != "prepared":
+        raise JournalError(f"generation preparation is invalid: {generation_id}")
+    if status == "rolled-back":
+        recovery_file = generation_root / "recovery.json"
+        recovery_sha = verification.get("recovery_sha256")
+        if (
+            not isinstance(recovery_sha, str)
+            or not recovery_file.is_file()
+            or hashlib.sha256(recovery_file.read_bytes()).hexdigest() != recovery_sha
+        ):
+            raise JournalError(f"recovery evidence is corrupted: {generation_id}")
+
+    recorded_hash = verification.get("manifest_sha256")
+    if recorded_hash != hashlib.sha256(manifest_bytes).hexdigest():
+        raise JournalError(f"manifest integrity check failed: {generation_id}")
+    files_value = manifest.get("files")
+    expected_paths = (
+        sorted(str(entry.get("path")) for entry in files_value)
+        if isinstance(files_value, list)
+        and all(isinstance(entry, dict) for entry in files_value)
+        else None
+    )
+    if schema_version == SCHEMA_VERSION and (
+        expected_paths is None or verification.get("changed_paths") != expected_paths
+    ):
+        raise JournalError(f"verification integrity check failed: {generation_id}")
+    if (
+        schema_version == SCHEMA_VERSION
+        and status == "applied"
+        and verification.get("checks") != list(_CHECKS)
+    ):
+        raise JournalError(f"verification integrity check failed: {generation_id}")
+    if schema_version == LEGACY_SCHEMA_VERSION:
+        verification_payload = dict(verification)
+        verification_payload.pop("manifest_sha256", None)
+        if (
+            manifest.get("verification_sha256")
+            != hashlib.sha256(_json_bytes(verification_payload)).hexdigest()
+        ):
+            raise JournalError(f"verification integrity check failed: {generation_id}")
+
+    _validate_manifest_evidence(generation_root, generation_id, manifest)
+
     return _VerifiedGeneration(
         generation_root,
         manifest,
         verification,
+        hashlib.sha256(manifest_bytes).hexdigest(),
+    )
+
+
+def _load_interrupted_generation(
+    journal_root: Path, generation_id: str
+) -> _VerifiedGeneration:
+    """Load a schema-2 prepared generation whose terminal record is absent."""
+
+    generation_root = _resolve_generation_root(journal_root, generation_id)
+    manifest_path = generation_root / "manifest.json"
+    if not manifest_path.is_file():
+        raise JournalError(f"generation preparation is incomplete: {generation_id}")
+    manifest_bytes = manifest_path.read_bytes()
+    try:
+        manifest_value = json.loads(manifest_bytes)
+    except (OSError, json.JSONDecodeError) as error:
+        raise JournalError(f"generation preparation is corrupted: {generation_id}") from error
+    if (
+        not isinstance(manifest_value, dict)
+        or manifest_value.get("schema_version") != SCHEMA_VERSION
+        or manifest_value.get("generation_id") != generation_id
+        or manifest_value.get("status") != "prepared"
+    ):
+        raise JournalError(f"generation preparation is invalid: {generation_id}")
+    _validate_manifest_evidence(generation_root, generation_id, manifest_value)
+
+    verification_path = generation_root / "verification.json"
+    if verification_path.exists() or verification_path.is_symlink():
+        try:
+            _load_and_verify_generation(journal_root, generation_id)
+        except JournalError as error:
+            raise JournalError(
+                f"generation terminal evidence is present but invalid: {generation_id}"
+            ) from error
+        raise JournalError(
+            f"generation is completed; use completed recovery: {generation_id}"
+        )
+
+    return _VerifiedGeneration(
+        generation_root,
+        manifest_value,
+        {},
         hashlib.sha256(manifest_bytes).hexdigest(),
     )
 
@@ -1242,7 +1373,7 @@ def inspect_generation(journal_root: Path, generation_id: str) -> GenerationEvid
     if not isinstance(workstream_id, str):
         raise JournalError(f"generation workstream evidence is invalid: {generation_id}")
     validate_workstream_id(workstream_id)
-    status = verified.manifest.get("status")
+    status = verified.verification.get("status")
     if not isinstance(status, str):
         raise JournalError(f"generation status evidence is invalid: {generation_id}")
     files = verified.manifest["files"]
@@ -1258,9 +1389,14 @@ def inspect_generation(journal_root: Path, generation_id: str) -> GenerationEvid
     if recovery_root.exists():
         if recovery_root.is_symlink() or not recovery_root.is_dir():
             raise JournalError(f"generation recovery evidence is invalid: {generation_id}")
-        records = sorted(recovery_root.iterdir(), key=lambda item: item.name)
-        if not records:
-            raise JournalError(f"generation recovery evidence is incomplete: {generation_id}")
+        records = sorted(
+            (
+                item
+                for item in recovery_root.iterdir()
+                if not item.name.startswith(_RECOVERY_STAGING_PREFIX)
+            ),
+            key=lambda item: item.name,
+        )
         for record in records:
             manifest_path = record / "manifest.json"
             verification_path = record / "verification.json"
@@ -1276,14 +1412,26 @@ def inspect_generation(journal_root: Path, generation_id: str) -> GenerationEvid
                 raise JournalError(
                     f"generation recovery evidence is incomplete: {generation_id}"
                 ) from error
+            recovery_schema = (
+                recovery_manifest.get("schema_version")
+                if isinstance(recovery_manifest, dict)
+                else None
+            )
             if (
                 not isinstance(recovery_manifest, dict)
                 or not isinstance(recovery_verification, dict)
-                or recovery_manifest.get("schema_version") != SCHEMA_VERSION
-                or recovery_verification.get("schema_version") != SCHEMA_VERSION
+                or recovery_schema not in {LEGACY_SCHEMA_VERSION, SCHEMA_VERSION}
+                or recovery_verification.get("schema_version") != recovery_schema
                 or recovery_manifest.get("source_generation_id") != generation_id
                 or recovery_verification.get("source_generation_id") != generation_id
-                or recovery_manifest.get("status") != "recovered"
+                or (
+                    recovery_schema == LEGACY_SCHEMA_VERSION
+                    and recovery_manifest.get("status") != "recovered"
+                )
+                or (
+                    recovery_schema == SCHEMA_VERSION
+                    and recovery_manifest.get("status") != "prepared"
+                )
                 or recovery_verification.get("status") != "recovered"
                 or recovery_verification.get("manifest_sha256")
                 != hashlib.sha256(manifest_bytes).hexdigest()
@@ -1316,6 +1464,395 @@ def _recovery_target(source_root: Path, path: str) -> Path:
     if candidate.exists() and not candidate.is_file():
         raise JournalError(f"recovery target is not a regular file: {path}")
     return candidate
+
+
+def _recovery_authority_preflight(
+    verified: _VerifiedGeneration,
+    expected_authority: Mapping[str, str] | None,
+    authority_guards: Sequence[AuthorityFileGuard],
+) -> None:
+    _validate_authority_guard_binding(expected_authority, authority_guards)
+    _verify_authority_guards(authority_guards)
+    if expected_authority is None:
+        return
+    expected_keys = {
+        "source",
+        "workspace_manifest_sha256",
+        "project_config_sha256",
+        "write_policy",
+    }
+    if set(expected_authority) != expected_keys:
+        raise JournalError(
+            "expected_authority must contain source, workspace_manifest_sha256, "
+            "project_config_sha256 and write_policy"
+        )
+    authority = verified.manifest.get("authority")
+    if not isinstance(authority, dict):
+        raise JournalError("selected-source recovery requires journal authority")
+    for key, expected in expected_authority.items():
+        if authority.get(key) != expected:
+            raise JournalError(f"journal authority does not match selected {key}")
+
+
+def _classify_recovery_targets(
+    source_root: Path,
+    files: Sequence[dict[str, object]],
+) -> tuple[list[tuple[dict[str, object], Path]], list[str], list[str]]:
+    targets: list[tuple[dict[str, object], Path]] = []
+    states: list[str] = []
+    unknown: list[str] = []
+    for entry in files:
+        path = entry["path"]
+        assert isinstance(path, str)
+        target = _recovery_target(source_root, path)
+        current = _current_hash(target)
+        before = entry["before_sha256"]
+        after = entry["after_sha256"]
+        if current == before:
+            state = "before"
+        elif current == after:
+            state = "after"
+        else:
+            state = "unknown"
+            unknown.append(path)
+        targets.append((entry, target))
+        states.append(state)
+    return targets, states, sorted(unknown)
+
+
+def _interrupted_recovery_record(
+    journal_root: Path,
+    generation_id: str,
+    manifest_sha256: str,
+    files: Sequence[dict[str, object]],
+) -> _InterruptedRecoveryRecord | None:
+    recovery_root = journal_root / "recoveries" / generation_id
+    if not recovery_root.exists():
+        return None
+    if recovery_root.is_symlink() or not recovery_root.is_dir():
+        raise JournalError(
+            f"interrupted recovery evidence is invalid: {generation_id}"
+        )
+    records = sorted(
+        (
+            item
+            for item in recovery_root.iterdir()
+            if not item.name.startswith(_RECOVERY_STAGING_PREFIX)
+        ),
+        key=lambda item: item.name,
+    )
+    if not records:
+        # Empty containers and unpublished staging directories are not
+        # authoritative recovery evidence. A retry may safely prepare and
+        # atomically publish a complete record while preserving those remnants
+        # for audit/diagnosis.
+        return None
+    if len(records) != 1:
+        raise JournalError(
+            f"interrupted recovery evidence is ambiguous: {generation_id}"
+        )
+    record = records[0]
+    if record.is_symlink() or not record.is_dir() or any(
+        path.is_symlink() for path in record.rglob("*")
+    ):
+        raise JournalError(
+            f"interrupted recovery evidence is invalid: {generation_id}"
+        )
+    manifest_path = record / "manifest.json"
+    if not manifest_path.is_file():
+        raise JournalError(
+            f"interrupted recovery evidence is incomplete: {generation_id}"
+        )
+    manifest_bytes = manifest_path.read_bytes()
+    try:
+        value = json.loads(manifest_bytes)
+    except (OSError, json.JSONDecodeError) as error:
+        raise JournalError(
+            f"interrupted recovery evidence is corrupted: {generation_id}"
+        ) from error
+    expected_files = [
+        {
+            "path": entry["path"],
+            "operation": entry["operation"],
+            "before_sha256": entry["before_sha256"],
+            "after_sha256": entry["after_sha256"],
+        }
+        for entry in files
+    ]
+    if (
+        not isinstance(value, dict)
+        or value.get("schema_version") != SCHEMA_VERSION
+        or value.get("recovery_kind") != "interrupted-attempt"
+        or value.get("source_generation_id") != generation_id
+        or value.get("source_manifest_sha256") != manifest_sha256
+        or value.get("status") != "prepared"
+        or value.get("outcome") != "before"
+        or value.get("files") != expected_files
+    ):
+        raise JournalError(
+            f"interrupted recovery evidence is invalid: {generation_id}"
+        )
+    verification_path = record / "verification.json"
+    if not verification_path.exists() and not verification_path.is_symlink():
+        return _InterruptedRecoveryRecord(record, value, False)
+    try:
+        verification = json.loads(verification_path.read_bytes())
+    except (OSError, json.JSONDecodeError) as error:
+        raise JournalError(
+            f"interrupted recovery terminal evidence is invalid: {generation_id}"
+        ) from error
+    if (
+        not isinstance(verification, dict)
+        or verification.get("schema_version") != SCHEMA_VERSION
+        or verification.get("recovery_kind") != "interrupted-attempt"
+        or verification.get("source_generation_id") != generation_id
+        or verification.get("status") != "recovered"
+        or verification.get("manifest_sha256")
+        != hashlib.sha256(manifest_bytes).hexdigest()
+        or verification.get("restored_paths")
+        != sorted(str(entry["path"]) for entry in files)
+    ):
+        raise JournalError(
+            f"interrupted recovery terminal evidence is invalid: {generation_id}"
+        )
+    return _InterruptedRecoveryRecord(record, value, True)
+
+
+def _prepare_interrupted_recovery_record(
+    *,
+    journal_root: Path,
+    generation_id: str,
+    recovered_at: str,
+    manifest: Mapping[str, object],
+) -> _InterruptedRecoveryRecord:
+    """Prepare complete recovery evidence and atomically publish its name."""
+
+    compact = recovered_at.replace("-", "").replace(":", "")
+    recovery_root = journal_root / "recoveries" / generation_id
+    record_root = recovery_root / compact
+    if _has_symlink_component(recovery_root):
+        raise JournalError("recovery record path must not contain a symlink")
+    recovery_root.mkdir(parents=True, exist_ok=True)
+    if _has_symlink_component(recovery_root):
+        raise JournalError("recovery record path must not contain a symlink")
+    if record_root.exists() or record_root.is_symlink():
+        raise JournalError(f"recovery record already exists: {record_root.name}")
+    staging = Path(
+        tempfile.mkdtemp(
+            prefix=f"{_RECOVERY_STAGING_PREFIX}{compact}-",
+            dir=recovery_root,
+        )
+    )
+    try:
+        _write_json(staging / "manifest.json", manifest)
+        if record_root.exists() or record_root.is_symlink():
+            raise JournalError(f"recovery record already exists: {record_root.name}")
+        staging.replace(record_root)
+    except (OSError, JournalError):
+        # An unpublished staging directory has no authority over source bytes.
+        # Preserve it as bounded evidence of the interrupted preparation; the
+        # loader ignores it and a later retry can publish a fresh complete
+        # record without manual cleanup.
+        raise
+    return _InterruptedRecoveryRecord(record_root, manifest, False)
+
+
+def recover_interrupted_generation(
+    *,
+    source_root: Path,
+    journal_root: Path,
+    generation_id: str,
+    recovered_at: str,
+    expected_manifest_sha256: str | None = None,
+    expected_workstream_id: str | None = None,
+    expected_authority: Mapping[str, str] | None = None,
+    authority_guards: Sequence[AuthorityFileGuard] = (),
+) -> RecoveryResult:
+    """Resume an interrupted schema-2 attempt monotonically toward before state."""
+
+    with _exclusive_journal_lock(journal_root):
+        _validate_timestamp(recovered_at)
+        if expected_manifest_sha256 is not None and not _SHA256_PATTERN.fullmatch(
+            expected_manifest_sha256
+        ):
+            raise JournalError(
+                "expected_manifest_sha256 must be 64 lowercase hex characters"
+            )
+        admitted_authority_guards = _validated_authority_guards(authority_guards)
+        resolved_source, resolved_journal = _resolved_separate_roots(
+            source_root, journal_root
+        )
+        verified = _load_interrupted_generation(resolved_journal, generation_id)
+        if (
+            expected_workstream_id is not None
+            and verified.manifest.get("workstream_id") != expected_workstream_id
+        ):
+            raise JournalError(
+                "prepared generation does not belong to expected workstream "
+                f"{expected_workstream_id!r}"
+            )
+        if (
+            expected_manifest_sha256 is not None
+            and verified.manifest_sha256 != expected_manifest_sha256
+        ):
+            raise JournalError(
+                "prepared manifest hash does not match expected_manifest_sha256"
+            )
+        _recovery_authority_preflight(
+            verified, expected_authority, admitted_authority_guards
+        )
+        files_value = verified.manifest.get("files")
+        assert isinstance(files_value, list)
+        files: list[dict[str, object]] = files_value
+        targets, states, unknown = _classify_recovery_targets(
+            resolved_source, files
+        )
+        record = _interrupted_recovery_record(
+            resolved_journal,
+            generation_id,
+            verified.manifest_sha256,
+            files,
+        )
+        if record is not None and record.completed:
+            if all(state == "before" for state in states):
+                return RecoveryResult(
+                    generation_id,
+                    "already-recovered",
+                    None,
+                    (),
+                    record.root.relative_to(resolved_journal).as_posix(),
+                )
+            return RecoveryResult(
+                generation_id,
+                "refused",
+                "source changed after completed interrupted recovery",
+                (),
+                record.root.relative_to(resolved_journal).as_posix(),
+            )
+
+        if unknown:
+            return RecoveryResult(
+                generation_id,
+                "refused",
+                "current source has unknown state: " + ", ".join(unknown),
+                (),
+                (
+                    record.root.relative_to(resolved_journal).as_posix()
+                    if record is not None
+                    else None
+                ),
+            )
+
+        if record is None:
+            record_manifest: dict[str, object] = {
+                "schema_version": SCHEMA_VERSION,
+                "recovery_kind": "interrupted-attempt",
+                "source_generation_id": generation_id,
+                "source_manifest_sha256": verified.manifest_sha256,
+                "recovered_at": recovered_at,
+                "status": "prepared",
+                "outcome": "before",
+                "files": [
+                    {
+                        "path": entry["path"],
+                        "operation": entry["operation"],
+                        "before_sha256": entry["before_sha256"],
+                        "after_sha256": entry["after_sha256"],
+                    }
+                    for entry in files
+                ],
+            }
+            record = _prepare_interrupted_recovery_record(
+                journal_root=resolved_journal,
+                generation_id=generation_id,
+                recovered_at=recovered_at,
+                manifest=record_manifest,
+            )
+
+        restored: list[str] = []
+        for (entry, target), state in zip(targets, states, strict=True):
+            if state == "before":
+                continue
+            path = entry["path"]
+            assert isinstance(path, str)
+            try:
+                _verify_authority_guards(admitted_authority_guards)
+                if _recovery_target(resolved_source, path) != target:
+                    raise JournalError(f"recovery target changed before restore: {path}")
+                if _current_hash(target) != entry["after_sha256"]:
+                    raise JournalError(f"source changed before restore: {path}")
+                if entry["operation"] == "create":
+                    target.unlink()
+                else:
+                    before_bytes = (
+                        verified.generation_root / "before" / path
+                    ).read_bytes()
+                    _atomic_replace_bytes(target, before_bytes)
+                if _current_hash(target) != entry["before_sha256"]:
+                    raise JournalError(f"recovery verification failed: {path}")
+                restored.append(path)
+            except (OSError, JournalError) as error:
+                return RecoveryResult(
+                    generation_id,
+                    "incomplete",
+                    f"interrupted recovery remains resumable: {error}",
+                    tuple(sorted(restored)),
+                    record.root.relative_to(resolved_journal).as_posix(),
+                )
+
+        try:
+            _verify_authority_guards(admitted_authority_guards)
+            _targets, final_states, final_unknown = _classify_recovery_targets(
+                resolved_source, files
+            )
+        except (OSError, JournalError) as error:
+            return RecoveryResult(
+                generation_id,
+                "incomplete",
+                f"interrupted recovery remains resumable: {error}",
+                tuple(sorted(restored)),
+                record.root.relative_to(resolved_journal).as_posix(),
+            )
+        if final_unknown or any(state != "before" for state in final_states):
+            return RecoveryResult(
+                generation_id,
+                "incomplete",
+                "interrupted recovery final state is not fully before",
+                tuple(sorted(restored)),
+                record.root.relative_to(resolved_journal).as_posix(),
+            )
+        try:
+            record_manifest_bytes = (record.root / "manifest.json").read_bytes()
+            _write_json_atomic(
+                record.root / "verification.json",
+                {
+                    "schema_version": SCHEMA_VERSION,
+                    "recovery_kind": "interrupted-attempt",
+                    "source_generation_id": generation_id,
+                    "manifest_sha256": hashlib.sha256(
+                        record_manifest_bytes
+                    ).hexdigest(),
+                    "status": "recovered",
+                    "restored_paths": sorted(
+                        str(entry["path"]) for entry in files
+                    ),
+                },
+            )
+        except (OSError, JournalError) as error:
+            return RecoveryResult(
+                generation_id,
+                "incomplete",
+                f"interrupted recovery remains resumable: {error}",
+                tuple(sorted(restored)),
+                record.root.relative_to(resolved_journal).as_posix(),
+            )
+        return RecoveryResult(
+            generation_id,
+            "recovered",
+            None,
+            tuple(sorted(restored)),
+            record.root.relative_to(resolved_journal).as_posix(),
+        )
 
 
 def recover_generation(
@@ -1372,24 +1909,9 @@ def _recover_generation_unlocked(
         and actual_manifest_sha256 != expected_manifest_sha256
     ):
         raise JournalError("completed manifest hash does not match expected_manifest_sha256")
-    if expected_authority is not None:
-        expected_keys = {
-            "source",
-            "workspace_manifest_sha256",
-            "project_config_sha256",
-            "write_policy",
-        }
-        if set(expected_authority) != expected_keys:
-            raise JournalError(
-                "expected_authority must contain source, workspace_manifest_sha256, "
-                "project_config_sha256 and write_policy"
-            )
-        authority = verified.manifest.get("authority")
-        if not isinstance(authority, dict):
-            raise JournalError("selected-source recovery requires journal authority")
-        for key, expected in expected_authority.items():
-            if authority.get(key) != expected:
-                raise JournalError(f"journal authority does not match selected {key}")
+    _recovery_authority_preflight(
+        verified, expected_authority, admitted_authority_guards
+    )
     files_value = verified.manifest.get("files")
     assert isinstance(files_value, list)  # established by the integrity gate
     files: list[dict[str, object]] = files_value
@@ -1451,7 +1973,7 @@ def _recover_generation_unlocked(
         "source_generation_id": generation_id,
         "source_manifest_sha256": actual_manifest_sha256,
         "recovered_at": recovered_at,
-        "status": "pending",
+        "status": "prepared",
         "files": [
             {
                 "path": entry["path"],
@@ -1500,10 +2022,8 @@ def _recover_generation_unlocked(
 
         _verify_authority_guards(admitted_authority_guards)
 
-        finished_manifest = dict(record_manifest)
-        finished_manifest["status"] = "recovered"
-        manifest_bytes = _write_json(record_root / "manifest.json", finished_manifest)
-        _write_json(
+        manifest_bytes = (record_root / "manifest.json").read_bytes()
+        _write_json_atomic(
             record_root / "verification.json",
             {
                 "schema_version": SCHEMA_VERSION,

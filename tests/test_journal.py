@@ -18,6 +18,7 @@ from docsystem.journal import (
     copy_generation_to_cloud,
     evidence_packet,
     recover_generation,
+    recover_interrupted_generation,
     run_bounded_transaction,
 )
 
@@ -160,8 +161,11 @@ def test_valid_bounded_semantic_then_mechanical_edit(tmp_path: Path) -> None:
     assert not (generation_root / "recovery.json").exists()
 
     manifest = json.loads((generation_root / "manifest.json").read_text())
-    assert manifest["status"] == "applied"
-    assert manifest["schema_version"] == 1
+    assert manifest["status"] == "prepared"
+    assert manifest["schema_version"] == 2
+    assert json.loads((generation_root / "verification.json").read_text())["status"] == (
+        "applied"
+    )
 
 
 def test_authority_metadata_is_body_free_deterministic_and_optional(tmp_path: Path) -> None:
@@ -692,7 +696,7 @@ def test_evidence_finalization_failure_restores_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source_root = _source(tmp_path)
-    original_write_json = journal_module._write_json
+    original_write_json = journal_module._write_json_atomic
     failed = {"done": False}
 
     def fail_applied_verification(path: Path, data: dict[str, object]) -> bytes:
@@ -705,7 +709,9 @@ def test_evidence_finalization_failure_restores_source(
             raise OSError("verification storage failed")
         return original_write_json(path, data)
 
-    monkeypatch.setattr(journal_module, "_write_json", fail_applied_verification)
+    monkeypatch.setattr(
+        journal_module, "_write_json_atomic", fail_applied_verification
+    )
     result = run_bounded_transaction(
         source_root=source_root,
         journal_root=_journal(tmp_path),
@@ -776,7 +782,7 @@ def test_multi_file_partial_apply_failure_restores_all(
     )
 
     assert result.status == "rolled-back"
-    assert calls["count"] == 3
+    assert calls["count"] >= 3
     assert (source_root / "a.md").read_text() == "a1\na2\na3\n"
     assert (source_root / "b.md").read_text() == "b1\nb2\nb3\n"
 
@@ -1751,3 +1757,554 @@ def test_partial_explicit_recovery_failure_restores_after_state(
 
     assert (source_root / "a.md").read_text() == "a-after\n"
     assert (source_root / "b.md").read_text() == "b-after\n"
+
+
+def _interrupted_two_file_generation(
+    tmp_path: Path,
+) -> tuple[Path, Path, ApplyResult]:
+    source_root = tmp_path / "interrupted-source"
+    _write(source_root / "a.md", "a-before\n")
+    _write(source_root / "b.md", "b-before\n")
+    result = run_bounded_transaction(
+        source_root=source_root,
+        journal_root=tmp_path / "interrupted-journal",
+        workstream_id="WS-INTERRUPTED-001",
+        created_at="2026-09-12T10:00:00Z",
+        edits=[
+            FileEdit(
+                path="a.md",
+                operation="bounded-edit",
+                before_sha256=_sha("a-before\n"),
+                semantic_content="a-after\n",
+                mechanical_content="a-after\n",
+                allowed_ranges=(LineRange(1, 1),),
+            ),
+            FileEdit(
+                path="b.md",
+                operation="bounded-edit",
+                before_sha256=_sha("b-before\n"),
+                semantic_content="b-after\n",
+                mechanical_content="b-after\n",
+                allowed_ranges=(LineRange(1, 1),),
+            ),
+        ],
+        validate=_accept,
+    )
+    (result.generation_root / "verification.json").unlink()
+    return source_root, tmp_path / "interrupted-journal", result
+
+
+def test_interrupted_recovery_restores_mixed_state_and_fences_replay(
+    tmp_path: Path,
+) -> None:
+    source_root, journal_root, result = _interrupted_two_file_generation(tmp_path)
+    _write(source_root / "a.md", "a-before\n")
+
+    recovery = recover_interrupted_generation(
+        source_root=source_root,
+        journal_root=journal_root,
+        generation_id=result.generation_id,
+        recovered_at="2026-09-12T11:00:00Z",
+    )
+
+    assert recovery.status == "recovered"
+    assert recovery.restored_paths == ("b.md",)
+    assert (source_root / "a.md").read_text() == "a-before\n"
+    assert (source_root / "b.md").read_text() == "b-before\n"
+
+    repeat = recover_interrupted_generation(
+        source_root=source_root,
+        journal_root=journal_root,
+        generation_id=result.generation_id,
+        recovered_at="2026-09-12T12:00:00Z",
+    )
+    assert repeat.status == "already-recovered"
+    assert repeat.recovery_record == recovery.recovery_record
+
+    _write(source_root / "b.md", "b-after\n")
+    refused = recover_interrupted_generation(
+        source_root=source_root,
+        journal_root=journal_root,
+        generation_id=result.generation_id,
+        recovered_at="2026-09-12T13:00:00Z",
+    )
+    assert refused.status == "refused"
+    assert refused.reason == "source changed after completed interrupted recovery"
+    assert (source_root / "b.md").read_text() == "b-after\n"
+
+
+def test_interrupted_recovery_can_require_exact_workstream_identity(
+    tmp_path: Path,
+) -> None:
+    source_root, journal_root, result = _interrupted_two_file_generation(tmp_path)
+
+    with pytest.raises(JournalError, match="expected workstream"):
+        recover_interrupted_generation(
+            source_root=source_root,
+            journal_root=journal_root,
+            generation_id=result.generation_id,
+            recovered_at="2026-09-12T11:00:00Z",
+            expected_workstream_id="MIGRATION-RELATIONS",
+        )
+
+    assert (source_root / "a.md").read_text() == "a-after\n"
+    assert (source_root / "b.md").read_text() == "b-after\n"
+
+
+def test_interrupted_recovery_refuses_unknown_and_present_invalid_terminal(
+    tmp_path: Path,
+) -> None:
+    source_root, journal_root, result = _interrupted_two_file_generation(tmp_path)
+    _write(source_root / "a.md", "newer-authored\n")
+
+    refused = recover_interrupted_generation(
+        source_root=source_root,
+        journal_root=journal_root,
+        generation_id=result.generation_id,
+        recovered_at="2026-09-12T11:00:00Z",
+    )
+    assert refused.status == "refused"
+    assert refused.reason == "current source has unknown state: a.md"
+    assert not (journal_root / "recoveries").exists()
+
+    (result.generation_root / "verification.json").write_text("{}\n")
+    with pytest.raises(JournalError, match="terminal evidence is present but invalid"):
+        recover_interrupted_generation(
+            source_root=source_root,
+            journal_root=journal_root,
+            generation_id=result.generation_id,
+            recovered_at="2026-09-12T12:00:00Z",
+        )
+
+
+def test_interrupted_recovery_rejects_completed_generation(tmp_path: Path) -> None:
+    source_root = _source(tmp_path)
+    journal_root = _journal(tmp_path)
+    result = run_bounded_transaction(
+        source_root=source_root,
+        journal_root=journal_root,
+        workstream_id="WS-INTERRUPTED-COMPLETE",
+        created_at="2026-09-12T10:00:00Z",
+        edits=[
+            FileEdit(
+                path="docs/example.md",
+                operation="bounded-edit",
+                before_sha256=_sha(BASE_CONTENT),
+                semantic_content=BASE_CONTENT.replace("line2", "changed"),
+                mechanical_content=BASE_CONTENT.replace("line2", "changed"),
+                allowed_ranges=(LineRange(2, 2),),
+            )
+        ],
+        validate=_accept,
+    )
+
+    with pytest.raises(JournalError, match="generation is completed"):
+        recover_interrupted_generation(
+            source_root=source_root,
+            journal_root=journal_root,
+            generation_id=result.generation_id,
+            recovered_at="2026-09-12T11:00:00Z",
+        )
+
+
+def test_interrupted_recovery_resumes_partial_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_root, journal_root, result = _interrupted_two_file_generation(tmp_path)
+    original_replace = journal_module._atomic_replace_bytes
+    calls = 0
+
+    def fail_second(path: Path, content: bytes) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("simulated interrupted recovery failure")
+        original_replace(path, content)
+
+    monkeypatch.setattr(journal_module, "_atomic_replace_bytes", fail_second)
+    incomplete = recover_interrupted_generation(
+        source_root=source_root,
+        journal_root=journal_root,
+        generation_id=result.generation_id,
+        recovered_at="2026-09-12T11:00:00Z",
+    )
+    assert incomplete.status == "incomplete"
+    assert incomplete.restored_paths == ("a.md",)
+    assert (source_root / "a.md").read_text() == "a-before\n"
+    assert (source_root / "b.md").read_text() == "b-after\n"
+
+    monkeypatch.setattr(journal_module, "_atomic_replace_bytes", original_replace)
+    resumed = recover_interrupted_generation(
+        source_root=source_root,
+        journal_root=journal_root,
+        generation_id=result.generation_id,
+        recovered_at="2026-09-12T12:00:00Z",
+    )
+    assert resumed.status == "recovered"
+    assert resumed.restored_paths == ("b.md",)
+    assert resumed.recovery_record == incomplete.recovery_record
+
+
+def test_interrupted_create_recovery_removes_only_owned_bytes_and_fences_replay(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "create-source"
+    source_root.mkdir()
+    journal_root = tmp_path / "create-journal"
+    result = run_bounded_transaction(
+        source_root=source_root,
+        journal_root=journal_root,
+        workstream_id="WS-INTERRUPTED-CREATE",
+        created_at="2026-09-12T10:00:00Z",
+        edits=[
+            FileEdit(
+                path="created.md",
+                operation="create",
+                before_sha256=None,
+                semantic_content="created by attempt\n",
+                mechanical_content="created by attempt\n",
+                allowed_ranges=(LineRange(1, 1),),
+            )
+        ],
+        validate=_accept,
+    )
+    (result.generation_root / "verification.json").unlink()
+
+    recovered = recover_interrupted_generation(
+        source_root=source_root,
+        journal_root=journal_root,
+        generation_id=result.generation_id,
+        recovered_at="2026-09-12T11:00:00Z",
+    )
+    assert recovered.status == "recovered"
+    assert recovered.restored_paths == ("created.md",)
+    assert not (source_root / "created.md").exists()
+
+    _write(source_root / "created.md", "created by attempt\n")
+    refused = recover_interrupted_generation(
+        source_root=source_root,
+        journal_root=journal_root,
+        generation_id=result.generation_id,
+        recovered_at="2026-09-12T12:00:00Z",
+    )
+    assert refused.status == "refused"
+    assert (source_root / "created.md").read_text() == "created by attempt\n"
+
+
+def test_schema_one_completed_generation_remains_recoverable(tmp_path: Path) -> None:
+    source_root = _source(tmp_path)
+    journal_root = _journal(tmp_path)
+    result = run_bounded_transaction(
+        source_root=source_root,
+        journal_root=journal_root,
+        workstream_id="WS-LEGACY-SCHEMA",
+        created_at="2026-09-12T10:00:00Z",
+        edits=[
+            FileEdit(
+                path="docs/example.md",
+                operation="bounded-edit",
+                before_sha256=_sha(BASE_CONTENT),
+                semantic_content=BASE_CONTENT.replace("line1", "legacy-after"),
+                mechanical_content=BASE_CONTENT.replace("line1", "legacy-after"),
+                allowed_ranges=(LineRange(1, 1),),
+            )
+        ],
+        validate=_accept,
+    )
+    manifest_path = result.generation_root / "manifest.json"
+    verification_path = result.generation_root / "verification.json"
+    manifest = json.loads(manifest_path.read_text())
+    verification = json.loads(verification_path.read_text())
+    legacy_verification_payload = {
+        **{key: value for key, value in verification.items() if key != "manifest_sha256"},
+        "schema_version": 1,
+    }
+    legacy_manifest = {
+        **manifest,
+        "schema_version": 1,
+        "status": "applied",
+        "verification_sha256": hashlib.sha256(
+            journal_module._json_bytes(legacy_verification_payload)
+        ).hexdigest(),
+    }
+    manifest_bytes = journal_module._write_json(manifest_path, legacy_manifest)
+    journal_module._write_json(
+        verification_path,
+        {
+            **legacy_verification_payload,
+            "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+        },
+    )
+
+    recovery = recover_generation(
+        source_root=source_root,
+        journal_root=journal_root,
+        generation_id=result.generation_id,
+        recovered_at="2026-09-12T11:00:00Z",
+    )
+    assert recovery.status == "recovered"
+    assert (source_root / "docs" / "example.md").read_text() == BASE_CONTENT
+
+
+def test_interrupted_recovery_refuses_ambiguous_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_root, journal_root, result = _interrupted_two_file_generation(tmp_path)
+    original_replace = journal_module._atomic_replace_bytes
+
+    def fail_first(_path: Path, _content: bytes) -> None:
+        raise OSError("leave prepared recovery")
+
+    monkeypatch.setattr(journal_module, "_atomic_replace_bytes", fail_first)
+    incomplete = recover_interrupted_generation(
+        source_root=source_root,
+        journal_root=journal_root,
+        generation_id=result.generation_id,
+        recovered_at="2026-09-12T11:00:00Z",
+    )
+    monkeypatch.setattr(journal_module, "_atomic_replace_bytes", original_replace)
+    assert incomplete.status == "incomplete"
+    assert incomplete.recovery_record is not None
+    first = journal_root / incomplete.recovery_record
+    duplicate = first.parent / "20260912T113000Z"
+    shutil.copytree(first, duplicate)
+
+    with pytest.raises(JournalError, match="evidence is ambiguous"):
+        recover_interrupted_generation(
+            source_root=source_root,
+            journal_root=journal_root,
+            generation_id=result.generation_id,
+            recovered_at="2026-09-12T12:00:00Z",
+        )
+
+
+@pytest.mark.parametrize(
+    ("phase", "expected_restored"),
+    (
+        ("after-preparation", ()),
+        ("after-first-replacement", ("a.md",)),
+        ("during-validation", ("a.md", "b.md")),
+        ("before-terminal-publication", ("a.md", "b.md")),
+    ),
+)
+def test_process_interruption_has_supported_recovery(
+    tmp_path: Path, phase: str, expected_restored: tuple[str, ...]
+) -> None:
+    source_root = tmp_path / phase / "source"
+    journal_root = tmp_path / phase / "journal"
+    _write(source_root / "a.md", "a-before\n")
+    _write(source_root / "b.md", "b-before\n")
+    script = r'''
+import hashlib
+import os
+import sys
+from pathlib import Path
+
+import docsystem.journal as journal
+from docsystem.journal import FileEdit, LineRange, run_bounded_transaction
+
+source = Path(sys.argv[1])
+journal_root = Path(sys.argv[2])
+phase = sys.argv[3]
+sha = lambda value: hashlib.sha256(value.encode()).hexdigest()
+
+if phase == "after-preparation":
+    journal._revalidate_admitted = lambda *_args: os._exit(33)
+elif phase == "after-first-replacement":
+    original_replace = Path.replace
+    def replace_then_exit(self, target):
+        result = original_replace(self, target)
+        if self.name.endswith(".journal-tmp") and Path(target).name == "a.md":
+            os._exit(33)
+        return result
+    Path.replace = replace_then_exit
+elif phase == "before-terminal-publication":
+    original_terminal = journal._write_json_atomic
+    def terminal_then_exit(path, data):
+        if path.name == "verification.json" and data.get("status") == "applied":
+            os._exit(33)
+        return original_terminal(path, data)
+    journal._write_json_atomic = terminal_then_exit
+
+def validate(_root):
+    if phase == "during-validation":
+        os._exit(33)
+    return True
+
+run_bounded_transaction(
+    source_root=source,
+    journal_root=journal_root,
+    workstream_id="WS-PROCESS-INTERRUPTION",
+    created_at="2026-09-12T14:00:00Z",
+    edits=[
+        FileEdit(
+            "a.md", "bounded-edit", sha("a-before\n"),
+            "a-after\n", "a-after\n", (LineRange(1, 1),),
+        ),
+        FileEdit(
+            "b.md", "bounded-edit", sha("b-before\n"),
+            "b-after\n", "b-after\n", (LineRange(1, 1),),
+        ),
+    ],
+    validate=validate,
+)
+'''
+    process = subprocess.run(
+        [sys.executable, "-c", script, str(source_root), str(journal_root), phase],
+        check=False,
+    )
+    assert process.returncode == 33
+
+    recovery = recover_interrupted_generation(
+        source_root=source_root,
+        journal_root=journal_root,
+        generation_id="20260912T140000Z-WS-PROCESS-INTERRUPTION",
+        recovered_at="2026-09-12T15:00:00Z",
+    )
+    assert recovery.status == "recovered"
+    assert recovery.restored_paths == expected_restored
+    assert (source_root / "a.md").read_text() == "a-before\n"
+    assert (source_root / "b.md").read_text() == "b-before\n"
+
+
+def test_process_interruption_during_recovery_is_resumable(tmp_path: Path) -> None:
+    source_root, journal_root, result = _interrupted_two_file_generation(tmp_path)
+    script = r'''
+import os
+import sys
+from pathlib import Path
+
+import docsystem.journal as journal
+from docsystem.journal import recover_interrupted_generation
+
+source = Path(sys.argv[1])
+journal_root = Path(sys.argv[2])
+generation = sys.argv[3]
+original_replace = journal._atomic_replace_bytes
+calls = 0
+def replace_then_exit(path, content):
+    global calls
+    original_replace(path, content)
+    calls += 1
+    if calls == 1:
+        os._exit(33)
+journal._atomic_replace_bytes = replace_then_exit
+recover_interrupted_generation(
+    source_root=source,
+    journal_root=journal_root,
+    generation_id=generation,
+    recovered_at="2026-09-12T15:00:00Z",
+)
+'''
+    process = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(source_root),
+            str(journal_root),
+            result.generation_id,
+        ],
+        check=False,
+    )
+    assert process.returncode == 33
+    assert (source_root / "a.md").read_text() == "a-before\n"
+    assert (source_root / "b.md").read_text() == "b-after\n"
+
+    resumed = recover_interrupted_generation(
+        source_root=source_root,
+        journal_root=journal_root,
+        generation_id=result.generation_id,
+        recovered_at="2026-09-12T16:00:00Z",
+    )
+    assert resumed.status == "recovered"
+    assert resumed.restored_paths == ("b.md",)
+
+
+@pytest.mark.parametrize(
+    "phase",
+    ("after-parent-creation", "after-manifest-write", "after-publication"),
+)
+def test_recovery_preparation_interruption_can_retry_without_cleanup(
+    tmp_path: Path, phase: str
+) -> None:
+    source_root, journal_root, result = _interrupted_two_file_generation(tmp_path)
+    script = r'''
+import os
+import sys
+from pathlib import Path
+
+import docsystem.journal as journal
+from docsystem.journal import recover_interrupted_generation
+
+source = Path(sys.argv[1])
+journal_root = Path(sys.argv[2])
+generation = sys.argv[3]
+phase = sys.argv[4]
+recovery_root = journal_root / "recoveries" / generation
+
+if phase == "after-parent-creation":
+    original_mkdir = Path.mkdir
+    def mkdir_then_exit(self, *args, **kwargs):
+        result = original_mkdir(self, *args, **kwargs)
+        if self == recovery_root:
+            os._exit(33)
+        return result
+    Path.mkdir = mkdir_then_exit
+elif phase == "after-manifest-write":
+    original_write = journal._write_json
+    def write_then_exit(path, data):
+        result = original_write(path, data)
+        if path.name == "manifest.json" and path.parent.name.startswith(".staging-"):
+            os._exit(33)
+        return result
+    journal._write_json = write_then_exit
+elif phase == "after-publication":
+    original_replace = Path.replace
+    def publish_then_exit(self, target):
+        result = original_replace(self, target)
+        if self.name.startswith(".staging-") and Path(target).parent == recovery_root:
+            os._exit(33)
+        return result
+    Path.replace = publish_then_exit
+
+recover_interrupted_generation(
+    source_root=source,
+    journal_root=journal_root,
+    generation_id=generation,
+    recovered_at="2026-09-12T15:00:00Z",
+)
+'''
+    process = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(source_root),
+            str(journal_root),
+            result.generation_id,
+            phase,
+        ],
+        check=False,
+    )
+    assert process.returncode == 33
+    assert (source_root / "a.md").read_text() == "a-after\n"
+    assert (source_root / "b.md").read_text() == "b-after\n"
+
+    recovery_root = journal_root / "recoveries" / result.generation_id
+    staged_before_retry = sorted(recovery_root.glob(".staging-*"))
+    if phase == "after-manifest-write":
+        assert len(staged_before_retry) == 1
+
+    resumed = recover_interrupted_generation(
+        source_root=source_root,
+        journal_root=journal_root,
+        generation_id=result.generation_id,
+        recovered_at="2026-09-12T16:00:00Z",
+    )
+    assert resumed.status == "recovered"
+    assert resumed.restored_paths == ("a.md", "b.md")
+    assert (source_root / "a.md").read_text() == "a-before\n"
+    assert (source_root / "b.md").read_text() == "b-before\n"
+    for staged in staged_before_retry:
+        assert staged.is_dir()

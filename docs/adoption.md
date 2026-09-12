@@ -137,10 +137,17 @@ against a scratch copy of the documentation tree first, then rewrites just the
 resolved scalar inside `derived_from`, `depends_on`, `related` or
 `supersedes` for each affected document — front matter formatting, comments,
 unknown fields, the document body and every `boundary` value are left
-byte-for-byte untouched. A multi-file run is all-or-nothing: if validation or
-any write fails, no file is left partially migrated, and re-running
+byte-for-byte untouched. Before mutation it records byte-exact before/after
+evidence in the shared immutable journal and prints the attempt generation.
+A caught validation or write failure rolls back. If the process stops after
+preparation but before terminal evidence, restore the exact pre-migration state
+with `docsystem migrate-recover-interrupted GENERATION .`; corrupt, stale or
+unknown source states fail closed. Re-running
 `migrate --apply` after a successful run reports
 `No resolvable legacy relation migrations found.`
+
+See [interrupted journal recovery](interrupted-recovery.md) for the crash,
+replay and concurrent-writer boundaries.
 
 Once every resolvable legacy relation has been migrated and the remaining
 `boundary` rows are genuinely external URLs or resources — never document

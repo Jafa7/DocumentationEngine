@@ -16,10 +16,13 @@ from docsystem.projection import PinnedProjection
 from docsystem.provider import (
     MAX_PAGE_SIZE,
     MAX_RESPONSE_BYTES,
-    compare_response,
-    snapshot_response,
+    prepare_compare_query,
+    prepare_snapshot_query,
+    prepared_compare_response,
+    prepared_snapshot_response,
 )
 from docsystem.sections import is_valid_anchor
+from docsystem.strict_json import DuplicateJsonMemberError, loads_unique_json
 
 ARTIFACT_SCHEMA_VERSION = 1
 PROTOCOL_NAME = "traceability-provider"
@@ -150,9 +153,10 @@ def _collect_pages(
 def snapshot_artifact(snapshot: PinnedProjection) -> dict[str, object]:
     """Assemble every bounded page into one complete immutable snapshot artifact."""
 
+    query = prepare_snapshot_query(snapshot)
     observations, pages = _collect_pages(
-        lambda cursor: snapshot_response(
-            snapshot, cursor=cursor, page_size=MAX_PAGE_SIZE
+        lambda cursor: prepared_snapshot_response(
+            query, cursor=cursor, page_size=MAX_PAGE_SIZE
         ),
         "observations",
     )
@@ -202,9 +206,10 @@ def compare_artifact(
 ) -> dict[str, object]:
     """Assemble every bounded page into one complete immutable compare artifact."""
 
+    query = prepare_compare_query(before, after)
     changes, pages = _collect_pages(
-        lambda cursor: compare_response(
-            before, after, cursor=cursor, page_size=MAX_PAGE_SIZE
+        lambda cursor: prepared_compare_response(
+            query, cursor=cursor, page_size=MAX_PAGE_SIZE
         ),
         "changes",
     )
@@ -746,7 +751,11 @@ def load_and_verify_artifact(path: Path) -> dict[str, object]:
     """Read and verify one artifact without consulting a project or provider."""
 
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        value = loads_unique_json(path.read_text(encoding="utf-8"))
+    except DuplicateJsonMemberError as error:
+        raise _artifact_error(
+            f"artifact contains duplicate JSON member: {error.member}"
+        ) from error
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise _artifact_error(f"artifact is unreadable: {path}") from error
     return verify_artifact(value)

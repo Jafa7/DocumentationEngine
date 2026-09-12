@@ -6,6 +6,9 @@ import sys
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
 
+import pytest
+
+import docsystem.projection as projection_module
 from docsystem.catalog import build_catalog, build_dependency_graph
 from docsystem.cli import (
     build_parser,
@@ -1236,6 +1239,245 @@ def test_projection_generation_is_immutable_and_corruption_falls_back(
     assert context(tmp_path, "DOC-002", depth=1) == 0
     captured = capsys.readouterr()
     assert "projection document shard invalid" in captured.err
+
+
+@pytest.mark.parametrize(
+    "damage",
+    ("malformed-manifest", "missing-shard", "malformed-shard"),
+)
+def test_projection_write_repairs_corrupt_unchanged_generation(
+    tmp_path: Path, capsys, damage: str
+) -> None:
+    root = vertical_project(tmp_path)
+    source_bytes = {
+        path.relative_to(root): path.read_bytes() for path in root.rglob("*.md")
+    }
+    config = load_config(tmp_path)
+    projection = build_projection(build_catalog(config), config)
+    generation = write_projection(config, projection)
+    generation_dir = (
+        tmp_path / ".docsystem" / "cache" / "generations" / generation
+    )
+    manifest = generation_dir / "manifest.json"
+    document_shard = next(generation_dir.glob("documents/**/*.json"))
+    if damage == "malformed-manifest":
+        manifest.write_text("{", encoding="utf-8")
+    elif damage == "missing-shard":
+        document_shard.unlink()
+    else:
+        document_shard.write_text("{", encoding="utf-8")
+
+    assert index_projection(tmp_path, write=True) == 0
+    written = capsys.readouterr()
+    assert written.err == ""
+    assert f"Projection generation written: {generation}" in written.out
+    assert index_projection(tmp_path) == 0
+    assert capsys.readouterr().out == "Projection is current.\n"
+
+    assert context(tmp_path, "DOC-002", depth=1) == 0
+    served = capsys.readouterr()
+    assert "projection" not in served.err
+    assert source_bytes == {
+        path.relative_to(root): path.read_bytes() for path in root.rglob("*.md")
+    }
+
+
+def test_projection_write_repairs_invalid_pointer(tmp_path: Path, capsys) -> None:
+    vertical_project(tmp_path)
+    config = load_config(tmp_path)
+    projection = build_projection(build_catalog(config), config)
+    generation = write_projection(config, projection)
+    pointer = tmp_path / ".docsystem" / "cache" / "current.json"
+    pointer.write_text("{", encoding="utf-8")
+
+    assert index_projection(tmp_path, write=True) == 0
+    assert f"Projection generation written: {generation}" in capsys.readouterr().out
+    assert index_projection(tmp_path) == 0
+    assert capsys.readouterr().out == "Projection is current.\n"
+
+
+def test_projection_repair_failure_is_visible_and_preserves_sources(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    root = vertical_project(tmp_path)
+    source_bytes = {
+        path.relative_to(root): path.read_bytes() for path in root.rglob("*.md")
+    }
+    config = load_config(tmp_path)
+    projection = build_projection(build_catalog(config), config)
+    generation = write_projection(config, projection)
+    manifest = (
+        tmp_path
+        / ".docsystem"
+        / "cache"
+        / "generations"
+        / generation
+        / "manifest.json"
+    )
+    manifest.write_text("{", encoding="utf-8")
+
+    def fail_write(*args, **kwargs):
+        raise OSError("simulated projection write failure")
+
+    monkeypatch.setattr(projection_module, "_write_shard", fail_write)
+    assert index_projection(tmp_path, write=True) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "simulated projection write failure" in captured.err
+    assert "retry `docsystem index PROJECT --write`" in captured.err
+    assert source_bytes == {
+        path.relative_to(root): path.read_bytes() for path in root.rglob("*.md")
+    }
+    assert manifest.read_text(encoding="utf-8") == "{"
+
+
+def test_projection_reader_falls_back_during_generation_replacement(
+    tmp_path: Path, capsys
+) -> None:
+    vertical_project(tmp_path)
+    config = load_config(tmp_path)
+    projection = build_projection(build_catalog(config), config)
+    generation = write_projection(config, projection)
+    assert context(tmp_path, "DOC-002", depth=1) == 0
+    expected = capsys.readouterr().out
+
+    generation_dir = (
+        tmp_path / ".docsystem" / "cache" / "generations" / generation
+    )
+    displaced = generation_dir.parent / f".corrupt-{generation}-reader-test"
+    generation_dir.replace(displaced)
+    try:
+        assert context(tmp_path, "DOC-002", depth=1) == 0
+        captured = capsys.readouterr()
+        assert captured.out == expected
+        assert "projection unreadable" in captured.err
+    finally:
+        displaced.replace(generation_dir)
+
+
+def test_projection_repair_refuses_cache_symlink_outside_project(
+    tmp_path: Path, capsys
+) -> None:
+    vertical_project(tmp_path)
+    config = load_config(tmp_path)
+    projection = build_projection(build_catalog(config), config)
+    generation = str(projection["generation"])
+    generations = tmp_path / ".docsystem" / "cache" / "generations"
+    generations.mkdir(parents=True)
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-cache"
+    outside.mkdir()
+    marker = outside / "preserve.txt"
+    marker.write_text("outside", encoding="utf-8")
+    (generations / generation).symlink_to(outside, target_is_directory=True)
+    try:
+        assert index_projection(tmp_path, write=True) == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "projection cache path escapes the project root" in captured.err
+        assert marker.read_text(encoding="utf-8") == "outside"
+    finally:
+        (generations / generation).unlink(missing_ok=True)
+        marker.unlink(missing_ok=True)
+        outside.rmdir()
+
+
+def test_projection_write_refuses_cache_alias_into_authored_source(
+    tmp_path: Path, capsys
+) -> None:
+    root = vertical_project(tmp_path)
+    authored_generation = "a" * 64
+    authored = root / authored_generation
+    authored.mkdir()
+    (authored / "README.md").write_text(
+        "---\nid: DOC-004\nrevision: 1\n---\n# Authored generation-like path\n",
+        encoding="utf-8",
+    )
+    root_readme = root / "README.md"
+    root_readme.write_text(
+        root_readme.read_text(encoding="utf-8")
+        + f"\n[Authored generation-like path]({authored_generation}/README.md)\n",
+        encoding="utf-8",
+    )
+    config = load_config(tmp_path)
+    projection = build_projection(build_catalog(config), config)
+    source_bytes = {
+        path.relative_to(root): path.read_bytes() for path in root.rglob("*.md")
+    }
+    source_entries = {path.relative_to(root) for path in root.rglob("*")}
+    cache = tmp_path / ".docsystem" / "cache"
+    cache.mkdir(parents=True)
+    (cache / "generations").symlink_to(root, target_is_directory=True)
+
+    assert index_projection(tmp_path, write=True) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "contains a symlink or junction" in captured.err
+    assert source_bytes == {
+        path.relative_to(root): path.read_bytes() for path in root.rglob("*.md")
+    }
+    assert source_entries == {path.relative_to(root) for path in root.rglob("*")}
+    assert authored.is_dir()
+    assert not (root / str(projection["generation"])).exists()
+
+
+def test_projection_separates_raw_source_and_normalized_section_identity(
+    tmp_path: Path
+) -> None:
+    root = vertical_project(tmp_path)
+    target = root / "target.md"
+    normalized = target.read_text(encoding="utf-8").replace(
+        "Detailed target content.", "Detailed Unicode content: café ✓."
+    )
+    target.write_text(normalized, encoding="utf-8", newline="\n")
+    config = load_config(tmp_path)
+    lf_projection = build_projection(build_catalog(config), config)
+    lf_document = lf_projection["documents"]["DOC-002"]
+    assert lf_document["source_sha256"] == hashlib.sha256(target.read_bytes()).hexdigest()
+
+    target.write_bytes(normalized.replace("\n", "\r\n").encode("utf-8"))
+    crlf_projection = build_projection(build_catalog(config), config)
+    crlf_document = crlf_projection["documents"]["DOC-002"]
+    assert crlf_document["source_sha256"] == hashlib.sha256(target.read_bytes()).hexdigest()
+    assert crlf_document["source_sha256"] != lf_document["source_sha256"]
+    assert crlf_document["sections"] == lf_document["sections"]
+    assert crlf_projection["generation"] != lf_projection["generation"]
+
+    target.write_bytes(target.read_bytes().removesuffix(b"\r\n"))
+    no_terminal_newline = build_projection(build_catalog(config), config)
+    assert (
+        no_terminal_newline["documents"]["DOC-002"]["source_sha256"]
+        == hashlib.sha256(target.read_bytes()).hexdigest()
+    )
+    assert no_terminal_newline["generation"] != crlf_projection["generation"]
+    assert (
+        no_terminal_newline["documents"]["DOC-002"]["sections"]
+        == crlf_document["sections"]
+    )
+
+
+def test_raw_line_ending_drift_falls_back_without_changing_rendered_context(
+    tmp_path: Path, capsys
+) -> None:
+    root = vertical_project(tmp_path)
+    assert index_projection(tmp_path, write=True) == 0
+    capsys.readouterr()
+    assert context(tmp_path, "DOC-002", depth=1) == 0
+    expected = capsys.readouterr().out
+
+    target = root / "target.md"
+    target.write_bytes(target.read_text(encoding="utf-8").replace("\n", "\r\n").encode())
+    assert context(tmp_path, "DOC-002", depth=1) == 0
+    fallback = capsys.readouterr()
+    assert fallback.out == expected
+    assert "projection stale" in fallback.err
+
+    assert index_projection(tmp_path, write=True) == 0
+    capsys.readouterr()
+    assert context(tmp_path, "DOC-002", depth=1) == 0
+    rebuilt = capsys.readouterr()
+    assert rebuilt.out == expected
+    assert rebuilt.err == ""
 
 
 def test_context_anchor_error_has_no_partial_stdout(

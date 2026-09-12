@@ -280,6 +280,7 @@ docsystem maintenance install-version . --check --json
 docsystem maintenance install-version . --preview --expect-source-hash SHA256
 docsystem maintenance install-version . --write --expect-source-hash SHA256 --workstream-id WS-001
 docsystem maintenance-recover 20260714T100000Z-WS-001 .
+docsystem maintenance-recover-interrupted 20260714T100000Z-WS-001 .
 docsystem context DOC-001 . --depth 1
 docsystem context DOC-001 . --depth 1 --json
 docsystem context DOC-001 . --compact --json
@@ -323,6 +324,7 @@ docsystem report draft . --project-name "My Project" --type adoption-finding --s
 docsystem report context-gap . --project-name "My Project" --type adoption-finding --source codex --reason missing_dependency --initial DOC-001#summary --expanded DOC-002#constraints --impact decision
 docsystem migrate .
 docsystem migrate . --apply
+docsystem migrate-recover-interrupted GENERATION .
 docsystem index . --write
 docsystem changes .
 docsystem changes . --json
@@ -545,9 +547,14 @@ fail closed if the canonical block changed between inspection steps.
 catalog/graph, and rolls back every touched file on failure. Other roles are
 never written. A successful write refreshes the disposable projection;
 refresh failure is a visible warning and direct Markdown remains authoritative.
-`maintenance-recover GENERATION` restores verified before
-bytes only when current files still equal that generation's after state, so
-newer authored work is never overwritten.
+`maintenance-recover GENERATION` restores verified before bytes only when
+current files still equal a completed generation's after state.
+`maintenance-recover-interrupted GENERATION` separately restores a schema-2
+attempt that has valid immutable preparation but no published terminal
+evidence. It classifies every path as before/after/unknown, resumes one pending
+recovery and fences replay after success. Unknown or corrupt evidence fails
+closed. See [interrupted maintenance
+recovery](docs/interrupted-recovery.md).
 
 For a project selected from a local workspace, `workspace.toml` must explicitly
 set `write = "managed-maintenance"` (the default is `none`). The selected write
@@ -596,8 +603,14 @@ inventory.
 It distinguishes blocking structural/configuration errors, resolvable legacy
 relation migrations, explicit unresolved/resource boundaries, stale freshness
 pins and projection state (absent/stale/current), and prints the single safe
-next command. It never writes to Markdown, configuration or the projection
-cache.
+next command. Its additive `validation_scope` object names the
+`adoption-structure-v1` checks that were evaluated and the full-policy checks
+that were not. Consequently, `ready: true` means structurally ready for the
+reported adoption scope; it is not a substitute for `validate`, which also
+checks semantic graph diagnostics, document profiles, delivery contracts and
+program plans. Indexing uses the same structural/indexability boundary and may
+therefore succeed while one of those full-policy checks still fails. It never
+writes to Markdown, configuration or the projection cache.
 
 `finish` produces a compact handoff packet for returning a workstream or
 document-focused task to its parent context. It summarizes included context,
@@ -697,7 +710,8 @@ MCP-capable client; see [the MCP adapter guide](docs/mcp-adapter.md). It is a
 thin wrapper over this CLI contract and requires the optional MCP installation
 described in [Installation](#cli-with-mcp-support). Text tools keep exact CLI
 stdout for compatibility; packet variants add non-fatal diagnostics such as
-projection fallback warnings.
+projection fallback warnings. Host-configurable deadlines and output bounds
+fail explicitly instead of returning a truncated tool result.
 
 `migrate` previews, by default, every legacy relation value that
 `migration-report` already classifies as unambiguously resolved. Preview is
@@ -705,9 +719,12 @@ read-only. `migrate --apply` re-validates the same plan against a scratch copy
 of the documentation tree and then rewrites only the exact resolved scalar in
 `derived_from`, `depends_on`, `related` or `supersedes` for each affected
 document — front matter formatting, comments, unknown fields, the document
-body and unresolved boundaries are left byte-for-byte untouched. Multi-file
-runs are all-or-nothing: if validation or a write fails, no file is left
-partially migrated. Re-running `migrate --apply` after a successful migration
+body and unresolved boundaries are left byte-for-byte untouched. The shared
+immutable journal binds exact before bytes and preserves file modes. Caught
+write or validation failures roll back; after an abrupt stop,
+`migrate-recover-interrupted GENERATION` restores only verified known state
+and refuses corrupt, stale or unknown bytes. Re-running `migrate --apply`
+after a successful migration
 reports no further changes. Once every resolvable legacy relation has been
 migrated, a project whose remaining legacy values are all boundaries (URLs and
 resources) can drop `relations.legacy_paths = resolve-with-warning` and use
@@ -756,8 +773,14 @@ it already holds: when that document lands in the packet and its current
 revision still equals `REV`, its navigation excerpt is omitted and its coverage
 line becomes `content omitted — declared known at revision REV (current)`,
 while `--include ID#anchor` still forces those explicit sections. A stale
-declaration (revision moved on) keeps full content and records a mismatch note,
-so a declared cache never silently hides a change. `context --since GENERATION`
+declaration whose revision no longer matches keeps full content and records a
+mismatch note. This protection assumes the project increments a living
+document's revision whenever its content or semantic metadata changes. The
+lightweight declaration does not store or compare the content previously seen
+by the agent; reusing a revision for changed content can therefore hide that
+change. Use `context --since
+GENERATION` when omission must be bound to retained content hashes rather than
+revision discipline. That command
 requests a delta against a retained projection generation (full hash or an
 unambiguous prefix of at least twelve characters): unchanged documents are
 omitted with an `unchanged since GEN12` coverage line, changed documents keep

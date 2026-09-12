@@ -24,7 +24,8 @@ target fails with exit `1`, diagnostics on stderr and empty stdout.
 The schema-version-1 packet contains:
 
 - the normalized admitted intent, hashes, required autonomy and catalog guard;
-- a mandate snapshot with revision, status, relative path, document hash and
+- a mandate snapshot with revision, status, relative path, exact-source-byte
+  document hash and
   hashes/ranges for every policy-required section;
 - one exact target snapshot per stable document/section address;
 - normalized local source paths with expected pre-edit hashes or absence;
@@ -60,7 +61,10 @@ docsystem execution-handoff WS-001 PROJECT \
   --json
 ```
 
-Verification first checks the packet's self-contained integrity hash, then
+Document hashes use the versioned raw-byte source identity defined in
+[source identity](source-identity.md); section hashes continue to use
+normalized Markdown slices. Verification first checks the packet's
+self-contained integrity hash, then
 rebuilds the entire packet from current Markdown and the supplied admission
 request. Success returns `current: true`. Any changed source bytes, revisions,
 sections, graph edges, boundaries, mandate, policy or admission evidence fails

@@ -135,6 +135,24 @@ def test_source_change_is_stale_and_reported_without_reparsing(
     ]
 
 
+def test_line_ending_only_source_change_invalidates_federated_projection(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace(tmp_path)
+    _, projection = _projection(workspace)
+    write_federated_projection(workspace, projection)
+    source = workspace.root / "sources" / "alpha" / "plan" / "README.md"
+    source.write_bytes(source.read_text(encoding="utf-8").replace("\n", "\r\n").encode())
+
+    loaded, reason = load_verified_federated_projection(workspace)
+    report = evaluate_federated_changes(workspace)
+    assert loaded is None
+    assert reason == "federated projection stale: source alpha changed"
+    assert [(item.source, item.kind) for item in report.changes] == [
+        ("alpha", "modified")
+    ]
+
+
 def test_workspace_manifest_config_and_membership_changes_are_stale(
     tmp_path: Path,
 ) -> None:

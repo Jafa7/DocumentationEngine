@@ -4,8 +4,9 @@ The adapter translates MCP tool calls into the same CLI invocations the
 agent contract documents, running them in a subprocess so it can never
 bypass the core's validation, projection-fallback or output contracts.
 Only read-only commands are exposed; mutating operations (`init`,
-`migrate --apply`, `index --write`) stay with the human or calling system,
-matching `docs/agent-contract.md`.
+`migrate --apply`, recovery commands, `index --write` and managed maintenance
+writes) stay with the human or calling system, matching
+`docs/agent-contract.md`.
 
 Structured (object) tools surface any successful-exit CLI stderr -- most
 importantly the `projection stale/corrupt; using direct Markdown` fallback
@@ -15,6 +16,10 @@ for compatibility. Their packet variants (`read_document_packet`,
 `impact_packet`) expose the same stdout together with successful-exit
 diagnostics in a structured envelope.
 
+Every subprocess has a host-configurable deadline and separate stdout/stderr
+byte bounds. Exceeding either fails the tool call and terminates the child;
+partial output is never returned as a successful payload.
+
 The `mcp` package is an optional dependency: install `documentation-engine[mcp]`
 to run the server (`docsystem-mcp` or `python -m docsystem.mcp_server`). The
 tool functions themselves are plain Python and work without it.
@@ -23,12 +28,194 @@ tool functions themselves are plain Python and work without it.
 from __future__ import annotations
 
 import json
+import os
+import signal
 import subprocess
 import sys
+import threading
+import time
+from dataclasses import dataclass
+
+DEFAULT_TIMEOUT_SECONDS = 120.0
+DEFAULT_MAX_STDOUT_BYTES = 16 * 1024 * 1024
+DEFAULT_MAX_STDERR_BYTES = 1024 * 1024
+
+
+@dataclass(frozen=True)
+class ExecutionPolicy:
+    """Host-owned bounds for one CLI subprocess invocation."""
+
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
+    max_stdout_bytes: int = DEFAULT_MAX_STDOUT_BYTES
+    max_stderr_bytes: int = DEFAULT_MAX_STDERR_BYTES
+
+
+@dataclass(frozen=True)
+class _ExecutionResult:
+    returncode: int
+    stdout: bytes
+    stderr: bytes
+
+
+def _positive_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError as error:
+        raise RuntimeError(f"mcp-policy-invalid: {name} must be a number") from error
+    if not (0 < value <= 3600):
+        raise RuntimeError(f"mcp-policy-invalid: {name} must be in (0, 3600]")
+    return value
+
+
+def _positive_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as error:
+        raise RuntimeError(f"mcp-policy-invalid: {name} must be an integer") from error
+    if not (0 < value <= 1024 * 1024 * 1024):
+        raise RuntimeError(
+            f"mcp-policy-invalid: {name} must be in (0, 1073741824]"
+        )
+    return value
+
+
+def execution_policy() -> ExecutionPolicy:
+    """Load the MCP host's bounded execution policy from the environment."""
+
+    return ExecutionPolicy(
+        timeout_seconds=_positive_float(
+            "DOCSYSTEM_MCP_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS
+        ),
+        max_stdout_bytes=_positive_int(
+            "DOCSYSTEM_MCP_MAX_STDOUT_BYTES", DEFAULT_MAX_STDOUT_BYTES
+        ),
+        max_stderr_bytes=_positive_int(
+            "DOCSYSTEM_MCP_MAX_STDERR_BYTES", DEFAULT_MAX_STDERR_BYTES
+        ),
+    )
+
+
+def _terminate_process(process: subprocess.Popen[bytes]) -> None:
+    """Terminate one CLI process and its POSIX process group, then reap it."""
+
+    if process.poll() is not None:
+        return
+    try:
+        if os.name == "posix":
+            os.killpg(process.pid, signal.SIGTERM)
+        else:
+            process.terminate()
+    except ProcessLookupError:
+        pass
+    try:
+        process.wait(timeout=1)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        if os.name == "posix":
+            os.killpg(process.pid, signal.SIGKILL)
+        else:
+            process.kill()
+    except ProcessLookupError:
+        pass
+    process.wait()
+
+
+def _execute(command: list[str], policy: ExecutionPolicy) -> _ExecutionResult:
+    """Execute one command with a deadline and bounded captured output."""
+
+    creationflags = (
+        getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        if os.name == "nt"
+        else 0
+    )
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=os.name == "posix",
+        creationflags=creationflags,
+    )
+    assert process.stdout is not None
+    assert process.stderr is not None
+    buffers = {"stdout": bytearray(), "stderr": bytearray()}
+    limits = {
+        "stdout": policy.max_stdout_bytes,
+        "stderr": policy.max_stderr_bytes,
+    }
+    overflow: list[str] = []
+    overflow_event = threading.Event()
+
+    def drain(name: str, stream) -> None:
+        while chunk := stream.read1(65536):
+            target = buffers[name]
+            remaining = limits[name] - len(target)
+            if len(chunk) > remaining:
+                target.extend(chunk[: max(remaining, 0)])
+                overflow.append(name)
+                overflow_event.set()
+                return
+            target.extend(chunk)
+
+    threads = [
+        threading.Thread(target=drain, args=("stdout", process.stdout), daemon=True),
+        threading.Thread(target=drain, args=("stderr", process.stderr), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+    deadline = time.monotonic() + policy.timeout_seconds
+    timed_out = False
+    try:
+        while process.poll() is None:
+            if overflow_event.wait(timeout=0.02):
+                _terminate_process(process)
+                break
+            if time.monotonic() >= deadline:
+                timed_out = True
+                _terminate_process(process)
+                break
+    except BaseException:
+        _terminate_process(process)
+        raise
+    finally:
+        for thread in threads:
+            thread.join(timeout=2)
+        process.stdout.close()
+        process.stderr.close()
+
+    if timed_out:
+        raise RuntimeError(
+            "mcp-timeout: docsystem CLI exceeded "
+            f"{policy.timeout_seconds:g} seconds and was terminated"
+        )
+    if overflow:
+        detail = ", ".join(
+            f"{name} exceeded {limits[name]} bytes"
+            for name in sorted(set(overflow))
+        )
+        raise RuntimeError(
+            f"mcp-output-limit: {detail}; "
+            "docsystem CLI was terminated and no partial payload was returned"
+        )
+    return _ExecutionResult(
+        process.returncode,
+        bytes(buffers["stdout"]),
+        bytes(buffers["stderr"]),
+    )
 
 
 def _invoke(
-    arguments: list[str], *, allow_failure_payload: bool = False
+    arguments: list[str],
+    *,
+    allow_failure_payload: bool = False,
+    policy: ExecutionPolicy | None = None,
 ) -> tuple[str, str]:
     """Run a CLI command, returning its stdout and stderr.
 
@@ -39,16 +226,21 @@ def _invoke(
     that payload is returned instead of raising.
     """
 
-    result = subprocess.run(
+    result = _execute(
         [sys.executable, "-m", "docsystem", *arguments],
-        capture_output=True,
-        encoding="utf-8",
-        text=True,
+        policy or execution_policy(),
     )
-    if result.returncode != 0 and not (allow_failure_payload and result.stdout.strip()):
-        message = result.stderr.strip() or result.stdout.strip()
+    try:
+        stdout = result.stdout.decode("utf-8")
+        stderr = result.stderr.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise RuntimeError(
+            "mcp-output-encoding: docsystem CLI output is not valid UTF-8"
+        ) from error
+    if result.returncode != 0 and not (allow_failure_payload and stdout.strip()):
+        message = stderr.strip() or stdout.strip()
         raise RuntimeError(message or f"docsystem {' '.join(arguments)} failed")
-    return result.stdout, result.stderr
+    return stdout, stderr
 
 
 def _run_cli(arguments: list[str], *, allow_failure_payload: bool = False) -> str:

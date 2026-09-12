@@ -2,6 +2,8 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
 from docsystem import mcp_server
 from docsystem.cli import build_parser, doctor, profile_check, validate
 from docsystem.config import CONFIG_FILENAME, DEFAULT_CONFIG
@@ -50,6 +52,39 @@ def _project(tmp_path: Path, *, profiles: bool = True, valid: bool = False) -> P
     (root / "roadmap" / "item.md").write_text(
         f"---\nid: RM-001\nrevision: 1\ntype: roadmap\n{metadata}---\n"
         f"# Roadmap\n\n{sections}",
+        encoding="utf-8",
+    )
+    return project
+
+
+def _relation_project(
+    tmp_path: Path,
+    metadata: str,
+    *,
+    allowed_relations: str | None = "[]",
+    required_metadata: str | None = None,
+) -> Path:
+    project = tmp_path / "project"
+    root = project / "plan"
+    root.mkdir(parents=True)
+    config = DEFAULT_CONFIG.replace(
+        "[areas]\n", '[areas]\nworkspace = "."\n'
+    ).replace('roadmap = "roadmap"\n', "")
+    config += (
+        '\n[profiles.spec]\ndocument_types = ["spec"]\n'
+        'history_mode = "living"\n'
+    )
+    if required_metadata is not None:
+        config += f'required_metadata = ["{required_metadata}"]\n'
+    if allowed_relations is not None:
+        config += f"allowed_relations = {allowed_relations}\n"
+    (project / CONFIG_FILENAME).write_text(config, encoding="utf-8")
+    (root / "README.md").write_text(
+        "---\nid: DOC-001\nrevision: 1\n---\n# Index\n\n[Item](item.md)\n",
+        encoding="utf-8",
+    )
+    (root / "item.md").write_text(
+        f"---\nid: DOC-002\nrevision: 1\ntype: spec\n{metadata}---\n# Item\n",
         encoding="utf-8",
     )
     return project
@@ -168,3 +203,135 @@ def test_profile_check_parser_workspace_selection_and_mcp_payload(
         "RM-001",
     ]
     assert mcp_server.profile_check in mcp_server._TOOLS
+
+
+@pytest.mark.parametrize(
+    ("metadata", "relation"),
+    [
+        pytest.param("depends_on: [DOC-001]\n", "depends_on", id="local"),
+        pytest.param(
+            'depends_on: ["peer::DOC-001"]\n', "depends_on", id="qualified"
+        ),
+        pytest.param(
+            'validated_against: ["peer::DOC-001@1"]\n',
+            "validated_against",
+            id="qualified-pinned",
+        ),
+        pytest.param(
+            'related: ["https://example.test/reference"]\n',
+            "related",
+            id="legacy-boundary",
+        ),
+    ],
+)
+def test_empty_relation_allowlist_rejects_every_authored_target_form(
+    tmp_path: Path, capsys, metadata: str, relation: str
+) -> None:
+    project = _relation_project(tmp_path, metadata)
+
+    assert profile_check(project, json_output=True) == 1
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    payload = json.loads(captured.out)
+    assert payload["valid"] is False
+    assert [(item["code"], item["subject"]) for item in payload["violations"]] == [
+        ("relation-not-allowed", relation)
+    ]
+
+    assert validate(project) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert f"profile spec: relation-not-allowed ({relation})" in captured.err
+
+
+@pytest.mark.parametrize(
+    ("metadata", "required_metadata"),
+    [
+        pytest.param(
+            'depends_on: ["peer::DOC-001"]\n', "depends_on", id="qualified"
+        ),
+        pytest.param(
+            'validated_against: ["peer::DOC-001@1"]\n',
+            "validated_against",
+            id="qualified-pinned",
+        ),
+    ],
+)
+def test_valid_qualified_relation_satisfies_required_metadata(
+    tmp_path: Path,
+    capsys,
+    metadata: str,
+    required_metadata: str,
+) -> None:
+    project = _relation_project(
+        tmp_path,
+        metadata,
+        allowed_relations=None,
+        required_metadata=required_metadata,
+    )
+
+    assert profile_check(project, json_output=True) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert json.loads(captured.out)["valid"] is True
+    assert validate(project) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "Markdown navigation is valid.\n"
+    assert "missing-metadata" not in captured.err
+
+
+def test_empty_or_malformed_qualified_relation_does_not_satisfy_requirement(
+    tmp_path: Path, capsys
+) -> None:
+    empty = _relation_project(
+        tmp_path / "empty",
+        "depends_on: []\n",
+        allowed_relations=None,
+        required_metadata="depends_on",
+    )
+    assert profile_check(empty, json_output=True) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert [(item["code"], item["subject"]) for item in payload["violations"]] == [
+        ("missing-metadata", "depends_on")
+    ]
+
+    malformed = _relation_project(
+        tmp_path / "malformed",
+        'depends_on: ["peer::not-an-id"]\n',
+        allowed_relations=None,
+        required_metadata="depends_on",
+    )
+    assert profile_check(malformed, json_output=True) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "must use source::stable-ID syntax" in captured.err
+
+
+def test_selected_source_mcp_profile_check_returns_qualified_violation(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _relation_project(workspace, 'depends_on: ["peer::DOC-001"]\n')
+    (workspace / "workspace.toml").write_text(
+        """\
+version = 1
+
+[[sources]]
+name = "example-project"
+root = "project"
+visibility = "private"
+""",
+        encoding="utf-8",
+    )
+
+    payload = mcp_server.profile_check(
+        str(tmp_path / "anchor"),
+        source="example-project",
+        workspace=str(workspace),
+    )
+
+    assert payload["valid"] is False
+    assert [(item["code"], item["subject"]) for item in payload["violations"]] == [
+        ("relation-not-allowed", "depends_on")
+    ]

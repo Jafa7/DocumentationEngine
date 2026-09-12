@@ -1153,6 +1153,46 @@ def test_assume_known_explicit_include_beats_declared_cache(
     )
 
 
+def test_assume_known_trusts_revision_discipline_while_since_detects_content(
+    tmp_path: Path, capsys
+) -> None:
+    configured_documents(tmp_path)
+    assert index_projection(tmp_path, write=True) == 0
+    capsys.readouterr()
+    generation = _current_generation(tmp_path)
+    context_md = tmp_path / "plan" / "architecture" / "context.md"
+    context_md.write_text(
+        context_md.read_text(encoding="utf-8").replace(
+            "Summary.", "Updated guidance without a revision increment."
+        ),
+        encoding="utf-8",
+    )
+
+    assert (
+        context(
+            tmp_path,
+            "DOC-002",
+            depth=1,
+            assume_known=["DOC-002@1"],
+            json_output=True,
+        )
+        == 0
+    )
+    assumed = json.loads(capsys.readouterr().out)
+    assert assumed["documents"][0]["content_omitted"] == {
+        "reason": "assumed-known",
+        "declared_revision": 1,
+    }
+    assert "navigation" not in assumed["documents"][0]
+    assert assumed["assume_known_mismatches"] == []
+
+    assert context(tmp_path, "DOC-002", depth=1, since=generation, json_output=True) == 0
+    delta = json.loads(capsys.readouterr().out)
+    assert "Updated guidance without a revision increment." in delta["documents"][0][
+        "navigation"
+    ]
+
+
 def test_assume_known_rejects_malformed_value_without_stdout(
     tmp_path: Path, capsys
 ) -> None:
@@ -1259,6 +1299,26 @@ def test_since_delta_packet_includes_only_changed_sections(
     assert (
         f"- Delta vs generation {short}: 1 changed, 1 unchanged omitted" in output
     )
+
+
+def test_since_reports_line_ending_only_raw_source_change(
+    tmp_path: Path, capsys
+) -> None:
+    configured_documents(tmp_path)
+    assert index_projection(tmp_path, write=True) == 0
+    capsys.readouterr()
+    generation = _current_generation(tmp_path)
+    context_md = tmp_path / "plan" / "architecture" / "context.md"
+    context_md.write_bytes(
+        context_md.read_text(encoding="utf-8").replace("\n", "\r\n").encode()
+    )
+
+    assert context(tmp_path, "DOC-002", depth=1, since=generation, json_output=True) == 0
+    payload = json.loads(capsys.readouterr().out)
+    changed = payload["documents"][0]
+    assert changed["id"] == "DOC-002"
+    assert changed["changed_sections"] == []
+    assert changed["source_changed_outside_sections"] is True
 
 
 def test_since_delta_packet_json_shape(tmp_path: Path, capsys) -> None:

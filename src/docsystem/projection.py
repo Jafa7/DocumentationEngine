@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import tempfile
+import uuid
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -25,11 +28,10 @@ from docsystem.graph import (
     build_reference_graph,
 )
 
-# Version 5 binds the provider-facing snapshot capability, catalog-completeness
-# evidence and document line counts into each immutable generation. Older
-# generations remain usable only through the contracts of the version that
-# created them; provider export fails closed as unsupported.
-SCHEMA_VERSION = 5
+# Version 6 defines document source identity as sha256 over exact file bytes,
+# while section hashes retain their normalized text-slice contract. Older
+# generations are never reinterpreted and fail closed as incompatible.
+SCHEMA_VERSION = 6
 
 # The observed-reference graph shard payload has its own version, while its
 # hashes and presence remain part of the generation identity.
@@ -46,6 +48,14 @@ PROVIDER_BOUNDARIES = (
     "markdown-bodies-omitted",
     "metadata-and-relations-omitted",
 )
+SOURCE_HASH_ALGORITHM = "sha256-raw-source-bytes-v1"
+SECTION_HASH_ALGORITHM = "sha256-normalized-section-text-v1"
+_HASH_ALGORITHMS = {
+    "document": SOURCE_HASH_ALGORITHM,
+    "section": SECTION_HASH_ALGORITHM,
+}
+
+_GENERATION_NAME = re.compile(r"[0-9a-f]{64}")
 
 
 @dataclass(frozen=True)
@@ -80,6 +90,59 @@ def _json(value: object) -> str:
 
 def cache_root(config: ProjectConfig) -> Path:
     return config.project_root / ".docsystem" / "cache"
+
+
+def _is_link_like(path: Path) -> bool:
+    """Return whether an existing path is a symlink or Windows junction."""
+
+    if path.is_symlink():
+        return True
+    is_junction = getattr(path, "is_junction", None)
+    return bool(is_junction is not None and is_junction())
+
+
+def _require_project_cache_path(config: ProjectConfig, path: Path) -> None:
+    """Reject cache mutations outside or through aliases below the project.
+
+    A resolved containment check alone is insufficient: an in-project symlink
+    or junction can redirect ``.docsystem/cache`` into authored documentation
+    while still resolving below the same project root.  Cache publication,
+    quarantine and retention therefore require an alias-free lexical path from
+    the configured project root to the exact mutation target.
+    """
+
+    project_root = config.project_root.resolve()
+    resolved = path.resolve(strict=False)
+    try:
+        resolved.relative_to(project_root)
+    except ValueError as error:
+        raise ValueError(
+            f"projection cache path escapes the project root: {path}"
+        ) from error
+    lexical_root = config.project_root.absolute()
+    lexical_path = path.absolute()
+    try:
+        relative = lexical_path.relative_to(lexical_root)
+    except ValueError as error:
+        raise ValueError(
+            f"projection cache path escapes the project root: {path}"
+        ) from error
+    candidate = lexical_root
+    for part in relative.parts:
+        candidate /= part
+        if _is_link_like(candidate):
+            raise ValueError(
+                "projection cache path contains a symlink or junction below "
+                f"the project root: {candidate}"
+            )
+
+
+def _is_generation_directory(path: Path) -> bool:
+    return (
+        not path.is_symlink()
+        and path.is_dir()
+        and _GENERATION_NAME.fullmatch(path.name) is not None
+    )
 
 
 def config_fingerprint(config: ProjectConfig) -> str:
@@ -186,7 +249,7 @@ def build_projection(
             "revision": document.metadata.revision,
             "type": document.metadata.document_type,
             "status": document.metadata.status,
-            "source_sha256": _sha(document.content),
+            "source_sha256": document.source_sha256,
             "sections": {
                 section.anchor: {
                     "title": section.title,
@@ -243,6 +306,7 @@ def build_projection(
     }
     payload: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
+        "hash_algorithms": dict(_HASH_ALGORITHMS),
         "config_fingerprint": config_fingerprint(config),
         "provider": _provider_descriptor(catalog, config, documents),
         "documents": dict(sorted(documents.items())),
@@ -288,6 +352,8 @@ def _provider_descriptor(
             "catalog": "included-markdown",
             "path_base": "documentation-root",
             "sections": "all-addressable",
+            "document_hash": SOURCE_HASH_ALGORITHM,
+            "section_hash": SECTION_HASH_ALGORITHM,
         },
         "boundaries": list(PROVIDER_BOUNDARIES),
     }
@@ -548,7 +614,7 @@ def load_pinned_projection(config: ProjectConfig, selector: str) -> PinnedProjec
         names = sorted(
             path.name
             for path in generations_dir.iterdir()
-            if path.is_dir() and not path.name.startswith(".staging-")
+            if _is_generation_directory(path)
         )
     except OSError as error:
         raise PinnedGenerationError(
@@ -717,9 +783,15 @@ def load_verified_projection(
             return None, "projection stale"
         contents: dict[str, str] = {}
         for relative in included:
-            text = (config.documentation_root / relative).read_text(encoding="utf-8")
+            source_bytes = (config.documentation_root / relative).read_bytes()
+            text = source_bytes.decode("utf-8").replace("\r\n", "\n").replace(
+                "\r", "\n"
+            )
             document_id = manifest_paths[relative.as_posix()]
-            if _sha(text) != manifest_documents[document_id].get("source_sha256"):
+            if (
+                hashlib.sha256(source_bytes).hexdigest()
+                != manifest_documents[document_id].get("source_sha256")
+            ):
                 return None, "projection stale"
             contents[relative.as_posix()] = text
         documents: dict[str, dict[str, Any]] = {}
@@ -834,6 +906,7 @@ def _projection_manifest(projection: dict[str, Any]) -> dict[str, Any]:
     }
     return {
         "schema_version": SCHEMA_VERSION,
+        "hash_algorithms": projection["hash_algorithms"],
         "config_fingerprint": projection["config_fingerprint"],
         "provider": projection.get("provider"),
         "documents": documents,
@@ -851,6 +924,7 @@ def _manifest_generation(manifest: dict[str, Any]) -> str:
 def _manifest_is_bound(manifest: dict[str, Any], generation: str) -> bool:
     return (
         manifest.get("schema_version") == SCHEMA_VERSION
+        and manifest.get("hash_algorithms") == _HASH_ALGORITHMS
         and manifest.get("generation") == generation
         and _manifest_generation(manifest) == generation
     )
@@ -868,72 +942,123 @@ def _write_shard(staging: Path, kind: str, document_id: str, body: dict[str, Any
     return _body_hash(body)
 
 
+def _projection_shards(projection: dict[str, Any]) -> dict[Path, dict[str, Any]]:
+    shards: dict[Path, dict[str, Any]] = {}
+    for document_id, record in projection["documents"].items():
+        shards[_shard("documents", document_id)] = {
+            "schema_version": SCHEMA_VERSION,
+            "id": document_id,
+            **record,
+        }
+    for document_id, incoming in projection["reverse"].items():
+        shards[_shard("reverse", document_id)] = {
+            "schema_version": SCHEMA_VERSION,
+            "id": document_id,
+            "incoming": incoming,
+        }
+    for document_id, record in projection.get("references", {}).items():
+        shards[_shard("references", document_id)] = {
+            "schema_version": REFERENCE_SCHEMA_VERSION,
+            "id": document_id,
+            **record,
+        }
+    for document_id, record in projection.get("reverse_references", {}).items():
+        shards[_shard("reverse-references", document_id)] = {
+            "schema_version": REFERENCE_SCHEMA_VERSION,
+            "id": document_id,
+            **record,
+        }
+    return shards
+
+
+def _expected_manifest(projection: dict[str, Any]) -> dict[str, Any]:
+    manifest = _projection_manifest(projection)
+    manifest["generation"] = str(projection["generation"])
+    return manifest
+
+
+def _verify_generation_directory(
+    generation_dir: Path, projection: dict[str, Any]
+) -> tuple[bool, str]:
+    if generation_dir.is_symlink() or not generation_dir.is_dir():
+        return False, "generation path is not a regular directory"
+    try:
+        manifest = _read(generation_dir / "manifest.json")
+        expected_manifest = _expected_manifest(projection)
+        if manifest != expected_manifest:
+            return False, "manifest does not match the expected generation"
+        for relative, expected in _projection_shards(projection).items():
+            if _read(generation_dir / relative) != expected:
+                return False, f"shard does not match the expected generation: {relative}"
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        return False, f"generation is unreadable: {error}"
+    return True, "generation verified"
+
+
+def _remove_cache_entry(config: ProjectConfig, path: Path) -> None:
+    _require_project_cache_path(config, path)
+    if path.is_symlink() or path.is_file():
+        path.unlink(missing_ok=True)
+    elif path.exists():
+        shutil.rmtree(path)
+
+
 def write_projection(config: ProjectConfig, projection: dict[str, Any]) -> str:
     root = cache_root(config)
     generation = str(projection["generation"])
-    generation_dir = root / "generations" / generation
+    if _GENERATION_NAME.fullmatch(generation) is None:
+        raise ValueError("projection generation is not a sha256 identifier")
     generations = root / "generations"
+    generation_dir = generations / generation
+    for path in (root, generations, generation_dir):
+        _require_project_cache_path(config, path)
     generations.mkdir(parents=True, exist_ok=True)
-    if not generation_dir.exists():
+    _require_project_cache_path(config, generations)
+
+    expected_manifest = _expected_manifest(projection)
+    if _manifest_generation(expected_manifest) != generation:
+        raise ValueError("projection generation does not match shard manifest")
+
+    generation_valid = False
+    quarantine: Path | None = None
+    if generation_dir.exists() or generation_dir.is_symlink():
+        _require_project_cache_path(config, generation_dir)
+        generation_valid, _ = _verify_generation_directory(generation_dir, projection)
+        if not generation_valid:
+            quarantine = generations / f".corrupt-{generation}-{uuid.uuid4().hex}"
+            _require_project_cache_path(config, quarantine)
+            generation_dir.replace(quarantine)
+
+    if not generation_valid:
         staging = Path(tempfile.mkdtemp(prefix=".staging-", dir=generations))
+        _require_project_cache_path(config, staging)
         try:
-            manifest = _projection_manifest(projection)
-            manifest["generation"] = generation
-            if _manifest_generation(manifest) != generation:
-                raise ValueError("projection generation does not match shard manifest")
-            for document_id, record in projection["documents"].items():
-                _write_shard(
-                    staging,
-                    "documents",
-                    document_id,
-                    {"schema_version": SCHEMA_VERSION, "id": document_id, **record},
-                )
-
-            for document_id, incoming in projection["reverse"].items():
-                _write_shard(
-                    staging,
-                    "reverse",
-                    document_id,
-                    {
-                        "schema_version": SCHEMA_VERSION,
-                        "id": document_id,
-                        "incoming": incoming,
-                    },
-                )
-
-            for document_id, record in projection.get("references", {}).items():
-                _write_shard(
-                    staging,
-                    "references",
-                    document_id,
-                    {
-                        "schema_version": REFERENCE_SCHEMA_VERSION,
-                        "id": document_id,
-                        **record,
-                    },
-                )
-
-            for document_id, record in projection.get("reverse_references", {}).items():
-                _write_shard(
-                    staging,
-                    "reverse-references",
-                    document_id,
-                    {
-                        "schema_version": REFERENCE_SCHEMA_VERSION,
-                        "id": document_id,
-                        **record,
-                    },
-                )
-
+            for relative, body in _projection_shards(projection).items():
+                kind = relative.parts[0]
+                document_id = str(body["id"])
+                _write_shard(staging, kind, document_id, body)
             (staging / "manifest.json").write_text(
-                json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True)
+                json.dumps(
+                    expected_manifest, ensure_ascii=False, indent=2, sort_keys=True
+                )
                 + "\n",
                 encoding="utf-8",
             )
+            valid, reason = _verify_generation_directory(staging, projection)
+            if not valid:
+                raise ValueError(f"projection staging verification failed: {reason}")
             staging.replace(generation_dir)
+        except Exception:
+            if (
+                quarantine is not None
+                and quarantine.exists()
+                and not generation_dir.exists()
+            ):
+                quarantine.replace(generation_dir)
+            raise
         finally:
             if staging.exists():
-                shutil.rmtree(staging)
+                _remove_cache_entry(config, staging)
     root.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
         mode="w", encoding="utf-8", dir=root, delete=False
@@ -946,20 +1071,33 @@ def write_projection(config: ProjectConfig, projection: dict[str, Any]) -> str:
         )
         handle.write("\n")
         temporary = Path(handle.name)
-    temporary.replace(root / "current.json")
+    pointer = root / "current.json"
+    _require_project_cache_path(config, temporary)
+    _require_project_cache_path(config, pointer)
+    try:
+        temporary.replace(pointer)
+    finally:
+        if temporary.exists():
+            _remove_cache_entry(config, temporary)
+
+    if quarantine is not None and quarantine.exists():
+        with suppress(OSError):
+            _remove_cache_entry(config, quarantine)
+        # The published generation and pointer are already verified. A hidden
+        # derived-state quarantine never participates in reads or retention and
+        # can be removed by later cache maintenance if this cleanup was blocked.
     others = sorted(
         (
             path
             for path in generations.iterdir()
-            if path.is_dir()
+            if _is_generation_directory(path)
             and path != generation_dir
-            and not path.name.startswith(".staging-")
         ),
         key=lambda path: (path.stat().st_mtime_ns, path.name),
         reverse=True,
     )
     for obsolete in others[max(0, config.keep_generations - 1) :]:
-        shutil.rmtree(obsolete)
+        _remove_cache_entry(config, obsolete)
     return generation
 
 
@@ -979,7 +1117,7 @@ def resolve_generation_manifest(
 
     Anything shorter, ambiguous, unknown, incompatible, corrupt or unreadable
     returns `None`, so the caller fails closed with a single deterministic
-    error. Retention staging directories are ignored, matching projection
+    error. Non-generation working directories are ignored, matching projection
     write semantics.
     """
 
@@ -990,7 +1128,7 @@ def resolve_generation_manifest(
         names = [
             path.name
             for path in generations_dir.iterdir()
-            if path.is_dir() and not path.name.startswith(".staging-")
+            if _is_generation_directory(path)
         ]
     except OSError:
         return None
@@ -1263,9 +1401,12 @@ def open_targeted_projection(config: ProjectConfig) -> tuple[TargetedProjection 
         if {path.as_posix() for path in included} != set(manifest_paths):
             return None, "projection stale"
         for relative in included:
-            text = (config.documentation_root / relative).read_text(encoding="utf-8")
+            source_bytes = (config.documentation_root / relative).read_bytes()
             document_id = manifest_paths[relative.as_posix()]
-            if _sha(text) != manifest_documents[document_id].get("source_sha256"):
+            if (
+                hashlib.sha256(source_bytes).hexdigest()
+                != manifest_documents[document_id].get("source_sha256")
+            ):
                 return None, "projection stale"
         if not isinstance(manifest.get("references"), dict) or not isinstance(
             manifest.get("reverse_references"), dict

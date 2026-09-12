@@ -39,6 +39,8 @@ Provider adapter (MCP, CLI, project-local wrapper)
         |
 Task-selected capability
         |
+Internal application service (retrieval selection and packet planning)
+        |
 Core retrieval | Optional extension
         |
 Project policy and profile
@@ -49,7 +51,12 @@ Generated sharded projection
 ```
 
 The core must work without an AI client. Integrations translate client actions
-into stable core operations.
+into stable core operations. Retrieval adapters share an internal application
+service that normalizes verified projections and direct Markdown into one view,
+selects graph context and plans packet coverage without writing to terminal
+streams. CLI syntax, rendering, diagnostics presentation and exit codes remain
+adapter responsibilities; this seam is internal and is not a supported Python
+API.
 
 ## Capability map
 
@@ -61,7 +68,7 @@ The capability groups are progressive, not an execution checklist:
 | Adoption and derived state | `migration-report`, `migrate`, `profile-check`, `index`, `changes`, `report` | Connecting an existing corpus, checking policy or refreshing disposable projections |
 | Provider reconciliation | `provider snapshot`, `provider compare`, `provider export`, `provider artifact verify` | An external consumer needs exact body-free observations or one complete transport artifact from pinned generations |
 | Governed delivery | `roadmap`, `intake`, `admission`, `execution-handoff`, `execution-result`, `workstream`, `lifecycle`, `finish`, `promotion` | Genuinely multi-stage, delegated or risk-bearing work that requires bounded evidence |
-| Bounded mutation | `maintenance`, `maintenance-recover` | Explicitly approved mechanical synchronization with journal and recovery guarantees |
+| Bounded mutation | `maintenance`, `maintenance-recover`, `maintenance-recover-interrupted` | Explicitly approved mechanical synchronization with distinct completed and interrupted recovery guarantees |
 | Multi-source operation | `workspace`, `federation` | A task that deliberately spans independently owned documentation sources |
 
 The ordinary agent path is `readiness` followed by task-sized `context` or
@@ -99,6 +106,14 @@ Project policy may configure:
 - stable provider identity and exported visibility classification;
 - legacy path-relation migration and historical snapshot document types;
 - provider adapters.
+
+Configuration currently has one eager validation boundary. Loading any command
+validates core and optional capability tables together, including maintenance,
+profiles, traceability, workstreams, intake and admission settings. This is a
+deliberate fail-closed tradeoff: a malformed unused capability may block a basic
+read rather than being silently ignored. Lazy capability-specific loading is
+deferred until it can preserve safety-relevant validation and expose exactly
+which settings were evaluated.
 
 For one external private profile, an ignored
 `.docsystem.project.local.toml` binds the consuming checkout to one exact
@@ -143,10 +158,16 @@ A stable ID maps to a document shard without a global routing table.
 shards reached by its query after validating the manifest root and source
 freshness; unrelated shard bodies are not read.
 
+Every projection mutation requires an alias-free cache path below the project
+root. A symlink or junction anywhere below that root in the lexical
+`.docsystem/cache` ancestry is rejected even when it resolves back inside the
+project, because an in-project alias could otherwise redirect retention or
+quarantine into authored documentation.
+
 Read commands (`read`, `context`, `impact`) serve from the projection when it
 is verified current. Verification enumerates the catalog's source paths
 without parsing them, re-reads every included source and compares its sha256
-with the generation manifest, and validates every consumed document and
+over exact file bytes with the generation manifest, and validates every consumed document and
 reverse shard against its recorded hash. It also rejects the generation when the active configuration
 fingerprint no longer matches the one recorded at build time — a normalized
 digest of the documentation root identity, areas, identifiers, catalog
@@ -162,14 +183,19 @@ generation before any output is produced.
 None of this parses Markdown on the fast path — what it removes is Markdown,
 metadata and link parsing plus dependency-graph reconstruction, not source I/O;
 a stat-based freshness cache that avoids re-hashing unchanged sources remains a
-possible performance polish. Both serving paths reduce to one shared view
-shape, so output is byte-identical regardless of which path produced it.
+possible performance polish. Both serving paths reduce through the internal
+retrieval service to one shared view shape, so output is byte-identical
+regardless of which path produced it.
 
 Each generation name is a hash of its canonical derived content together with
 the configuration fingerprint that shaped it, so a semantic configuration
 change yields a distinct generation. A new generation is assembled in a staging
 directory and renamed into place before the small `current.json` pointer is
-atomically replaced. Existing generation directories are never rewritten.
+atomically replaced. Valid generation directories are never rewritten. If the
+same content address is occupied by corrupt derived state, the writer moves that
+whole directory aside, publishes a newly assembled and verified directory at
+the address, and only then updates the pointer; readers either receive verified
+content or visibly fall back during that replacement window.
 Readers validate schema, the manifest-root generation identity, the configuration
 fingerprint, source hashes and required shard hashes; invalid,
 stale or corrupt projections fall back to direct Markdown with a diagnostic.
@@ -181,6 +207,12 @@ concurrent reader has already selected; that reader then falls back to
 direct Markdown with a visible diagnostic rather than serving mixed state.
 Coordinating multiple writers is a caller/orchestrator responsibility, not
 core engine behavior.
+
+Document `source_sha256` and section `sha256` deliberately use different,
+versioned identity domains. Projection schema 6 hashes exact source bytes for
+document freshness and normalized section slices for parsed navigation. The
+manifest and provider scope name both algorithms. See
+[source identity](source-identity.md).
 
 Provider reconciliation uses the same immutable generations but a different
 verification mode from live reads. A provider generation binds stable provider
@@ -210,8 +242,12 @@ that omit content only when omission is provably safe, never as a silent
 budget cut. `--assume-known ID@REV` is a client-declared cache: an agent
 states a document it already holds, and the engine omits that document's
 navigation excerpt only while its current revision still equals `REV`; a
-stale declaration serves full content and emits a mismatch note. `--since
-GENERATION` is a delta briefing against a retained generation manifest: for
+stale declaration serves full content and emits a mismatch note. This mode
+relies on project revision discipline: Documentation Engine does not keep the
+previously delivered bytes behind `ID@REV`, so an unchanged revision with
+changed content remains indistinguishable to `--assume-known`. `--since
+GENERATION` is a content-bound delta briefing against a retained generation
+manifest: for
 each packet document the engine compares the per-section sha256 recorded in
 that manifest against the current view (any level, no filtering) and reports
 every differing or new anchor as `changed_sections` — the complete truth
@@ -320,10 +356,12 @@ mappings, previews it by default, and — only with an explicit `--apply` —
 rewrites the exact YAML scalar span of each resolved value in place, leaving
 the rest of the document (formatting, comments, unknown fields, the body and
 all boundaries) untouched. `apply` re-validates the plan against a scratch
-copy of the documentation tree before writing, and writes every affected file
-through a temporary file that is renamed into place only after all temporary
-writes succeed, so a failure never leaves a partially migrated multi-file
-change. `docsystem readiness` is a read-only report over the same catalog
+copy of the documentation tree before writing, then submits whole-file,
+formatting-preserving edits to the same immutable bounded journal used by
+maintenance. Exact before hashes reject stale plans; caught write or validation
+failures roll back; `migrate-recover-interrupted` handles verified schema-2
+attempts that stopped before terminal evidence. `docsystem readiness` is a
+read-only report over the same catalog
 data — blocking errors, resolvable migrations, boundaries, stale pins and
 projection state — with no source-mutating side effects.
 
@@ -338,7 +376,11 @@ command never changes its exit code or its default text output. The MCP
 adapter (`docsystem.mcp_server`) is a thin subprocess wrapper over exactly
 this CLI contract, exposing only read-only commands as tools. Text-preserving
 MCP tools keep stdout byte-for-byte compatible, and their packet variants add
-the same non-fatal diagnostics without forcing clients to parse stderr.
+the same non-fatal diagnostics without forcing clients to parse stderr. The
+adapter owns only subprocess transport policy: a host-configurable deadline
+and separate stdout/stderr byte bounds terminate a stalled or excessive child
+and never convert partial output into success. Core CLI semantics remain the
+single implementation behind that boundary.
 
 `context --json` additionally exposes each included document's typed
 `revision` and lists its sections as `{anchor, title, level, lines, bytes}` in
@@ -465,6 +507,13 @@ journal restores all touched files. `maintenance-recover` verifies immutable
 generation evidence and refuses recovery over newer source. Successful write
 and recovery rebuild the disposable projection; a refresh failure is visible
 and falls back to direct Markdown without weakening Markdown authority.
+Schema-2 writes publish an immutable prepared manifest before source mutation
+and an atomic terminal record afterwards. Abrupt termination before that
+terminal is handled only through `maintenance-recover-interrupted`, which
+restores exact known before/after states and preserves resumable evidence. It
+does not claim multi-file atomic visibility, arbitrary-writer exclusion or
+power-loss durability. See [interrupted maintenance
+recovery](interrupted-recovery.md).
 
 When a local workspace selects the project by source name, write authority is
 more restrictive. The registry defaults each source to `write = "none"`; only

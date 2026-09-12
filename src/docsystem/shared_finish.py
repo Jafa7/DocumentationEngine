@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from docsystem.journal import JournalError, validate_workstream_id
+from docsystem.strict_json import DuplicateJsonMemberError, loads_unique_json
 from docsystem.workspace import SOURCE_NAME_PATTERN
 
 SCHEMA_VERSION = 1
@@ -41,15 +42,6 @@ class SharedFinishRecord:
     participants: tuple[ParticipantDeclaration, ...]
 
 
-def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    value: dict[str, object] = {}
-    for key, item in pairs:
-        if key in value:
-            raise SharedFinishError(f"duplicate JSON key: {key}")
-        value[key] = item
-    return value
-
-
 def _exact_keys(value: dict[str, object], allowed: frozenset[str], label: str) -> None:
     unknown = sorted(set(value) - allowed)
     if unknown:
@@ -66,7 +58,9 @@ def load_shared_finish_record(path: Path) -> SharedFinishRecord:
     if len(raw_bytes) > MAX_RECORD_BYTES:
         raise SharedFinishError("shared finish record exceeds 65536 bytes")
     try:
-        raw = json.loads(raw_bytes, object_pairs_hook=_reject_duplicate_keys)
+        raw = loads_unique_json(raw_bytes)
+    except DuplicateJsonMemberError as error:
+        raise SharedFinishError(f"duplicate JSON key: {error.member}") from error
     except UnicodeDecodeError as error:
         raise SharedFinishError("shared finish record must be UTF-8") from error
     except json.JSONDecodeError as error:

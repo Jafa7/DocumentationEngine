@@ -16,9 +16,15 @@ link to that owner rather than repeat commands or policy.
 
 - [Architecture](architecture.md) — core retrieval, opt-in capability
   boundaries, layers, configuration, projection and catalog model.
+- [Source identity](source-identity.md) — versioned raw document and normalized
+  section hash semantics, serving behavior and cache compatibility.
+- [Interrupted journal recovery](interrupted-recovery.md) — separate
+  completed undo and resumable interrupted-attempt recovery contracts.
 - [Agent contract](agent-contract.md) — safe command behavior for AI clients.
 - [Context measurement](context-efficiency.md) — measured reduction method,
   quality guard and limitations.
+- [Retrieval cost measurement](retrieval-cost-measurement.md) — reproducible
+  synthetic internal-work benchmark and optimization decision.
 - [Graph health](graph-health.md) — deterministic graph inventory and optional
   project-authored advisory thresholds.
 - [Metadata and graph inventory](metadata-inventory.md) — privacy-aware field

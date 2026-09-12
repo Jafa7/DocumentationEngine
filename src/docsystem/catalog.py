@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from functools import cached_property
@@ -75,6 +76,7 @@ class MarkdownDocument:
     links: tuple[PurePosixPath, ...]
     is_index: bool
     content: str
+    source_sha256: str
     metadata: DocumentMetadata | None
     sections: tuple[MarkdownSection, ...]
     section_issues: tuple[str, ...]
@@ -252,7 +254,8 @@ def build_catalog(config: ProjectConfig) -> MarkdownCatalog:
             )
             continue
         memberships.append(CatalogMembership("included", relative, role=role))
-        content = path.read_text(encoding="utf-8")
+        source_bytes = path.read_bytes()
+        content = source_bytes.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
         front_matter = parse_front_matter(content, frozenset(config.identifiers.values()))
         section_result = parse_sections_result(content)
         documents.append(
@@ -262,6 +265,7 @@ def build_catalog(config: ProjectConfig) -> MarkdownCatalog:
                 links=_markdown_links(content, relative, root),
                 is_index=path.name.lower() in INDEX_NAMES,
                 content=content,
+                source_sha256=hashlib.sha256(source_bytes).hexdigest(),
                 metadata=front_matter.metadata,
                 sections=section_result.sections,
                 section_issues=section_result.issues,

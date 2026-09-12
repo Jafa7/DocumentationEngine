@@ -3,7 +3,13 @@ from pathlib import Path
 
 import docsystem.cli as cli_module
 from docsystem.catalog import build_catalog
-from docsystem.cli import build_parser, initialize, maintenance, maintenance_recover
+from docsystem.cli import (
+    build_parser,
+    initialize,
+    maintenance,
+    maintenance_recover,
+    maintenance_recover_interrupted,
+)
 from docsystem.config import CONFIG_FILENAME, load_config
 from docsystem.projection import (
     build_projection,
@@ -173,6 +179,16 @@ def test_cli_parses_write_and_recovery_contracts() -> None:
     )
     assert recovery.generation == "20260714T100000Z-WS-001"
     assert recovery.json_output is True
+    interrupted = build_parser().parse_args(
+        [
+            "maintenance-recover-interrupted",
+            "20260714T100000Z-WS-001",
+            ".",
+            "--json",
+        ]
+    )
+    assert interrupted.generation == "20260714T100000Z-WS-001"
+    assert interrupted.json_output is True
 
 
 # --- clean / drift / roles --------------------------------------------------
@@ -427,12 +443,13 @@ def test_source_change_between_preview_and_transaction_is_not_adopted(
     occurrence_path = tmp_path / "plan" / "architecture" / "b.md"
     occurrence_before = occurrence_path.read_bytes()
     original_read_bytes = Path.read_bytes
-    changed = False
+    source_reads = 0
 
     def change_before_guard(path: Path) -> bytes:
-        nonlocal changed
-        if path == source_path and not changed:
-            changed = True
+        nonlocal source_reads
+        if path == source_path:
+            source_reads += 1
+        if path == source_path and source_reads == 2:
             source_path.write_text(source_path.read_text().replace("1.2.2", "1.3.0"))
         return original_read_bytes(path)
 
@@ -464,12 +481,13 @@ def test_occurrence_change_between_preview_and_transaction_fails_closed(
     source_hash = _preview_source_hash(tmp_path, capsys)
     occurrence_path = tmp_path / "plan" / "architecture" / "b.md"
     original_read_bytes = Path.read_bytes
-    changed = False
+    occurrence_reads = 0
 
     def change_before_admission(path: Path) -> bytes:
-        nonlocal changed
-        if path == occurrence_path and not changed:
-            changed = True
+        nonlocal occurrence_reads
+        if path == occurrence_path:
+            occurrence_reads += 1
+        if path == occurrence_path and occurrence_reads == 2:
             occurrence_path.write_text(
                 occurrence_path.read_text().replace("old value", "new authored value")
             )
@@ -605,6 +623,49 @@ def test_explicit_maintenance_recovery_and_newer_source_refusal(
     assert captured.out == ""
     assert "recovery refused" in captured.err
     assert "newer authored work" in b_path.read_text()
+
+
+def test_interrupted_maintenance_recovery_cli_restores_and_refreshes_projection(
+    tmp_path: Path, capsys
+) -> None:
+    bootstrap_project(tmp_path, occurrence_line="pip install docsystem==1.0.0\n")
+    capsys.readouterr()
+    b_path = tmp_path / "plan" / "architecture" / "b.md"
+    before = b_path.read_bytes()
+    source_hash = _preview_source_hash(tmp_path, capsys)
+    assert (
+        maintenance(
+            tmp_path,
+            "install-version",
+            check=False,
+            preview=False,
+            write=True,
+            expected_source_hash=source_hash,
+            workstream_id="WS-INTERRUPTED-CLI",
+            created_at="2026-09-12T10:00:00Z",
+        )
+        == 0
+    )
+    capsys.readouterr()
+    generation = "20260912T100000Z-WS-INTERRUPTED-CLI"
+    verification = (
+        tmp_path / ".docsystem" / "journal" / generation / "verification.json"
+    )
+    verification.unlink()
+
+    assert (
+        maintenance_recover_interrupted(
+            tmp_path,
+            generation,
+            json_output=True,
+            recovered_at="2026-09-12T11:00:00Z",
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "recovered"
+    assert payload["projection_updated"] is True
+    assert b_path.read_bytes() == before
 
 
 def test_write_updates_multiple_declared_blocks_in_one_file(tmp_path: Path, capsys) -> None:

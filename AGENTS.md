@@ -76,10 +76,13 @@ Expected git mode for `scripts/installed_cli_smoke.sh` is `100755`.
   enabled worker profile, and write both the complete task contract and a
   `WORKER_TASK_INTENT` JSON file below `.orchestrator/prompts/`.
 - Set `intent.verification` before dispatch and pass the intent with
-  `worker run --intent-file`. The declared verification level is authoritative:
-  generic or copied task prose must not broaden it. If scope changes enough to
-  require another level, stop and dispatch corrected intent rather than
-  silently changing the gate.
+  `worker run --intent-file`. The declared verification level is the required
+  baseline: generic or copied task prose must not broaden it. A concrete risk
+  discovered during the task may raise the level when the broader check remains
+  within the task's permissions and authorizations; record the reason and the
+  actual level in handoff evidence. Otherwise stop with a verification
+  escalation request. A user-requested scope change still requires corrected
+  intent before continuing.
 - Dispatch once with a stable task id. Do not spend model turns polling worker
   state and do not dispatch a duplicate merely because a wait timed out.
 - For a bounded wait that fits the active Codex turn, prefer one direct

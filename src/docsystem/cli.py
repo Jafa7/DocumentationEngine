@@ -5,13 +5,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import re
 import sys
 from collections import Counter, deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from docsystem import __version__
 from docsystem.admission import (
@@ -133,8 +132,10 @@ from docsystem.journal import (
     GenerationEvidence,
     JournalError,
     LineRange,
+    default_journal_root,
     inspect_generation,
     recover_generation,
+    recover_interrupted_generation,
     run_bounded_transaction,
     validate_workstream_id,
 )
@@ -155,7 +156,12 @@ from docsystem.maintenance import (
     span_within_section,
     unified_block_diff,
 )
-from docsystem.migration import apply_migration_plan, build_migration_plan, validate_plan
+from docsystem.migration import (
+    MIGRATION_WORKSTREAM_ID,
+    apply_migration_plan,
+    build_migration_plan,
+    validate_plan,
+)
 from docsystem.profiles import ProfileReport, evaluate_profiles
 from docsystem.program_plan import (
     ProgramMilestone,
@@ -165,7 +171,6 @@ from docsystem.program_plan import (
     select_program_plan,
 )
 from docsystem.projection import (
-    LoadedProjection,
     PinnedGenerationError,
     build_projection,
     config_fingerprint,
@@ -204,7 +209,43 @@ from docsystem.provider_artifact import (
     snapshot_artifact,
     write_artifact,
 )
-from docsystem.readiness import evaluate_readiness
+from docsystem.readiness import READINESS_SCOPE, evaluate_readiness
+from docsystem.retrieval import (
+    ContextInclusionReason as _ContextInclusionReason,
+)
+from docsystem.retrieval import (
+    ContextReasons as _ContextReasons,
+)
+from docsystem.retrieval import (
+    ContextViewOmission as _ContextViewOmission,
+)
+from docsystem.retrieval import (
+    DocumentPacketPlan as _DocPlan,
+)
+from docsystem.retrieval import (
+    DocumentView as _DocumentView,
+)
+from docsystem.retrieval import (
+    Incoming as _Incoming,
+)
+from docsystem.retrieval import (
+    Views as _Views,
+)
+from docsystem.retrieval import (
+    build_packet_plans as _build_packet_plans,
+)
+from docsystem.retrieval import (
+    context_selection as _context_selection,
+)
+from docsystem.retrieval import freshness_rows as _freshness_rows
+from docsystem.retrieval import load_retrieval_state
+from docsystem.retrieval import ordered_selection as _ordered_selection
+from docsystem.retrieval import packet_sections as _packet_sections
+from docsystem.retrieval import parse_selection as _selection
+from docsystem.retrieval import (
+    purpose_context_selection as _purpose_context_selection,
+)
+from docsystem.retrieval import views_from_catalog as _views_from_catalog
 from docsystem.sections import MarkdownSection, extract_navigation, extract_section
 from docsystem.shared_finish import SharedFinishError, load_shared_finish_record
 from docsystem.workspace import (
@@ -351,17 +392,6 @@ class _ContextGapEvidence:
     initial: tuple[str, ...]
     expanded: tuple[str, ...]
     projection: str
-
-
-@dataclass(frozen=True)
-class _ContextViewOmission:
-    """One authored edge a purpose view deliberately did not traverse."""
-
-    source_id: str
-    direction: str
-    relation: str
-    peer_id: str
-    reason: str
 
 
 class _ReferenceGraphInvalid(Exception):
@@ -2299,358 +2329,16 @@ def read_document(
     return 0
 
 
-@dataclass(frozen=True)
-class _EdgeView:
-    """One dependency edge as served to a read command."""
-
-    relation: str
-    peer_id: str
-    expected_revision: int | None
-
-
-@dataclass(frozen=True)
-class _DocumentView:
-    """Document data required by `read`, `context` and `impact`.
-
-    Both the direct-Markdown path and the verified-projection path reduce to
-    this shape, so command output is byte-identical regardless of which path
-    served it. `migrations` and `boundaries` are `(relation, value, target)`
-    and `(relation, value, reason)` triples; `related_values` preserves the
-    document-order raw values used by the "Related omitted" note.
-    """
-
-    document_id: str
-    path: PurePosixPath
-    content: str
-    sections: tuple[MarkdownSection, ...]
-    revision: int
-    document_type: str | None
-    status: str | None
-    outgoing: tuple[_EdgeView, ...]
-    migrations: tuple[tuple[str, str, str], ...]
-    boundaries: tuple[tuple[str, str, str], ...]
-    related_values: tuple[str, ...]
-
-
-_Views = dict[str, _DocumentView]
-_Incoming = dict[str, tuple[_EdgeView, ...]]
-
-
-@dataclass(frozen=True, order=True)
-class _ContextInclusionReason:
-    """One exact reason a document entered a context selection."""
-
-    via_id: str
-    direction: str
-    relation: str
-
-
-_ContextReasons = dict[str, set[_ContextInclusionReason]]
-
-
-def _freshness_rows(
-    config,
-    views: _Views,
-    ordered: list[str],
-) -> list[dict[str, object]]:
-    rows: list[dict[str, object]] = []
-    for selected_id in ordered:
-        view = views[selected_id]
-        for edge in view.outgoing:
-            if edge.expected_revision is None:
-                continue
-            dependency = views.get(edge.peer_id)
-            if dependency is None or dependency.revision == edge.expected_revision:
-                continue
-            rows.append(
-                {
-                    "source_id": selected_id,
-                    "target_id": edge.peer_id,
-                    "pinned_revision": edge.expected_revision,
-                    "current_revision": dependency.revision,
-                    "classification": (
-                        "historical snapshot"
-                        if is_historical_snapshot(
-                            config, view.document_type, view.status
-                        )
-                        else "stale"
-                    ),
-                }
-            )
-    return rows
-
-
-def _context_selection(
-    views: _Views,
-    document_id: str,
-    *,
-    depth: int,
-    include_related: bool,
-) -> tuple[dict[str, set[str]], _ContextReasons]:
-    included: dict[str, set[str]] = {document_id: {"target"}}
-    reasons: _ContextReasons = {
-        document_id: {_ContextInclusionReason(document_id, "self", "target")}
-    }
-    queue = deque([(document_id, 0)])
-    expanded: set[str] = set()
-    allowed = {"derived_from", "depends_on", "validated_against"}
-    if include_related:
-        allowed.update({"related", "supersedes"})
-    while queue:
-        source_id, current_depth = queue.popleft()
-        if source_id in expanded or current_depth >= depth:
-            continue
-        expanded.add(source_id)
-        for edge in views[source_id].outgoing:
-            if edge.relation not in allowed:
-                continue
-            included.setdefault(edge.peer_id, set()).add(edge.relation)
-            reasons.setdefault(edge.peer_id, set()).add(
-                _ContextInclusionReason(source_id, "forward", edge.relation)
-            )
-            queue.append((edge.peer_id, current_depth + 1))
-    return included, reasons
-
-
-def _purpose_context_selection(
-    views: _Views,
-    incoming: _Incoming,
-    document_id: str,
-    purpose_view: ContextView,
-) -> tuple[
-    dict[str, set[str]],
-    _ContextReasons,
-    tuple[_ContextViewOmission, ...],
-]:
-    """Traverse one authored view while preserving every filtered/stopped edge."""
-
-    included: dict[str, set[str]] = {document_id: {"target"}}
-    reasons: _ContextReasons = {
-        document_id: {_ContextInclusionReason(document_id, "self", "target")}
-    }
-    queue = deque([(document_id, 0)])
-    expanded: set[str] = set()
-    omissions: set[_ContextViewOmission] = set()
-    allowed = set(purpose_view.relations)
-    while queue:
-        source_id, current_depth = queue.popleft()
-        if source_id in expanded:
-            continue
-        expanded.add(source_id)
-        candidates: list[tuple[str, _EdgeView]] = []
-        if purpose_view.direction in {"forward", "both"}:
-            candidates.extend(("forward", edge) for edge in views[source_id].outgoing)
-        if purpose_view.direction in {"reverse", "both"}:
-            candidates.extend(("reverse", edge) for edge in incoming.get(source_id, ()))
-        for direction, edge in sorted(
-            candidates,
-            key=lambda item: (
-                item[0],
-                item[1].relation,
-                item[1].peer_id,
-                item[1].expected_revision or 0,
-            ),
-        ):
-            if edge.relation not in allowed:
-                omissions.add(
-                    _ContextViewOmission(
-                        source_id,
-                        direction,
-                        edge.relation,
-                        edge.peer_id,
-                        "relation-filter",
-                    )
-                )
-                continue
-            if current_depth >= purpose_view.depth:
-                if edge.peer_id not in included:
-                    omissions.add(
-                        _ContextViewOmission(
-                            source_id,
-                            direction,
-                            edge.relation,
-                            edge.peer_id,
-                            "depth-limit",
-                        )
-                    )
-                continue
-            if edge.peer_id == document_id:
-                continue
-            reason = (
-                edge.relation
-                if direction == "forward"
-                else f"reverse:{edge.relation}"
-            )
-            included.setdefault(edge.peer_id, set()).add(reason)
-            reasons.setdefault(edge.peer_id, set()).add(
-                _ContextInclusionReason(source_id, direction, edge.relation)
-            )
-            queue.append((edge.peer_id, current_depth + 1))
-    return (
-        included,
-        reasons,
-        tuple(
-            sorted(
-                omissions,
-                key=lambda item: (
-                    item.source_id,
-                    item.direction,
-                    item.relation,
-                    item.peer_id,
-                    item.reason,
-                ),
-            )
-        ),
-    )
-
-
-def _ordered_selection(included: dict[str, set[str]], document_id: str) -> list[str]:
-    return [document_id, *sorted(item for item in included if item != document_id)]
-
-
-def _views_from_catalog(catalog_value: MarkdownCatalog) -> tuple[_Views, _Incoming]:
-    graph = build_dependency_graph(catalog_value)
-    migrations: dict[str, list[tuple[str, str, str]]] = {}
-    for item in catalog_value.relation_migrations:
-        migrations.setdefault(item.source_id, []).append(
-            (item.relation, item.value, item.target_id)
-        )
-    boundaries: dict[str, list[tuple[str, str, str]]] = {}
-    for item in catalog_value.relation_boundaries:
-        boundaries.setdefault(item.source_id, []).append(
-            (item.relation, item.value, item.reason)
-        )
-    views: _Views = {}
-    incoming: _Incoming = {}
-    for document in catalog_value.documents:
-        metadata = document.metadata
-        if metadata is None:
-            continue
-        document_id = metadata.document_id
-        boundaries.setdefault(document_id, []).extend(
-            (
-                reference.relation,
-                reference.target,
-                "requires workspace federation",
-            )
-            for reference in metadata.federated_references
-        )
-        related_values = [
-            value
-            for relation, value in metadata.legacy_references
-            if relation == "related"
-        ]
-        related_values.extend(
-            reference.target_id
-            for reference in metadata.references
-            if reference.relation == "related"
-        )
-        related_values.extend(
-            reference.target
-            for reference in metadata.federated_references
-            if reference.relation == "related"
-        )
-        views[document_id] = _DocumentView(
-            document_id=document_id,
-            path=document.path,
-            content=document.content,
-            sections=document.sections,
-            revision=metadata.revision,
-            document_type=metadata.document_type,
-            status=metadata.status,
-            outgoing=tuple(
-                _EdgeView(edge.relation, edge.target_id, edge.expected_revision)
-                for edge in graph.outgoing(document_id)
-            ),
-            migrations=tuple(migrations.get(document_id, ())),
-            boundaries=tuple(boundaries.get(document_id, ())),
-            related_values=tuple(related_values),
-        )
-        incoming[document_id] = tuple(
-            _EdgeView(edge.relation, edge.source_id, edge.expected_revision)
-            for edge in graph.incoming(document_id)
-        )
-    return views, incoming
-
-
-def _views_from_projection(loaded: LoadedProjection) -> tuple[_Views, _Incoming]:
-    views: _Views = {}
-    incoming: _Incoming = {}
-    for document_id, shard in loaded.documents.items():
-        # Shard JSON is written with sorted keys, so section order is
-        # restored from line numbers rather than mapping order.
-        sections = tuple(
-            MarkdownSection(
-                title=str(record["title"]),
-                anchor=anchor,
-                level=int(record["level"]),
-                start_line=int(record["start_line"]),
-                end_line=int(record["end_line"]),
-                anchor_kind=str(record.get("anchor_kind", "generated")),
-            )
-            for anchor, record in sorted(
-                shard["sections"].items(),
-                key=lambda item: item[1]["start_line"],
-            )
-        )
-        path = str(shard["path"])
-        views[document_id] = _DocumentView(
-            document_id=document_id,
-            path=PurePosixPath(path),
-            content=loaded.contents[path],
-            sections=sections,
-            revision=int(shard["revision"]),
-            document_type=shard.get("type"),
-            status=shard.get("status"),
-            outgoing=tuple(
-                _EdgeView(
-                    record["relation"], record["target"], record.get("expected_revision")
-                )
-                for record in shard.get("dependencies", ())
-            ),
-            migrations=tuple(
-                (record["relation"], record["value"], record["target"])
-                for record in shard.get("migrations", ())
-            ),
-            boundaries=tuple(
-                (record["relation"], record["value"], record["reason"])
-                for record in shard.get("boundaries", ())
-            ),
-            related_values=tuple(str(value) for value in shard.get("related_values", ())),
-        )
-        incoming[document_id] = tuple(
-            _EdgeView(
-                record["relation"], record["source"], record.get("expected_revision")
-            )
-            for record in loaded.reverse.get(document_id, ())
-        )
-    return views, incoming
-
-
 def _load_views(config) -> tuple[_Views, _Incoming, MarkdownCatalog | None]:
-    """Serve reads from the verified projection, else direct Markdown.
+    """Adapt structured retrieval state to the CLI diagnostic contract."""
 
-    Returns the catalog only on the direct path; callers use its presence to
-    run the validation that a verified projection already guarantees (a
-    generation is only written for a tree with no blocking errors, and the
-    loader proves the sources are byte-identical to that tree).
-    """
-
-    loaded, reason = load_verified_projection(config)
-    if loaded is not None:
-        views, incoming = _views_from_projection(loaded)
-        return views, incoming, None
-    print(f"WARNING: {reason}; using direct Markdown", file=sys.stderr)
-    catalog_value = build_catalog(config)
-    views, incoming = _views_from_catalog(catalog_value)
-    return views, incoming, catalog_value
-
-
-def _selection(raw: str) -> tuple[str, str | None]:
-    document_id, separator, anchor = raw.partition("#")
-    if not document_id or (separator and not anchor):
-        raise ValueError(f"invalid include selection: {raw!r}")
-    return document_id, anchor if separator else None
+    state = load_retrieval_state(config)
+    for diagnostic in state.diagnostics:
+        print(
+            f"{diagnostic.severity.upper()}: {diagnostic.message}",
+            file=sys.stderr,
+        )
+    return state.views, state.incoming, state.catalog
 
 
 def _section_size_maps(view: _DocumentView) -> list[dict[str, object]]:
@@ -2675,285 +2363,6 @@ def _section_size_maps(view: _DocumentView) -> list[dict[str, object]]:
             }
         )
     return maps
-
-
-def _source_sha(view: _DocumentView) -> str:
-    """Return the sha256 of a document's full source, matching the manifest."""
-
-    return hashlib.sha256(view.content.encode()).hexdigest()
-
-
-def _section_sha(view: _DocumentView, section: MarkdownSection) -> str:
-    """Return a section's sha256 over the exact slice the manifest hashes."""
-
-    lines = view.content.splitlines()
-    slice_text = "\n".join(lines[section.start_line - 1 : section.end_line])
-    return hashlib.sha256(slice_text.encode()).hexdigest()
-
-
-def _changed_section_anchors(
-    view: _DocumentView, previous_sections: dict[str, object]
-) -> tuple[str, ...]:
-    """Return every anchor whose content changed since a generation, in doc order.
-
-    A section is changed when its per-section sha256 differs from the recorded
-    one or when the section is new — any level, no filtering. This is the
-    complete truth signal reported as `changed_sections`: an H1's slice spans
-    everything beneath it and an H2's slice spans its H3+ descendants, so a
-    change anywhere always bubbles up through every enclosing anchor as well.
-    Which of these anchors are actually re-emitted as `### Changed section`
-    content blocks is decided separately in `_packet_sections`, since the H1
-    and any `navigation.extend_through` H2 are already served by navigation.
-    """
-
-    return tuple(
-        section.anchor
-        for section in view.sections
-        if not isinstance(previous_sections.get(section.anchor), dict)
-        or previous_sections[section.anchor].get("sha256") != _section_sha(view, section)
-    )
-
-
-def _removed_section_anchors(
-    view: _DocumentView, previous_sections: dict[str, object]
-) -> tuple[str, ...]:
-    """Return removed anchors in their previous document order."""
-
-    current = {section.anchor for section in view.sections}
-
-    def previous_line(item: tuple[str, object]) -> tuple[int, str]:
-        anchor, record = item
-        if isinstance(record, dict) and isinstance(record.get("start_line"), int):
-            return int(record["start_line"]), anchor
-        return sys.maxsize, anchor
-
-    return tuple(
-        anchor
-        for anchor, _ in sorted(previous_sections.items(), key=previous_line)
-        if anchor not in current
-    )
-
-
-def _metadata_changes(
-    view: _DocumentView, previous: dict[str, object]
-) -> tuple[tuple[str, object, object], ...]:
-    """Return deterministic semantic projection-field changes."""
-
-    current: dict[str, object] = {
-        "path": view.path.as_posix(),
-        "revision": view.revision,
-        "type": view.document_type,
-        "status": view.status,
-        "dependencies": [
-            {
-                "relation": edge.relation,
-                "target": edge.peer_id,
-                "expected_revision": edge.expected_revision,
-            }
-            for edge in view.outgoing
-        ],
-        "boundaries": [
-            {"relation": relation, "value": value, "reason": reason}
-            for relation, value, reason in view.boundaries
-        ],
-        "migrations": [
-            {"relation": relation, "value": value, "target": target}
-            for relation, value, target in view.migrations
-        ],
-        "related_values": list(view.related_values),
-    }
-    return tuple(
-        (field, previous.get(field), value)
-        for field, value in current.items()
-        if previous.get(field) != value
-    )
-
-
-@dataclass(frozen=True)
-class _DocPlan:
-    """Per-document rendering plan for `--assume-known` / `--since` packets.
-
-    Documents without a plan (neither flag active for them) render exactly as
-    before, so the flagless packet stays byte-identical. `coverage_state`
-    selects the coverage-line wording; `content_omitted` is the JSON marker
-    and is present precisely when navigation is omitted; `changed_sections`
-    is the complete truth signal — every anchor at any level whose slice
-    changed — reported verbatim as the JSON `changed_sections` key; only the
-    subset that `_packet_sections` selects (changed H2s outside
-    `navigation.extend_through`) is actually rendered as content.
-    `removed_sections` and `metadata_changes` make non-current-section
-    changes explicit instead of forcing a client to infer them from an empty
-    changed-section list.
-    """
-
-    omit_navigation: bool = False
-    content_omitted: dict[str, object] | None = None
-    coverage_state: str = "normal"
-    declared_revision: int | None = None
-    generation_short: str | None = None
-    changed_sections: tuple[str, ...] = ()
-    removed_sections: tuple[str, ...] = ()
-    metadata_changes: tuple[tuple[str, object, object], ...] = ()
-    source_changed_outside_sections: bool = False
-    changed_document: bool = False
-
-
-def _build_packet_plans(
-    views: _Views,
-    ordered: list[str],
-    *,
-    assumed: dict[str, int],
-    since_manifest: dict[str, object] | None,
-    generation_short: str | None,
-) -> tuple[dict[str, _DocPlan], list[dict[str, object]], list[str], int]:
-    """Compute per-document plans plus shared diagnostics for the new flags.
-
-    Returns `(plans, mismatches, notes, assumed_known_omitted)`. `mismatches`
-    feeds the JSON `assume_known_mismatches`; `notes` are extra text
-    diagnostics (revision mismatches, `new since` and the delta summary).
-    """
-
-    plans: dict[str, _DocPlan] = {}
-    mismatches: list[dict[str, object]] = []
-    notes: list[str] = []
-    assumed_known_omitted = 0
-    changed_count = 0
-    unchanged_omitted_count = 0
-    for selected_id in ordered:
-        view = views[selected_id]
-        if since_manifest is not None:
-            manifest_documents = since_manifest["documents"]
-            previous = manifest_documents.get(selected_id)
-            if not isinstance(previous, dict):
-                plans[selected_id] = _DocPlan(
-                    generation_short=generation_short,
-                    changed_sections=_changed_section_anchors(view, {}),
-                    changed_document=True,
-                )
-                notes.append(f"{selected_id}: new since {generation_short}")
-                changed_count += 1
-            elif _source_sha(view) == previous.get("source_sha256"):
-                plans[selected_id] = _DocPlan(
-                    omit_navigation=True,
-                    content_omitted={
-                        "reason": "unchanged-since",
-                        "generation": generation_short,
-                    },
-                    coverage_state="unchanged-since",
-                    generation_short=generation_short,
-                )
-                unchanged_omitted_count += 1
-            else:
-                previous_sections = previous.get("sections", {})
-                if not isinstance(previous_sections, dict):
-                    previous_sections = {}
-                changed_sections = _changed_section_anchors(view, previous_sections)
-                removed_sections = _removed_section_anchors(view, previous_sections)
-                metadata_changes = _metadata_changes(view, previous)
-                plans[selected_id] = _DocPlan(
-                    generation_short=generation_short,
-                    changed_sections=changed_sections,
-                    removed_sections=removed_sections,
-                    metadata_changes=metadata_changes,
-                    source_changed_outside_sections=(
-                        not changed_sections and not removed_sections
-                    ),
-                    changed_document=True,
-                )
-                if removed_sections:
-                    notes.append(
-                        f"{selected_id}: removed sections since {generation_short}: "
-                        + ", ".join(removed_sections)
-                    )
-                for field, before, after in metadata_changes:
-                    before_json = json.dumps(
-                        before, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-                    )
-                    after_json = json.dumps(
-                        after, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-                    )
-                    notes.append(
-                        f"{selected_id}: metadata {field} changed: "
-                        f"{before_json} -> {after_json}"
-                    )
-                if not changed_sections and not removed_sections:
-                    notes.append(
-                        f"{selected_id}: source changed outside addressable sections"
-                    )
-                changed_count += 1
-        elif selected_id in assumed:
-            declared = assumed[selected_id]
-            if view.revision == declared:
-                plans[selected_id] = _DocPlan(
-                    omit_navigation=True,
-                    content_omitted={
-                        "reason": "assumed-known",
-                        "declared_revision": declared,
-                    },
-                    coverage_state="assumed-known",
-                    declared_revision=declared,
-                )
-                assumed_known_omitted += 1
-            else:
-                mismatches.append(
-                    {
-                        "id": selected_id,
-                        "declared_revision": declared,
-                        "current_revision": view.revision,
-                    }
-                )
-                notes.append(
-                    f"{selected_id}: assumed known at revision {declared}, "
-                    f"current {view.revision} — content included"
-                )
-    if since_manifest is not None:
-        notes.append(
-            f"Delta vs generation {generation_short}: {changed_count} changed, "
-            f"{unchanged_omitted_count} unchanged omitted"
-        )
-    return plans, mismatches, notes, assumed_known_omitted
-
-
-def _packet_sections(
-    config,
-    view: _DocumentView,
-    user_selected: list[str],
-    plan: _DocPlan | None,
-) -> tuple[list[str], set[str], list[str]]:
-    """Return `(explicit_anchors, changed_set, omitted)` for one document.
-
-    `explicit_anchors` is the ordered, de-duplicated set of section blocks to
-    render: user `--anchor`/`--include` selections first, then auto-added
-    `--since` changed sections. Auto-added anchors are restricted to changed
-    H2s that are not already inside the navigation prefix
-    (`navigation.extend_through`) — an H1 is always covered by the lead-in
-    navigation serves, and an `extend_through` H2 is already inside it, so
-    re-emitting either would duplicate content navigation already sent.
-    `changed_set` marks the auto-added delta anchors so the text form can
-    title them `### Changed section`. `omitted` is the usual coverage list of
-    H2 anchors that are neither navigation extensions nor shown, computed
-    against what the document actually renders, which makes it truthful by
-    construction: every changed H2 is either emitted here or listed there.
-    """
-
-    user = list(dict.fromkeys(user_selected))
-    changed = plan.changed_sections if plan is not None else ()
-    h2_anchors = {item.anchor for item in view.sections if item.level == 2}
-    changed_blocks = [
-        anchor
-        for anchor in changed
-        if anchor in h2_anchors and anchor not in config.navigation_extend_through
-    ]
-    extra = [anchor for anchor in changed_blocks if anchor not in user]
-    explicit_anchors = user + extra
-    omitted = [
-        item.anchor
-        for item in view.sections
-        if item.level == 2
-        and item.anchor not in config.navigation_extend_through
-        and item.anchor not in explicit_anchors
-    ]
-    return explicit_anchors, set(extra), omitted
 
 
 @dataclass(frozen=True)
@@ -4193,19 +3602,101 @@ def migrate(project_root: Path, *, apply: bool = False) -> int:
             f"{change.old_value}\t{change.new_value}\t{change.path.as_posix()}"
         )
     if apply:
+        created_at = _utc_second()
+        generation_id = (
+            f"{created_at.replace('-', '').replace(':', '')}-"
+            f"{MIGRATION_WORKSTREAM_ID}"
+        )
+        print(f"migration-attempt\t{generation_id}", flush=True)
+        validation_problems: list[str] = []
         try:
-            apply_migration_plan(config, plan)
-        except (OSError, ValueError) as error:
+            result = apply_migration_plan(
+                config,
+                plan,
+                created_at=created_at,
+                validation_problems=validation_problems,
+            )
+        except (JournalError, OSError, ValueError) as error:
             print(f"ERROR: failed to apply migration: {error}", file=sys.stderr)
+            return 1
+        if result.status != "applied":
+            print(
+                "ERROR: migration rolled back: "
+                f"{result.reason or 'validation failed'}; "
+                f"generation={result.generation_id}",
+                file=sys.stderr,
+            )
+            for problem in validation_problems:
+                print(f"ERROR: post-write validation: {problem}", file=sys.stderr)
             return 1
         print(
             f"Applied {len(plan.changes)} legacy relation migration(s) across "
             f"{len(plan.updated_contents)} file(s)."
         )
+        print(f"migration-generation	{result.generation_id}")
     else:
         print(
             f"Preview only; {len(plan.changes)} legacy relation migration(s) across "
             f"{len(plan.updated_contents)} file(s). Re-run with --apply to write."
+        )
+    return 0
+
+
+def migrate_recover_interrupted(
+    project_root: Path,
+    generation_id: str,
+    *,
+    json_output: bool = False,
+    recovered_at: str | None = None,
+    expected_manifest_hash: str | None = None,
+) -> int:
+    """Restore an interrupted migration attempt to its exact before state."""
+
+    if expected_manifest_hash is not None and not re.fullmatch(
+        r"[0-9a-f]{64}", expected_manifest_hash
+    ):
+        print(
+            "ERROR: --expect-manifest-hash must be a lowercase SHA-256 value",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        config = load_config(project_root)
+        result = recover_interrupted_generation(
+            source_root=config.documentation_root,
+            journal_root=default_journal_root(
+                config.project_root, config.documentation_root
+            ),
+            generation_id=generation_id,
+            recovered_at=recovered_at or _utc_second(),
+            expected_manifest_sha256=expected_manifest_hash,
+            expected_workstream_id=MIGRATION_WORKSTREAM_ID,
+        )
+    except (JournalError, OSError, ValueError) as error:
+        print(f"ERROR: interrupted migration recovery failed: {error}", file=sys.stderr)
+        return 1
+    if result.status in {"refused", "incomplete"}:
+        print(
+            f"ERROR: interrupted migration recovery {result.status}: "
+            f"{result.reason}",
+            file=sys.stderr,
+        )
+        return 1
+    if json_output:
+        _print_json(
+            {
+                "generation": result.generation_id,
+                "status": result.status,
+                "restored_paths": list(result.restored_paths),
+                "recovery_record": result.recovery_record,
+            }
+        )
+    else:
+        print(
+            f"migration-interrupted-recovery\t{result.status}\t"
+            f"generation={result.generation_id}\t"
+            f"restored_paths={','.join(result.restored_paths) or '-'}\t"
+            f"record={result.recovery_record or '-'}"
         )
     return 0
 
@@ -4266,6 +3757,11 @@ def readiness(
                 "state": report.projection_state,
                 "reason": report.projection_reason,
             },
+            "validation_scope": {
+                "id": READINESS_SCOPE,
+                "evaluated": list(report.evaluated_checks),
+                "not_evaluated": list(report.not_evaluated_checks),
+            },
             "next_command": next_command,
         }
         if selection.source is not None:
@@ -4273,6 +3769,15 @@ def readiness(
         _print_json(payload)
         return 0 if report.ready else 1
 
+    print(f"# Adoption readiness: {selection.selector}")
+    print()
+    print(f"- Validation scope: {READINESS_SCOPE}")
+    print(f"- Evaluated checks: {', '.join(report.evaluated_checks)}")
+    print(
+        "- Not evaluated: "
+        + ", ".join(report.not_evaluated_checks)
+        + f"; run `docsystem validate {selection.selector}` for full policy validation"
+    )
     if not report.documentation_root_exists:
         # The documentation root is named relatively under a selected source,
         # so no diagnostic stream carries the private absolute path either.
@@ -4281,8 +3786,6 @@ def readiness(
             if selection.source is not None
             else config.documentation_root
         )
-        print(f"# Adoption readiness: {selection.selector}")
-        print()
         print(
             f"ERROR: documentation root does not exist: {documentation_root}",
             file=sys.stderr,
@@ -4290,8 +3793,6 @@ def readiness(
         print(f"- Next safe command: {next_command}")
         return 1
 
-    print(f"# Adoption readiness: {selection.selector}")
-    print()
     print(f"- Blocking structural/configuration errors: {len(report.blocking)}")
     for issue in report.blocking:
         level = "WARNING" if issue.severity == "warning" else "ERROR"
@@ -4330,7 +3831,20 @@ def index_projection(project_root: Path, *, write: bool = False) -> int:
         current = build_projection(catalog_value, config)
         valid, reason = projection_status(config, current)
         if write:
-            generation = write_projection(config, current)
+            try:
+                generation = write_projection(config, current)
+            except (OSError, ValueError) as error:
+                raise ValueError(
+                    f"projection rebuild failed: {error}; authored Markdown was not "
+                    "modified; correct the reported cache problem and retry "
+                    "`docsystem index PROJECT --write`"
+                ) from error
+            valid, reason = projection_status(config, current)
+            if not valid:
+                raise ValueError(
+                    "projection write did not produce a verified current generation: "
+                    f"{reason}; authored Markdown was not modified"
+                )
             print(f"Projection generation written: {generation}")
             return 0
         if not valid:
@@ -5593,7 +5107,7 @@ def _execution_address_snapshot(
         "document_id": address.document_id,
         "revision": document.metadata.revision,
         "path": document.path.as_posix(),
-        "document_sha256": hashlib.sha256(document.content.encode()).hexdigest(),
+        "document_sha256": document.source_sha256,
     }
     if address.anchor is None:
         snapshot["section"] = None
@@ -5732,7 +5246,7 @@ def _build_execution_handoff(
             "revision": mandate.metadata.revision,
             "status": mandate.metadata.status,
             "path": mandate.path.as_posix(),
-            "document_sha256": hashlib.sha256(mandate.content.encode()).hexdigest(),
+            "document_sha256": mandate.source_sha256,
             "required_sections": required_sections,
         },
         "targets": target_rows,
@@ -6944,15 +6458,7 @@ def _utc_second() -> str:
 
 
 def _maintenance_journal_root(config: ProjectConfig) -> Path:
-    local = config.project_root / ".docsystem" / "journal"
-    documentation_root = config.documentation_root.resolve()
-    if not local.resolve(strict=False).is_relative_to(documentation_root):
-        return local
-    state_home = Path(
-        os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")
-    )
-    identity = hashlib.sha256(str(config.project_root.resolve()).encode()).hexdigest()[:16]
-    return state_home / "documentation-engine" / "journals" / identity
+    return default_journal_root(config.project_root, config.documentation_root)
 
 
 def _marker_newline(content: str, start_line: int) -> str:
@@ -7906,6 +7412,122 @@ def maintenance_recover(
     return 0
 
 
+def maintenance_recover_interrupted(
+    project_root: Path,
+    generation_id: str,
+    *,
+    json_output: bool = False,
+    recovered_at: str | None = None,
+    expected_manifest_hash: str | None = None,
+    selection: _Selection | None = None,
+) -> int:
+    """Resume a verified interrupted maintenance attempt toward before state."""
+
+    effective_selection = selection or _Selection(project_root)
+    if effective_selection.source is not None:
+        if effective_selection.write_policy != "managed-maintenance":
+            print(
+                "ERROR: workspace source write policy does not allow "
+                "interrupted maintenance recovery",
+                file=sys.stderr,
+            )
+            return 1
+        if expected_manifest_hash is None:
+            print(
+                "ERROR: workspace-selected recovery requires "
+                "--expect-manifest-hash",
+                file=sys.stderr,
+            )
+            return 1
+    if expected_manifest_hash is not None and not re.fullmatch(
+        r"[0-9a-f]{64}", expected_manifest_hash
+    ):
+        print(
+            "ERROR: --expect-manifest-hash must be a lowercase SHA-256 value",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        config = load_config(project_root)
+        project_config_sha256 = hashlib.sha256(
+            (config.project_root / CONFIG_FILENAME).read_bytes()
+        ).hexdigest()
+        result = recover_interrupted_generation(
+            source_root=config.documentation_root,
+            journal_root=_maintenance_journal_root(config),
+            generation_id=generation_id,
+            recovered_at=recovered_at or _utc_second(),
+            expected_manifest_sha256=expected_manifest_hash,
+            expected_authority=(
+                {
+                    "source": effective_selection.source,
+                    "workspace_manifest_sha256": (
+                        effective_selection.workspace_manifest_sha256
+                    ),
+                    "project_config_sha256": project_config_sha256,
+                    "write_policy": effective_selection.write_policy,
+                }
+                if effective_selection.source is not None
+                else None
+            ),
+            authority_guards=_maintenance_authority_guards(
+                config,
+                effective_selection,
+                project_config_sha256,
+            ),
+        )
+    except (ValueError, JournalError, OSError) as error:
+        print(
+            f"ERROR: interrupted maintenance recovery failed: {error}",
+            file=sys.stderr,
+        )
+        return 1
+    if result.status in {"refused", "incomplete"}:
+        print(
+            f"ERROR: interrupted maintenance recovery {result.status}: "
+            f"{result.reason}",
+            file=sys.stderr,
+        )
+        return 1
+    recovery_validation_issues: list[str] = []
+    if not _maintenance_validation(config, recovery_validation_issues):
+        print(
+            "ERROR: interrupted maintenance recovery restored source but "
+            "project validation failed",
+            file=sys.stderr,
+        )
+        for issue in recovery_validation_issues:
+            print(f"ERROR: post-recovery validation: {issue}", file=sys.stderr)
+        return 1
+    projection_updated, projection_error = _maintenance_refresh_projection(config)
+    if not projection_updated:
+        print(
+            "WARNING: recovery succeeded but projection refresh failed: "
+            f"{projection_error}; direct Markdown remains authoritative",
+            file=sys.stderr,
+        )
+    if json_output:
+        _print_json(
+            {
+                "generation": result.generation_id,
+                "workspace_source": effective_selection.source,
+                "status": result.status,
+                "restored_paths": list(result.restored_paths),
+                "recovery_record": result.recovery_record,
+                "projection_updated": projection_updated,
+            }
+        )
+    else:
+        print(
+            f"interrupted-recovery\t{result.status}\t"
+            f"generation={result.generation_id}\t"
+            f"restored_paths={','.join(result.restored_paths) or '-'}\t"
+            f"record={result.recovery_record or '-'}"
+            f"\tprojection_updated={str(projection_updated).lower()}"
+        )
+    return 0
+
+
 def show_config(project_root: Path) -> int:
     try:
         config = load_config(project_root)
@@ -8184,8 +7806,10 @@ def _agent_instructions_text(selection: _Selection, config: ProjectConfig) -> st
     )
     out.append(
         "- Never run `docsystem init`, `docsystem migrate --apply`, "
+        "`docsystem migrate-recover-interrupted`, "
         "`docsystem index --write`, `docsystem maintenance --write` or "
-        "`docsystem maintenance-recover` without explicit approval."
+        "`docsystem maintenance-recover` or "
+        "`docsystem maintenance-recover-interrupted` without explicit approval."
     )
     out.append(
         "- Before mutating ignored/local-only documentation state, follow "
@@ -8411,6 +8035,29 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     maintenance_recover_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print a deterministic JSON object instead of tab-separated text.",
+    )
+
+    interrupted_recover_parser = subparsers.add_parser(
+        "maintenance-recover-interrupted",
+        help="Resume a verified interrupted maintenance journal attempt.",
+    )
+    interrupted_recover_parser.add_argument("generation")
+    interrupted_recover_parser.add_argument(
+        "project", nargs="?", type=Path, default=Path.cwd()
+    )
+    interrupted_recover_parser.add_argument(
+        "--expect-manifest-hash",
+        metavar="SHA256",
+        help=(
+            "Bind recovery to the exact prepared journal manifest; required "
+            "for a workspace-selected source."
+        ),
+    )
+    interrupted_recover_parser.add_argument(
         "--json",
         action="store_true",
         dest="json_output",
@@ -8778,6 +8425,26 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Write resolved values into Markdown source. Default is a "
         "non-mutating preview.",
+    )
+
+    migrate_recover_parser = subparsers.add_parser(
+        "migrate-recover-interrupted",
+        help="Restore a verified interrupted migration attempt.",
+    )
+    migrate_recover_parser.add_argument("generation")
+    migrate_recover_parser.add_argument(
+        "project", nargs="?", type=Path, default=Path.cwd()
+    )
+    migrate_recover_parser.add_argument(
+        "--expect-manifest-hash",
+        dest="expected_manifest_hash",
+        help="Bind recovery to the exact prepared journal manifest.",
+    )
+    migrate_recover_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print deterministic JSON evidence instead of tab-separated text.",
     )
 
     readiness_parser = subparsers.add_parser(
@@ -9156,6 +8823,7 @@ def build_parser() -> argparse.ArgumentParser:
         change_plan_parser,
         maintenance_parser,
         maintenance_recover_parser,
+        interrupted_recover_parser,
         context_parser,
         impact_parser,
         graph_health_parser,
@@ -9172,6 +8840,7 @@ def build_parser() -> argparse.ArgumentParser:
         lifecycle_parser,
         migration_report_parser,
         migrate_parser,
+        migrate_recover_parser,
         readiness_parser,
         index_parser,
         changes_parser,
@@ -9332,6 +9001,14 @@ def main() -> int:
             expected_manifest_hash=args.expect_manifest_hash,
             selection=selection,
         )
+    if args.command == "maintenance-recover-interrupted":
+        return maintenance_recover_interrupted(
+            project,
+            args.generation,
+            json_output=args.json_output,
+            expected_manifest_hash=args.expect_manifest_hash,
+            selection=selection,
+        )
     if args.command == "catalog":
         return catalog(project, explain=args.explain, json_output=args.json_output)
     if args.command == "context":
@@ -9445,6 +9122,13 @@ def main() -> int:
         return migration_report(project, json_output=args.json_output)
     if args.command == "migrate":
         return migrate(project, apply=args.apply)
+    if args.command == "migrate-recover-interrupted":
+        return migrate_recover_interrupted(
+            project,
+            args.generation,
+            json_output=args.json_output,
+            expected_manifest_hash=args.expected_manifest_hash,
+        )
     if args.command == "readiness":
         return readiness(
             project, json_output=args.json_output, selection=selection

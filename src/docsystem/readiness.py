@@ -23,6 +23,23 @@ from docsystem.catalog import (
 from docsystem.config import ProjectConfig
 from docsystem.projection import build_projection, projection_status
 
+READINESS_SCOPE = "adoption-structure-v1"
+_ROOT_CHECK = "documentation-root"
+_STRUCTURAL_CHECKS = (
+    _ROOT_CHECK,
+    "catalog-membership",
+    "metadata-and-relations",
+    "sections-and-navigation",
+    "hierarchical-reachability",
+    "projection-state",
+)
+_FULL_POLICY_CHECKS = (
+    "semantic-graph-diagnostics",
+    "document-profiles",
+    "delivery-contracts",
+    "program-plans",
+)
+
 
 @dataclass(frozen=True)
 class ReadinessReport:
@@ -36,6 +53,8 @@ class ReadinessReport:
     projection_present: bool
     projection_current: bool
     projection_reason: str
+    evaluated_checks: tuple[str, ...]
+    not_evaluated_checks: tuple[str, ...]
 
     @property
     def ready(self) -> bool:
@@ -80,6 +99,8 @@ def evaluate_readiness(
             projection_present=False,
             projection_current=False,
             projection_reason="documentation root does not exist",
+            evaluated_checks=(_ROOT_CHECK,),
+            not_evaluated_checks=(*_STRUCTURAL_CHECKS[1:], *_FULL_POLICY_CHECKS),
         )
 
     paths = {
@@ -129,4 +150,6 @@ def evaluate_readiness(
         projection_present=projection_present,
         projection_current=valid,
         projection_reason=reason,
+        evaluated_checks=_STRUCTURAL_CHECKS,
+        not_evaluated_checks=_FULL_POLICY_CHECKS,
     )

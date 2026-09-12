@@ -126,8 +126,13 @@ package minor versions. See
 sequence: its `next_command` field names the single safe next command for
 the project's current state (`init`, `doctor`, `migrate`, `index --write`, or
 a `context` read), so a wrapper can drive the sequence without re-deriving
-that policy itself. See [`docs/agent-contract.md`](agent-contract.md) for the
-full read-only/mutating command classification an AI client should follow.
+that policy itself. The additive `validation_scope` object reports a stable
+scope ID plus ordered `evaluated` and `not_evaluated` check names. Clients must
+not treat `ready: true` as evidence for a name in `not_evaluated`; use
+`validate` for full configured-policy compliance. MCP returns this same JSON
+object without a second readiness interpretation. See
+[`docs/agent-contract.md`](agent-contract.md) for the full read-only/mutating
+command classification an AI client should follow.
 
 ## Non-goals
 
