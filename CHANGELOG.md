@@ -28,6 +28,8 @@ All notable changes to Documentation Engine are documented in this file.
 - MCP subprocess deadlines, output limits, UTF-8 child-process enforcement and
   validation, and deterministic cleanup for stalled or excessive-output
   commands.
+- Platform-independent UTF-8 and LF output for generated CLI and MCP protocol
+  text, including redirected Windows streams.
 - A shared internal retrieval service for direct/projection view loading,
   graph selection and context packet planning, with adapter-independent tests.
 - Public recovery and source-identity contracts for interrupted attempts,
