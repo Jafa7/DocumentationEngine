@@ -25,8 +25,9 @@ All notable changes to Documentation Engine are documented in this file.
 - A deterministic synthetic retrieval-cost benchmark records source and
   derived bytes, parsing/materialization work, response size and semantic
   equality before future performance changes.
-- MCP subprocess deadlines, output limits, UTF-8 validation and deterministic
-  cleanup for stalled or excessive-output commands.
+- MCP subprocess deadlines, output limits, UTF-8 child-process enforcement and
+  validation, and deterministic cleanup for stalled or excessive-output
+  commands.
 - A shared internal retrieval service for direct/projection view loading,
   graph selection and context packet planning, with adapter-independent tests.
 - Public recovery and source-identity contracts for interrupted attempts,

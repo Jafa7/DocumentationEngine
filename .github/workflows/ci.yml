@@ -47,7 +47,7 @@ jobs:
           version="$(uv run python -c 'import docsystem; print(docsystem.__version__)')"
           test -f "$dist_dir/documentation_engine-${version}-py3-none-any.whl"
           test -f "$dist_dir/documentation_engine-${version}.tar.gz"
-          uvx --from 'twine>=6,<7' twine check --strict "$dist_dir"/*
+          uvx --from 'twine>=7,<8' twine check --strict "$dist_dir"/*
 
       # Dogfooding: walk the documented adoption sequence end-to-end against
       # the public example profile, on a scratch copy so the fixture stays

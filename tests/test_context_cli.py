@@ -1305,13 +1305,16 @@ def test_since_reports_line_ending_only_raw_source_change(
     tmp_path: Path, capsys
 ) -> None:
     configured_documents(tmp_path)
+    context_md = tmp_path / "plan" / "architecture" / "context.md"
+    # Make the baseline independent from the host platform. The projection
+    # must observe LF bytes first and CRLF bytes second even on Windows.
+    context_md.write_bytes(context_md.read_text(encoding="utf-8").encode("utf-8"))
     assert index_projection(tmp_path, write=True) == 0
     capsys.readouterr()
     generation = _current_generation(tmp_path)
-    context_md = tmp_path / "plan" / "architecture" / "context.md"
-    context_md.write_bytes(
-        context_md.read_text(encoding="utf-8").replace("\n", "\r\n").encode()
-    )
+    baseline = context_md.read_bytes()
+    assert b"\r\n" not in baseline
+    context_md.write_bytes(baseline.replace(b"\n", b"\r\n"))
 
     assert context(tmp_path, "DOC-002", depth=1, since=generation, json_output=True) == 0
     payload = json.loads(capsys.readouterr().out)

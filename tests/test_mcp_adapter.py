@@ -18,10 +18,11 @@ def adapter_project(tmp_path: Path) -> Path:
     project = tmp_path / "project"
     root = project / "plan"
     root.mkdir(parents=True)
-    (project / CONFIG_FILENAME).write_text(config, encoding="utf-8")
+    (project / CONFIG_FILENAME).write_text(config, encoding="utf-8", newline="\n")
     (root / "README.md").write_text(
         "---\nid: DOC-001\nrevision: 1\n---\n# Index\n[Target](target.md)\n",
         encoding="utf-8",
+        newline="\n",
     )
     (root / "target.md").write_text(
         """\
@@ -39,6 +40,7 @@ Summary line.
 Detailed content.
 """,
         encoding="utf-8",
+        newline="\n",
     )
     return project
 
@@ -57,6 +59,7 @@ root = "project"
 visibility = "private"
 """,
         encoding="utf-8",
+        newline="\n",
     )
     return workspace, project
 
@@ -570,6 +573,7 @@ def test_context_surfaces_projection_fallback_diagnostics(tmp_path: Path) -> Non
             "Detailed content.", "Changed content."
         ),
         encoding="utf-8",
+        newline="\n",
     )
     stale = mcp_server.context(str(project), "DOC-002")
     assert stale["target"] == "DOC-002"
@@ -633,6 +637,7 @@ relations = []
 layers = ["authored"]
 """,
         encoding="utf-8",
+        newline="\n",
     )
 
     packet = mcp_server.context(str(project), "DOC-002", view="map")
@@ -666,6 +671,7 @@ def test_text_packet_tools_surface_projection_fallback_diagnostics(
             "Detailed content.", "Changed content."
         ),
         encoding="utf-8",
+        newline="\n",
     )
 
     read_packet = mcp_server.read_document_packet(str(project), "DOC-002")
@@ -721,6 +727,7 @@ def test_context_since_delta_passes_generation_through(tmp_path: Path) -> None:
             "Detailed content.", "Changed content."
         ),
         encoding="utf-8",
+        newline="\n",
     )
 
     packet = mcp_server.context(str(project), "DOC-002", since=generation)

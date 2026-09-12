@@ -131,6 +131,11 @@ def _terminate_process(process: subprocess.Popen[bytes]) -> None:
 def _execute(command: list[str], policy: ExecutionPolicy) -> _ExecutionResult:
     """Execute one command with a deadline and bounded captured output."""
 
+    child_environment = os.environ.copy()
+    # MCP responses are a UTF-8 wire contract even when the host process runs
+    # under a legacy Windows console encoding. The docsystem CLI configures its
+    # own streams as well; this also protects early interpreter diagnostics.
+    child_environment["PYTHONIOENCODING"] = "utf-8"
     creationflags = (
         getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         if os.name == "nt"
@@ -140,6 +145,7 @@ def _execute(command: list[str], policy: ExecutionPolicy) -> _ExecutionResult:
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env=child_environment,
         start_new_session=os.name == "posix",
         creationflags=creationflags,
     )

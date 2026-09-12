@@ -124,6 +124,7 @@ def test_ci_checks_the_sdist_that_the_smoke_test_never_builds(ci: dict) -> None:
     body = steps_text(ci["jobs"]["check"])
     assert "uv build" in body
     assert "documentation_engine-${version}.tar.gz" in body
+    assert "twine>=7,<8" in body
     assert "twine check --strict" in body
 
 
