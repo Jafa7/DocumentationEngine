@@ -4,6 +4,57 @@ All notable changes to Documentation Engine are documented in this file.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-12
+
+### Highlights
+
+- Exact raw-source identity, stricter artifact verification and safer cache
+  ownership strengthen the guarantee that Markdown remains the only authority.
+- Interrupted maintenance and legacy-relation migration now share durable,
+  retryable journal recovery without treating partial evidence as success.
+- Retrieval adapters now share an internal application-service boundary while
+  preserving byte-identical direct/projection and CLI/MCP behavior.
+
+### Added
+
+- Projection schema 6 distinguishes exact raw document bytes from normalized
+  section-text hashes and carries that identity through federation, provider
+  evidence and execution handoffs.
+- Explicit readiness scope evidence identifies evaluated and unevaluated
+  checks without broadening the existing structural readiness gate.
+- A deterministic synthetic retrieval-cost benchmark records source and
+  derived bytes, parsing/materialization work, response size and semantic
+  equality before future performance changes.
+- MCP subprocess deadlines, output limits, UTF-8 validation and deterministic
+  cleanup for stalled or excessive-output commands.
+- A shared internal retrieval service for direct/projection view loading,
+  graph selection and context packet planning, with adapter-independent tests.
+- Public recovery and source-identity contracts for interrupted attempts,
+  retained evidence and versioned cache compatibility.
+
+### Changed
+
+- Complete provider exports prepare each immutable snapshot/comparison once
+  instead of rebuilding observations for every page.
+- Profile relation policy consistently sees local, legacy and qualified
+  authored relation forms.
+- Legacy-relation migration uses the same bounded transaction journal and
+  explicit interrupted-recovery protocol as managed maintenance.
+
+### Fixed
+
+- Duplicate JSON members are rejected recursively before provider artifact
+  schema and digest verification.
+- Corrupt occupied projection generations are rebuilt through verified staging
+  and reported successful only after readback verification.
+- Projection mutation rejects symlink or junction ancestry below the project
+  root, including aliases into authored documentation inside the same project.
+- Recovery-record preparation uses a non-authoritative staging namespace and
+  atomic publication, so interruption before publication remains safely
+  retryable without deleting audit evidence.
+- Retrieval measurement instruments the actual application-service path after
+  service extraction rather than obsolete CLI aliases.
+
 ## [0.5.0] - 2026-08-09
 
 ### Highlights
