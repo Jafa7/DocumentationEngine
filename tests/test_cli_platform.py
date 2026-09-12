@@ -42,11 +42,11 @@ def test_utf8_stream_configuration_overrides_a_legacy_encoding() -> None:
     stream = io.TextIOWrapper(buffer, encoding="cp1252", errors="strict")
 
     _configure_utf8_stream(stream)
-    stream.write("Привет")
+    stream.write("Привет\n")
     stream.flush()
 
     assert stream.encoding.lower() == "utf-8"
-    assert buffer.getvalue().decode("utf-8") == "Привет"
+    assert buffer.getvalue().decode("utf-8") == "Привет\n"
 
 
 def test_global_version_option_uses_the_distribution_version(capsys) -> None:

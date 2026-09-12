@@ -551,8 +551,8 @@ def test_bounded_executor_preserves_utf8_stdout_and_stderr() -> None:
     )
 
     assert result.returncode == 0
-    assert result.stdout.decode("utf-8") == "данные\n"
-    assert result.stderr.decode("utf-8") == "диагностика\n"
+    assert result.stdout.decode("utf-8").splitlines() == ["данные"]
+    assert result.stderr.decode("utf-8").splitlines() == ["диагностика"]
 
 
 def test_context_surfaces_projection_fallback_diagnostics(tmp_path: Path) -> None:

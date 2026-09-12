@@ -270,7 +270,7 @@ def _configure_utf8_stream(stream: object) -> None:
 
     reconfigure = getattr(stream, "reconfigure", None)
     if callable(reconfigure):
-        reconfigure(encoding="utf-8", errors="strict")
+        reconfigure(encoding="utf-8", errors="strict", newline="\n")
 
 
 def _configure_standard_streams() -> None:
