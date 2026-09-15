@@ -52,8 +52,27 @@ jobs:
 
       - name: Build wheel and sdist once in a clean directory
         run: |
+          sentinel="$(mktemp)"
+          printf 'DOCSYSTEM_DISTRIBUTION_SENTINEL_%s\n' "$GITHUB_RUN_ID" > "$sentinel"
+          mkdir -p .agents/local .orchestrator .paradigmarium .codex .claude .docsystem
+          mkdir -p src/docsystem/.agents/local
+          for path in \
+            .agents/local/distribution-sentinel.txt \
+            .orchestrator/distribution-sentinel.txt \
+            .paradigmarium/distribution-sentinel.txt \
+            .codex/distribution-sentinel.txt \
+            .claude/distribution-sentinel.txt \
+            .docsystem/distribution-sentinel.txt \
+            src/docsystem/.agents/local/distribution-sentinel.txt \
+            src/docsystem/distribution.local.txt \
+            .docsystem.toml \
+            .env; do
+            cp "$sentinel" "$path"
+          done
           rm -rf dist
           uv build --out-dir dist
+          uv run python scripts/check_distribution_boundary.py \
+            --sentinel-file "$sentinel" dist/*
           # uv protects its default output directory with a generated
           # .gitignore. It is not a distribution artifact and must not enter
           # either the exact-file gate or the uploaded Actions artifact.

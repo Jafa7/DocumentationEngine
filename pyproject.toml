@@ -40,8 +40,41 @@ dev = [
 [tool.hatch.version]
 path = "src/docsystem/__init__.py"
 
+[tool.hatch.build]
+# Distribution artifacts are a public trust boundary. Hidden workspace state
+# and conventionally local files must never be selected by either build target.
+exclude = [
+    "**/.*",
+    "**/*.local.*",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/docsystem"]
+
+[tool.hatch.build.targets.sdist]
+# Traverse only public source inputs. Hatchling's default is every file not
+# ignored by VCS, which is unsafe when an adopter keeps local agent/runtime
+# state beside the checkout.
+only-include = [
+    ".gitignore",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "LICENSE",
+    "README.md",
+    "SECURITY.md",
+    "docs",
+    "examples",
+    "pyproject.toml",
+    "scripts",
+    "src",
+    "tests",
+    "uv.lock",
+]
+
+[tool.hatch.build.targets.sdist.force-include]
+# These are authored public examples, not project-local configuration.
+"examples/generic-adopter/.docsystem.toml" = "examples/generic-adopter/.docsystem.toml"
+"examples/provider-snapshots/.docsystem.toml" = "examples/provider-snapshots/.docsystem.toml"
 
 [tool.pytest.ini_options]
 addopts = ["--strict-config", "--strict-markers"]

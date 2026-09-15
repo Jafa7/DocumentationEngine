@@ -42,11 +42,30 @@ jobs:
       # artifacts here rather than during an irreversible upload.
       - name: Build and check both distributions
         run: |
+          sentinel="$(mktemp)"
+          printf 'DOCSYSTEM_DISTRIBUTION_SENTINEL_%s\n' "$GITHUB_RUN_ID" > "$sentinel"
+          mkdir -p .agents/local .orchestrator .paradigmarium .codex .claude .docsystem
+          mkdir -p src/docsystem/.agents/local
+          for path in \
+            .agents/local/distribution-sentinel.txt \
+            .orchestrator/distribution-sentinel.txt \
+            .paradigmarium/distribution-sentinel.txt \
+            .codex/distribution-sentinel.txt \
+            .claude/distribution-sentinel.txt \
+            .docsystem/distribution-sentinel.txt \
+            src/docsystem/.agents/local/distribution-sentinel.txt \
+            src/docsystem/distribution.local.txt \
+            .docsystem.toml \
+            .env; do
+            cp "$sentinel" "$path"
+          done
           dist_dir="$(mktemp -d)/dist"
           uv build --out-dir "$dist_dir"
           version="$(uv run python -c 'import docsystem; print(docsystem.__version__)')"
           test -f "$dist_dir/documentation_engine-${version}-py3-none-any.whl"
           test -f "$dist_dir/documentation_engine-${version}.tar.gz"
+          uv run python scripts/check_distribution_boundary.py \
+            --sentinel-file "$sentinel" "$dist_dir"/*
           uvx --from 'twine>=7,<8' twine check --strict "$dist_dir"/*
 
       # Dogfooding: walk the documented adoption sequence end-to-end against

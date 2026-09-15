@@ -61,6 +61,30 @@ access to the repository. Create and push the tag in step 3 to start the
 workflow. Create the matching GitHub Release only after the production upload
 lands successfully.
 
+## Distribution privacy boundary
+
+The wheel contains only the `docsystem` package. The source distribution uses
+an explicit allowlist of public source, tests, documentation, examples and
+release files; it does not inherit the checkout's untracked-file inventory.
+Hidden workspace state, root-local Documentation Engine configuration,
+environment files and names matching `*.local.*` are excluded from both build
+targets. The two authored `.docsystem.toml` files under `examples/` are exact,
+reviewed exceptions because they are public adoption fixtures.
+
+Both CI and the release workflow inject unique sentinel content into root-local
+and package-nested private-state paths before building. They then inspect the
+wheel and sdist with:
+
+```bash
+uv run python scripts/check_distribution_boundary.py \
+  --sentinel-file /path/to/sentinel dist/*
+```
+
+The check fails before upload if an archive contains a hidden/local path, the
+sentinel bytes, or omits either public example configuration. Do not replace
+this boundary with `.gitignore` assumptions: source builds may run in a dirty
+or adopter-managed checkout whose local files are intentionally not tracked.
+
 ## Recovery
 
 **A pushed release tag is never moved and never reused.** It is the immutable

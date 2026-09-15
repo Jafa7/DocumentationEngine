@@ -128,6 +128,32 @@ def test_ci_checks_the_sdist_that_the_smoke_test_never_builds(ci: dict) -> None:
     assert "twine check --strict" in body
 
 
+@pytest.mark.parametrize(
+    ("workflow_fixture", "job_name"),
+    [("ci", "check"), ("release", "build")],
+)
+def test_distribution_builds_enforce_the_private_state_boundary(
+    request: pytest.FixtureRequest,
+    workflow_fixture: str,
+    job_name: str,
+) -> None:
+    workflow = request.getfixturevalue(workflow_fixture)
+    body = steps_code(workflow["jobs"][job_name])
+    for contract in (
+        "DOCSYSTEM_DISTRIBUTION_SENTINEL_",
+        ".agents/local/distribution-sentinel.txt",
+        ".orchestrator/distribution-sentinel.txt",
+        ".paradigmarium/distribution-sentinel.txt",
+        "src/docsystem/.agents/local/distribution-sentinel.txt",
+        "src/docsystem/distribution.local.txt",
+        ".docsystem.toml",
+        ".env",
+        "scripts/check_distribution_boundary.py",
+        "--sentinel-file",
+    ):
+        assert contract in body, f"{workflow_fixture} lost {contract!r}"
+
+
 def test_ci_runs_the_cli_utf8_contract_on_windows(ci: dict) -> None:
     windows = ci["jobs"]["windows"]
     assert windows["runs-on"] == "windows-latest"

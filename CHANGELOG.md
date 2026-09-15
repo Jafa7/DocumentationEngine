@@ -4,6 +4,15 @@ All notable changes to Documentation Engine are documented in this file.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-15
+
+### Fixed
+
+- Wheel and source-distribution builds now enforce an explicit public file
+  boundary, preventing local agent, orchestration, documentation cache,
+  environment and `*.local.*` state from entering published artifacts while
+  retaining the authored public example configurations.
+
 ## [0.6.0] - 2026-09-12
 
 ### Highlights
